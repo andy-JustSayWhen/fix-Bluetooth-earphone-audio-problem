@@ -93,3 +93,45 @@ Bose QC Headphones 当前承担音频输入，而且输入采样率是 16 kHz；
 - 运行当前版本的官方安装器并返回 `OK: Installed`。
 
 修复后系统服务已重新建立通信套接字，但当前宿主应用中的通信链路仍未自愈，QQ音乐界面读取仍需重启 ChatGPT/Codex 宿主应用或新开线程后再验收。系统默认路由、SoundSource 配置和用户实听结果不受此界面读取故障影响。
+
+## 修复后对照变量：QQ音乐仍选 Bose，但音频已无异常
+
+核对时间：2026-07-16 00:22:03（东八区）。
+
+用户在 SoundSource 中将 QQ音乐的“Redirect Audio To”改为 `No Redirect`，即不再由 SoundSource 为 QQ音乐单独改道。修改后，QQ音乐自己的设置页面仍保持：
+
+| 变量 | 当前值 |
+| --- | --- |
+| QQ音乐输出设备 | Bose QC Headphones |
+| QQ音乐输出策略 | 跟随系统默认配置 |
+| QQ音乐独占输出 | 未开启 |
+| QQ音乐支持采样率 | 16.0k、44.1k |
+| QQ音乐缓冲大小 | 512 |
+| QQ音乐 DSD 传输 | 设备不支持切换 DSD 传输模式 |
+| SoundSource 的 QQ音乐改道 | No Redirect |
+| SoundSource 系统输出 | Bose QC Headphones |
+| SoundSource 系统输入 | Bose QC Headphones |
+| SoundSource 系统提示音 | Bose QC Headphones |
+| 用户实听结果 | Bose 仍是播放设备，但音频异常消失 |
+
+同一时间点再次查询系统音频状态，Bose QC Headphones 同时被标记为：
+
+- 系统默认普通输出。
+- 系统默认输入。
+- 系统提示音输出。
+
+这说明修复后状态与之前发生了两个重要变化：
+
+1. SoundSource 的 QQ音乐应用级改道从此前存在的路由状态变为 `No Redirect`。
+2. 系统默认普通输出从此前的 Redmi 电脑音箱变为 Bose QC Headphones。
+
+QQ音乐自己的输出设备在前后都保持为 Bose，因此目前不能把“音频恢复正常”只归因于某一个变量。当前最可靠的记录是：QQ音乐仍播放到 Bose；SoundSource 不再单独改道；系统普通输出也已与 Bose 对齐；最终实听无异常。
+
+证据图片：
+
+- [SoundSource 中 QQ音乐为 No Redirect](evidence/soundsource-qqmusic-no-redirect.png)
+- [QQ音乐设置中输出设备为 Bose](evidence/qqmusic-output-bose.png)
+
+## 下一步可控对照
+
+若要确定真正起作用的变量，应一次只改变一个条件：保持 SoundSource 为 `No Redirect`、QQ音乐保持“跟随系统默认配置”、输入保持 Bose，然后分别把系统默认普通输出切换到 Bose 和 Redmi，播放同一首歌并记录是否复现异常。本记录暂不自动切换设备，只保存当前变量和结果。
