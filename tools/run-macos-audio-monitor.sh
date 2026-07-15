@@ -29,4 +29,4 @@ trap cleanup EXIT INT TERM
 
 echo "本次详细记录目录：$RUN_DIR"
 echo "按 Ctrl-C 可提前结束；默认监视 600 秒。"
-"$BUILD_DIR/macos-audio-route-monitor" --duration "${MONITOR_DURATION:-600}" --interval "${MONITOR_INTERVAL:-0.25}" --output-dir "$RUN_DIR"
+"$BUILD_DIR/macos-audio-route-monitor" --duration "${MONITOR_DURATION:-600}" --interval "${MONITOR_INTERVAL:-0.25}" --heartbeat "${MONITOR_HEARTBEAT:-0}" --output-dir "$RUN_DIR"

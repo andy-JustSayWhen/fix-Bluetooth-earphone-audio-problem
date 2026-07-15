@@ -219,6 +219,23 @@ func printForeground(_ line: String) {
     fflush(stdout)
 }
 
+func rateText(_ value: Double) -> String {
+    guard value > 0 else { return "不可用" }
+    if value.truncatingRemainder(dividingBy: 1000) == 0 {
+        return String(format: "%.0fkHz", value / 1000)
+    }
+    return String(format: "%.1fkHz", value / 1000)
+}
+
+func shortMode(_ mode: String) -> String {
+    if mode.contains("通话模式") { return "疑似通话模式" }
+    if mode.contains("立体声播放模式") { return "疑似立体声模式" }
+    if mode.contains("输入输出均为同一蓝牙设备") { return "输入输出同设备，模式未确定" }
+    if mode.contains("蓝牙输入端点") { return "蓝牙输入端点" }
+    if mode.contains("非蓝牙设备") { return "非蓝牙设备" }
+    return "模式未确定"
+}
+
 func modeSummary(_ snapshot: MonitorSnapshot) -> String {
     let selectedNames = Set(snapshot.devices.filter {
         $0.isDefaultInput || $0.isDefaultOutput || $0.name.localizedCaseInsensitiveContains("Bose")
@@ -243,6 +260,35 @@ func modeSummary(_ snapshot: MonitorSnapshot) -> String {
     }.joined(separator: "；")
 }
 
+func compactSummary(_ snapshot: MonitorSnapshot) -> String {
+    let selectedNames = Set(snapshot.devices.filter {
+        $0.isDefaultInput || $0.isDefaultOutput || $0.name.localizedCaseInsensitiveContains("Bose")
+    }.map { $0.name })
+    return selectedNames.sorted().compactMap { name in
+        let named = snapshot.devices.filter { $0.name == name }
+        guard let output = named.first(where: { $0.isDefaultOutput && $0.outputChannels > 0 }) ?? named.first(where: { $0.outputChannels > 0 }) else { return nil }
+        let input = named.first(where: { $0.isDefaultInput && $0.inputChannels > 0 })
+        var values: [String] = []
+        if output.isDefaultOutput || name.localizedCaseInsensitiveContains("Bose") {
+            values.append("输出 \(rateText(output.nominalRateOutput))/\(output.outputChannels)声道")
+        }
+        if let input {
+            values.append("输入 \(rateText(input.nominalRateInput))/\(input.inputChannels)声道")
+        }
+        let mode: String
+        if output.transport == "蓝牙" && input != nil && output.outputChannels == 1 && output.nominalRateOutput > 0 && output.nominalRateOutput <= 16000 {
+            mode = "疑似通话模式"
+        } else if output.transport == "蓝牙" && output.outputChannels >= 2 && output.nominalRateOutput >= 44100 {
+            mode = "疑似立体声模式"
+        } else if input != nil && output.transport == "蓝牙" {
+            mode = "蓝牙模式未确定"
+        } else {
+            mode = shortMode(output.inferredMode)
+        }
+        return "\(name)：\(values.joined(separator: "，"))，\(mode)"
+    }.joined(separator: "；")
+}
+
 func sameState(_ lhs: MonitorSnapshot, _ rhs: MonitorSnapshot) -> Bool {
     lhs.defaultInputID == rhs.defaultInputID &&
     lhs.defaultOutputID == rhs.defaultOutputID &&
@@ -253,6 +299,7 @@ func sameState(_ lhs: MonitorSnapshot, _ rhs: MonitorSnapshot) -> Bool {
 let arguments = CommandLine.arguments
 var duration = 600.0
 var interval = 0.25
+var heartbeatSeconds = 0.0
 var outputDirectory = ""
 var index = 1
 while index < arguments.count {
@@ -263,11 +310,14 @@ while index < arguments.count {
     case "--interval":
         index += 1
         if index < arguments.count { interval = max(0.05, Double(arguments[index]) ?? interval) }
+    case "--heartbeat":
+        index += 1
+        if index < arguments.count { heartbeatSeconds = max(0, Double(arguments[index]) ?? heartbeatSeconds) }
     case "--output-dir":
         index += 1
         if index < arguments.count { outputDirectory = arguments[index] }
     case "--help":
-        print("用法：macos-audio-route-monitor [--duration 秒] [--interval 秒] [--output-dir 目录]")
+        print("用法：macos-audio-route-monitor [--duration 秒] [--interval 秒] [--heartbeat 秒] [--output-dir 目录]")
         exit(0)
     default:
         break
@@ -294,13 +344,12 @@ defer {
     try? eventsHandle.close()
 }
 
-printForeground("音频监视已启动：\(isoFormatter.string(from: started))")
-printForeground("详细快照：\(samplesURL.path)")
-printForeground("事件记录：\(eventsURL.path)")
-printForeground("前台关键节点会在默认路由、采样率、声道或推断模式变化时显示。")
+printForeground("[监视开始] \(isoFormatter.string(from: started))，采样间隔 \(String(format: "%.2fs", interval))")
+printForeground("[记录目录] \(outputURL.path)")
+printForeground("[前台规则] 默认只显示真实状态变化；详细快照持续后台保存。")
 
 var previous: MonitorSnapshot?
-var lastHeartbeat = Date.distantPast
+var lastHeartbeat = Date()
 while Date().timeIntervalSince(started) < duration {
     let current = makeSnapshot(started: started)
     appendLine(jsonLine(current), to: samplesHandle)
@@ -308,8 +357,8 @@ while Date().timeIntervalSince(started) < duration {
     if previous == nil {
         let event = MonitorEvent(timestamp: current.timestamp, elapsedSeconds: current.elapsedSeconds, type: "started", message: "初始状态：\(current.defaultInputName)；输出：\(current.defaultOutputName)；\(modeSummary(current))", before: nil, after: current)
         appendLine(jsonLine(event), to: eventsHandle)
-        printForeground("[关键节点 0s] 初始输入=\(current.defaultInputName)；输出=\(current.defaultOutputName)")
-        printForeground("[设备指标] \(modeSummary(current))")
+        printForeground("[开始] 输入=\(current.defaultInputName)；输出=\(current.defaultOutputName)")
+        printForeground("[状态] \(compactSummary(current))")
     } else if !sameState(current, previous!) {
         var changes: [String] = []
         if current.defaultInputID != previous!.defaultInputID { changes.append("默认输入：\(previous!.defaultInputName) -> \(current.defaultInputName)") }
@@ -329,10 +378,10 @@ while Date().timeIntervalSince(started) < duration {
         let message = changes.isEmpty ? "设备快照发生变化" : changes.joined(separator: "；")
         let event = MonitorEvent(timestamp: current.timestamp, elapsedSeconds: current.elapsedSeconds, type: "state_changed", message: message, before: previous, after: current)
         appendLine(jsonLine(event), to: eventsHandle)
-        printForeground("[关键节点 \(String(format: "%.1f", current.elapsedSeconds))s] \(message)")
-        printForeground("[设备指标] \(modeSummary(current))")
-    } else if Date().timeIntervalSince(lastHeartbeat) >= 5 {
-        printForeground("[心跳 \(String(format: "%.0f", current.elapsedSeconds))s] 输入=\(current.defaultInputName)；输出=\(current.defaultOutputName)；\(modeSummary(current))")
+        printForeground("[变化 \(String(format: "%.1fs", current.elapsedSeconds))] \(message)")
+        printForeground("[状态] \(compactSummary(current))")
+    } else if heartbeatSeconds > 0 && Date().timeIntervalSince(lastHeartbeat) >= heartbeatSeconds {
+        printForeground("[心跳 \(String(format: "%.0fs", current.elapsedSeconds))] \(compactSummary(current))")
         lastHeartbeat = Date()
     }
     previous = current
@@ -343,5 +392,4 @@ let finished = makeSnapshot(started: started)
 appendLine(jsonLine(finished), to: samplesHandle)
 let finishEvent = MonitorEvent(timestamp: finished.timestamp, elapsedSeconds: finished.elapsedSeconds, type: "finished", message: "监视结束", before: previous, after: finished)
 appendLine(jsonLine(finishEvent), to: eventsHandle)
-printForeground("音频监视已结束：\(finished.timestamp)")
-printForeground("完整记录目录：\(outputURL.path)")
+printForeground("[监视结束] \(finished.timestamp)；记录目录：\(outputURL.path)")
