@@ -1,0 +1,17 @@
+本机 Bose 麦克风实测记录（2026-07-16，东八区）
+
+实验条件：Bose QC Headphones 同时作为默认输入和默认输出；用户完成一次语音输入，QQ音乐自动恢复播放。
+
+切换 Bose 为默认输入后：
+- default_output=Bose QC Headphones
+- default_input=Bose QC Headphones
+- Bose 输出：16000 Hz，1 声道
+- Bose 输入：16000 Hz，1 声道
+
+用户确认事件：QQ音乐播放很卡，然后静音，然后恢复播放；恢复后音频异常。
+
+事件结束后约 1 分钟内持续观测：
+- 默认输入和默认输出均未改变
+- Bose 输出持续为 16000 Hz，1 声道
+- Bose 输入持续为 16000 Hz，1 声道
+- 未观察到输出恢复为 44100 Hz、2 声道
