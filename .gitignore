@@ -1,2 +1,23 @@
+# macOS 系统杂项
+.DS_Store
+
+# Swift 编译和本地构建产物
 .build/
-artifacts/audio-monitor/
+DerivedData/
+
+# 本地运行监测产生的原始日志、快照和临时结果
+artifacts/
+tmp/
+temp/
+
+# 本地编辑器和操作系统临时文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 本地环境配置；项目文档和示例配置仍可正常提交
+.env
+.env.*
+!.env.example
