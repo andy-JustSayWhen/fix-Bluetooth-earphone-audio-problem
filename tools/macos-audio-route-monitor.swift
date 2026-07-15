@@ -364,9 +364,15 @@ while Date().timeIntervalSince(started) < duration {
         if current.defaultInputID != previous!.defaultInputID { changes.append("默认输入：\(previous!.defaultInputName) -> \(current.defaultInputName)") }
         if current.defaultOutputID != previous!.defaultOutputID { changes.append("默认输出：\(previous!.defaultOutputName) -> \(current.defaultOutputName)") }
         if current.defaultSystemOutputID != previous!.defaultSystemOutputID { changes.append("系统提示音输出：\(previous!.defaultSystemOutputName) -> \(current.defaultSystemOutputName)") }
-        let oldByUID = Dictionary(uniqueKeysWithValues: previous!.devices.map { ($0.uid, $0) })
+        // 设备短暂消失或属性读取失败时，多个端点可能返回相同的错误 UID，
+        // 不能用要求键唯一的 Dictionary(uniqueKeysWithValues:) 构造映射。
+        // AudioDeviceID 在本次快照内仍能区分这些端点，因此按设备编号比较。
+        var oldByID: [UInt32: AudioDeviceSnapshot] = [:]
+        for oldDevice in previous!.devices {
+            oldByID[oldDevice.id] = oldDevice
+        }
         for device in current.devices {
-            guard let old = oldByUID[device.uid] else { changes.append("设备出现：\(device.name)"); continue }
+            guard let old = oldByID[device.id] else { changes.append("设备出现：\(device.name)"); continue }
             if old.nominalRateOutput != device.nominalRateOutput || old.outputChannels != device.outputChannels || old.inferredMode != device.inferredMode {
                 changes.append("\(device.name) 输出：\(old.nominalRateOutput)Hz/\(old.outputChannels)声道/\(old.inferredMode) -> \(device.nominalRateOutput)Hz/\(device.outputChannels)声道/\(device.inferredMode)")
             }
