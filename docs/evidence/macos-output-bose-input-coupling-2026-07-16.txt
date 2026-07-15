@@ -1,0 +1,23 @@
+macOS 输出 Bose 与输入 Bose 联动证据（2026-07-16，东八区）
+
+来源运行记录：
+- artifacts/audio-monitor/run-20260716-015223
+- artifacts/audio-monitor/run-20260716-014704
+
+设备监视记录，run-20260716-015223：
+- 约 182.27 秒：默认输入 Redmi -> Bose；默认输出 Redmi -> Bose
+- 同一事件：Bose 输出 44100 Hz / 2 声道 -> 16000 Hz / 1 声道
+- 约 186.53 秒：默认输出 DJI -> Bose；Bose 输出再次变为 16000 Hz / 1 声道
+- 约 186.79 秒：Bose 输出短暂回到 44100 Hz / 2 声道，但默认输入仍为 Bose
+
+系统音频日志关键内容：
+- QQ音乐：Abandoning I/O cycle because reconfig pending
+- QQ音乐：Default-Output device changed, inserting 1.000 second(s) of silence
+- 蓝牙音频服务：Starting IO on profile tsco
+- 蓝牙音频服务：GetBestSampleRate: 16000
+- 蓝牙音频服务：HFP adjust stereo，stereo 0
+- 蓝牙音频服务：Codecs available: NBS (CVSD)=1, WBS (mSBC)=1, Stereo=0
+- QQ音乐：Output stream format changed
+- QQ音乐：AdaptToDevice Default-Output: mDeviceSampleRate=16000
+
+结论：选择 Bose 输出时，系统同时把默认输入联动为 Bose；随后建立 HFP / tsco 通话传输，关闭立体声并让 QQ音乐经历停止、静音和输出流重建。
