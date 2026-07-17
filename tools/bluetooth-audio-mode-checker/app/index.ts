@@ -152,6 +152,12 @@ function main(): void {
       }
     });
   };
+  const scheduleModeTransitionChecks = () => {
+    scheduleStateRefresh();
+    for (const delay of [700, 1_500, 2_800, 4_500]) {
+      setTimeout(scheduleStateRefresh, delay);
+    }
+  };
   const stopRealtimeMonitor = startAudioModeRealtimeMonitor((snapshot) => {
     latestSnapshot = snapshot;
     if (cachedState !== null) {
@@ -179,6 +185,7 @@ function main(): void {
       occupancyFingerprint = nextFingerprint;
       cachedState = { ...cachedState, devices };
       broadcastState();
+      scheduleModeTransitionChecks();
     } catch {
       // A transient system read failure must not interrupt device monitoring.
     } finally {

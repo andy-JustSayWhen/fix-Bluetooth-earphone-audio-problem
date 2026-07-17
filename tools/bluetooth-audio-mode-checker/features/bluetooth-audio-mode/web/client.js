@@ -153,6 +153,7 @@ async function recoverA2dp(device, badge) {
 }
 
 function createDeviceCard(device) {
+  if (device.microphoneOccupancy?.isInUse) recoveryFeedback.delete(device.name);
   const card = createElement("article", "device-card");
   const summary = createElement("button", "device-card__summary");
   summary.type = "button";
