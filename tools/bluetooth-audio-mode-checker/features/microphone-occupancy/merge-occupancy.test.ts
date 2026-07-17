@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { AudioModeAssessment } from "../../shared/audio-device-types/index.ts";
-import { mergeMicrophoneOccupancy } from "./index.ts";
+import {
+  attachEmptyMicrophoneOccupancy,
+  mergeMicrophoneOccupancy,
+  shouldContinueOccupancyScanning,
+} from "./index.ts";
 
 function device(overrides: Partial<AudioModeAssessment>): AudioModeAssessment {
   return {
@@ -45,4 +49,24 @@ test("占用扫描不得用旧 A2DP 状态覆盖实时 HFP 状态", () => {
   assert.equal(merged.sampleRateOutput, 16_000);
   assert.equal(merged.outputChannels, 1);
   assert.equal(merged.microphoneOccupancy?.isInUse, true);
+});
+
+test("没有占用程序时必须停止占用扫描", () => {
+  const devices = attachEmptyMicrophoneOccupancy([device("HFP_HSP", 16_000)]);
+  assert.equal(shouldContinueOccupancyScanning(devices), false);
+});
+
+test("仍有占用程序时继续扫描直到释放", () => {
+  const devices = [{
+    ...device("HFP_HSP", 16_000),
+    microphoneOccupancy: {
+      isInUse: true,
+      users: [{ pid: 42, name: "语音程序", bundleId: "test.voice", devices: ["耳机"] }],
+      multipointSupport: "unknown" as const,
+      multipointExplanation: "未知",
+      remoteReleaseSupported: false,
+      remoteReleaseExplanation: "不支持",
+    },
+  }];
+  assert.equal(shouldContinueOccupancyScanning(devices), true);
 });

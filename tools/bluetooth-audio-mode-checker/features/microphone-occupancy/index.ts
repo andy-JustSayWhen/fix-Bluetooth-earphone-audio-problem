@@ -17,6 +17,18 @@ export async function attachMicrophoneOccupancyAsync(
   return attachOccupancy(devices, users);
 }
 
+export function attachEmptyMicrophoneOccupancy(
+  devices: AudioModeAssessment[],
+): AudioModeAssessment[] {
+  return attachOccupancy(devices, []);
+}
+
+export function shouldContinueOccupancyScanning(
+  devices: AudioModeAssessment[],
+): boolean {
+  return devices.some((device) => (device.microphoneOccupancy?.users.length ?? 0) > 0);
+}
+
 export function mergeMicrophoneOccupancy(
   currentDevices: AudioModeAssessment[],
   occupancySnapshot: AudioModeAssessment[],

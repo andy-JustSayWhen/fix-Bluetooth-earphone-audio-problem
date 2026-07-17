@@ -11,10 +11,11 @@ import {
   webAssetsDirectory,
 } from "../features/bluetooth-audio-mode/index.ts";
 import {
-  attachMicrophoneOccupancy,
+  attachEmptyMicrophoneOccupancy,
   attachMicrophoneOccupancyAsync,
   mergeMicrophoneOccupancy,
   releaseMicrophoneUsers,
+  shouldContinueOccupancyScanning,
 } from "../features/microphone-occupancy/index.ts";
 import { recoverA2dp } from "../features/a2dp-recovery/index.ts";
 import { setDefaultAudioDevice } from "../core/macos-audio-route/index.ts";
@@ -122,6 +123,7 @@ function main(): void {
   const eventClients = new Set<import("node:http").ServerResponse>();
   let stateRefreshRunning = false;
   let realtimeFingerprint = "";
+  let initialOccupancyScanScheduled = false;
 
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
@@ -142,7 +144,7 @@ function main(): void {
     );
     let nextState = refreshedState;
     nextState = previousOccupancy.size === 0
-      ? { ...nextState, devices: attachMicrophoneOccupancy(nextState.devices) }
+      ? { ...nextState, devices: attachEmptyMicrophoneOccupancy(nextState.devices) }
       : {
           ...nextState,
           devices: nextState.devices.map((device) => ({
@@ -172,6 +174,12 @@ function main(): void {
           });
           broadcastState();
         }
+        if (!initialOccupancyScanScheduled && cachedState !== null) {
+          initialOccupancyScanScheduled = true;
+          if (cachedState.devices.some((device) =>
+            device.isDefaultOutput && device.sampleRateOutput !== null && device.sampleRateOutput <= 16_000
+          )) scheduleOccupancyScan(0);
+        }
       } catch (error) {
         detailedLog("error", "device-state.refresh-failed", {
           durationMs: Number((performance.now() - startedAt).toFixed(3)),
@@ -194,6 +202,8 @@ function main(): void {
     if (nextFingerprint !== realtimeFingerprint) {
       realtimeFingerprint = nextFingerprint;
       detailedLog("info", "active-output.changed", { snapshot });
+      const activeRate = snapshot.actualSampleRate ?? snapshot.nominalSampleRate;
+      if (activeRate !== null && activeRate <= 16_000) scheduleOccupancyScan(0);
     }
     latestSnapshot = snapshot;
     if (cachedState !== null) {
@@ -205,16 +215,17 @@ function main(): void {
   let occupancyFingerprint = "";
   let occupancyTimer: NodeJS.Timeout | null = null;
   let occupancyScanRunning = false;
-  const scheduleOccupancyScan = () => {
+  const scheduleOccupancyScan = (delay = 750) => {
+    if (occupancyTimer !== null || occupancyScanRunning) return;
     occupancyTimer = setTimeout(async () => {
-      if (cachedState === null || occupancyScanRunning) {
-        scheduleOccupancyScan();
-        return;
-      }
+      occupancyTimer = null;
+      if (cachedState === null || occupancyScanRunning) return;
       occupancyScanRunning = true;
+      let continueScanning = false;
     const startedAt = performance.now();
     try {
       const occupancySnapshot = await attachMicrophoneOccupancyAsync(cachedState.devices);
+      continueScanning = shouldContinueOccupancyScanning(occupancySnapshot);
       const nextFingerprint = JSON.stringify(occupancySnapshot.map((device) => ({
         name: device.name,
         users: device.microphoneOccupancy?.users ?? [],
@@ -231,7 +242,7 @@ function main(): void {
       const devices = mergeMicrophoneOccupancy(cachedState.devices, occupancySnapshot);
       cachedState = { ...cachedState, devices };
       broadcastState();
-      scheduleModeTransitionChecks();
+      if (!continueScanning) scheduleModeTransitionChecks();
     } catch (error) {
       detailedLog("error", "microphone-occupancy.scan-failed", {
         durationMs: Number((performance.now() - startedAt).toFixed(3)),
@@ -240,11 +251,15 @@ function main(): void {
       // A transient system read failure must not interrupt device monitoring.
     } finally {
       occupancyScanRunning = false;
-      scheduleOccupancyScan();
+      detailedLog("debug", continueScanning
+        ? "microphone-occupancy.scan-continuing"
+        : "microphone-occupancy.scan-stopped", {
+        reason: continueScanning ? "仍检测到占用程序" : "没有占用程序，停止探测以允许系统释放通话链路",
+      });
+      if (continueScanning) scheduleOccupancyScan(750);
     }
-    }, 750);
+    }, delay);
   };
-  scheduleOccupancyScan();
   scheduleStateRefresh();
 
   let requestSequence = 0;
