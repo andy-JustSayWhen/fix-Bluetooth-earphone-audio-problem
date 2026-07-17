@@ -121,12 +121,11 @@ function microphoneOccupancySection(device) {
   }
 
   const capability = createElement("div", "multipoint-note");
-  capability.append(
-    createElement("strong", "", "双设备连接：系统无法可靠识别"),
-    createElement("p", "", occupancy?.multipointExplanation || "暂无可靠信息。"),
-    createElement("strong", "", "非本机占用：无法直接解除"),
-    createElement("p", "", occupancy?.remoteReleaseExplanation || "请在另一台设备上结束通话或断开蓝牙。"),
-  );
+  capability.append(createElement(
+    "p",
+    "",
+    "确保您的设备未处于双设备连接状态，本工具无法解除非本机的麦克风占用。",
+  ));
   section.append(capability);
   const feedback = occupancyFeedback.get(device.name);
   if (feedback) section.append(createElement("p", `occupancy-feedback is-${feedback.kind}`, feedback.text));
