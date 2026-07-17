@@ -154,6 +154,7 @@ button { font: inherit; }
 .mode-badge.is-recovering { color: white; background: #667895; pointer-events: none; }
 .recovery-feedback { margin: 13px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 11px; line-height: 1.55; }
 .recovery-feedback.is-success { color: #20704f; background: #e7f7ef; }
+.recovery-feedback.is-pending { color: #6f571f; background: #fff8df; }
 .recovery-feedback.is-error { color: #9f3346; background: #fff0f2; }
 .recovery-title { display: block; margin-bottom: 5px; font-size: 12px; }
 .recovery-path, .recovery-diagnosis, .recovery-summary, .recovery-reconnect-note { margin: 6px 0 0; }

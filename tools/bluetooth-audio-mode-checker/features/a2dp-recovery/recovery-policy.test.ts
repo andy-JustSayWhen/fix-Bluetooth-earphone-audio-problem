@@ -24,3 +24,19 @@ test("恢复编排不得把采样率写入当作模式切换", () => {
   assert.doesNotMatch(source, /requestOutputSampleRate|请求高采样率/);
   assert.match(source, /重新评估输出路由/);
 });
+
+test("目标麦克风仍被占用时不得断开重连并假报恢复", () => {
+  const source = readFileSync(join(moduleDirectory, "run-recovery.ts"), "utf8");
+  const occupiedBranches = [...source.matchAll(/if \(initialUsers\.length > 0\) \{([\s\S]*?)\n  \}/g)];
+  const occupiedBranch = occupiedBranches.at(-1)?.[1] ?? "";
+  assert.match(occupiedBranch, /return result\(/);
+  assert.match(occupiedBranch, /false,/);
+  assert.doesNotMatch(occupiedBranch, /reconnectAndFinish/);
+  assert.match(occupiedBranch, /占用存在时不执行断开重连/);
+});
+
+test("高采样率必须持续六次读取才可判定稳定", () => {
+  const source = readFileSync(join(moduleDirectory, "run-recovery.ts"), "utf8");
+  assert.match(source, /consecutive >= 6/);
+  assert.doesNotMatch(source, /consecutive >= 2/);
+});

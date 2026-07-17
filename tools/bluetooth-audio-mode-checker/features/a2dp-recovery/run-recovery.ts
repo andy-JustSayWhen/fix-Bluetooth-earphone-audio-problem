@@ -1,6 +1,7 @@
 import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { reconnectBluetoothDevice } from "../../core/macos-bluetooth-link/index.ts";
 import { setDefaultAudioDevice } from "../../core/macos-audio-route/index.ts";
+import { readOutputVolume, synchronizeOutputVolume } from "../../core/macos-audio-volume/index.ts";
 import { readMicrophoneUsers } from "../../core/macos-microphone-usage/index.ts";
 import { isApplicationRunning } from "../../core/macos-running-apps/index.ts";
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
@@ -46,16 +47,16 @@ function fallbackDevice(
     .sort((left, right) => priority(right) - priority(left))[0];
 }
 
-async function verifyStableHighRate(name: string, attempts = 4): Promise<number | null> {
+async function verifyStableHighRate(name: string, attempts = 8): Promise<number | null> {
   let consecutive = 0;
   let rate: number | null = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     rate = currentOutputRate(name);
     consecutive = rate !== null && rate > 16_000 ? consecutive + 1 : 0;
-    if (consecutive >= 2) return rate;
+    if (consecutive >= 6) return rate;
     await wait(500);
   }
-  return rate !== null && rate > 16_000 && consecutive >= 2 ? rate : null;
+  return rate !== null && rate > 16_000 && consecutive >= 6 ? rate : null;
 }
 
 async function waitForOutput(name: string): Promise<boolean> {
@@ -104,8 +105,12 @@ function result(
     steps,
     usedReconnect,
     message: ok
-      ? `已恢复高音质输出，当前采样率为 ${(sampleRate ?? 0) / 1000} kHz。`
-      : `恢复失败：最后兜底后，${name} 仍未恢复到高于 16 kHz 的稳定输出。`,
+      ? `系统端点已稳定恢复为高采样率，当前为 ${(sampleRate ?? 0) / 1000} kHz；请以实际听感确认播放器已经出声。`
+      : remainingPrograms.length > 0
+        ? `暂时无法恢复：${remainingPrograms.join("、")} 仍在读取目标麦克风。请先结束语音输入，再重新执行恢复。`
+        : usedReconnect
+          ? `恢复失败：最后兜底后，${name} 仍未恢复到高于 16 kHz 的稳定输出。`
+          : `恢复失败：${name} 未恢复到高于 16 kHz 的稳定输出。`,
   };
   detailedLog(ok ? "info" : "error", "a2dp-recovery.completed", { deviceName: name, result: recoveryResult });
   return recoveryResult;
@@ -116,6 +121,7 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
   detailedLog("info", "a2dp-recovery.started", { deviceName: name });
   const steps: RecoveryStep[] = [];
   const initialSnapshot = readAudioDevices();
+  const initialVolume = readOutputVolume();
   let target = initialSnapshot.devices.find((device) => device.name === name && device.outputChannels > 0);
   const soundSourceRunning = isApplicationRunning("SoundSource");
   const initialUsers = readMicrophoneUsers().filter((user) => user.devices.includes(name));
@@ -155,20 +161,21 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
   }
 
   if (initialUsers.length > 0) {
-    const policy = selectRecoveryPolicy(true, false);
     step(
       steps,
       "原因对应恢复",
-      "跳过",
-      `命中已确认原因，但实测记录中尚无通过严格验证的对应恢复办法：${policy}`,
+      "失败",
+      `检测到 ${initialUsers.map((user) => user.name).join("、")} 仍在读取目标麦克风；占用存在时不执行断开重连，也不判定 A2DP 恢复成功`,
     );
-    return reconnectAndFinish(
+    return result(
+      false,
       name,
       "原因对应恢复",
       diagnosis,
       steps,
       [],
       initialUsers.map((user) => user.name),
+      false,
       currentOutputRate(name),
     );
   }
@@ -187,8 +194,14 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
   await wait(1_500);
   let rate = await verifyStableHighRate(name);
   if (rate !== null) {
-    step(steps, "等待系统自行恢复", "成功", "实际输出已连续两次高于 16 kHz", rate);
-    return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
+    synchronizeOutputVolume(initialVolume);
+    step(steps, "同步输出音量", "成功", `已将 A2DP 端点音量重新同步为恢复前的 ${initialVolume.volume}%`);
+    rate = await verifyStableHighRate(name);
+    if (rate !== null) {
+      step(steps, "等待系统自行恢复", "成功", "音量同步后，实际输出仍连续六次高于 16 kHz", rate);
+      return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
+    }
+    step(steps, "音量同步后复核", "失败", "音量同步后输出采样率再次回落，继续下一种恢复方法", currentOutputRate(name));
   }
   step(steps, "等待系统自行恢复", "失败", "实际输出未稳定高于 16 kHz", currentOutputRate(name));
 
@@ -199,7 +212,12 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
     step(steps, "重新评估输出路由", "失败", "系统未接受当前输出路由的重新提交");
   }
   rate = await verifyStableHighRate(name);
-  if (rate !== null) return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
+  if (rate !== null) {
+    synchronizeOutputVolume(initialVolume);
+    step(steps, "同步输出音量", "成功", `已将 A2DP 端点音量重新同步为恢复前的 ${initialVolume.volume}%`);
+    rate = await verifyStableHighRate(name);
+    if (rate !== null) return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
+  }
 
   const latestDevices = readAudioDevices().devices;
   const outputFallback = fallbackDevice(latestDevices, "output", name, true);
@@ -213,12 +231,17 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
       step(steps, "重建声音路由", "失败", "临时输出切换未完成");
     }
     rate = await verifyStableHighRate(name);
-    if (rate !== null) return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
+    if (rate !== null) {
+      synchronizeOutputVolume(initialVolume);
+      step(steps, "同步输出音量", "成功", `已将 A2DP 端点音量重新同步为恢复前的 ${initialVolume.volume}%`);
+      rate = await verifyStableHighRate(name);
+      if (rate !== null) return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
+    }
   } else {
     step(steps, "重建声音路由", "跳过", "没有任何其他输出设备，继续最后兜底");
   }
 
-  return reconnectAndFinish(name, "逐方法尝试", diagnosis, steps, [], [], currentOutputRate(name));
+  return reconnectAndFinish(name, "逐方法尝试", diagnosis, steps, [], [], currentOutputRate(name), initialVolume);
 }
 
 async function reconnectAndFinish(
@@ -229,6 +252,7 @@ async function reconnectAndFinish(
   releasedPrograms: string[],
   remainingPrograms: string[],
   previousRate: number | null,
+  initialVolume = readOutputVolume(),
 ): Promise<A2dpRecoveryResult> {
   try {
     reconnectBluetoothDevice(name);
@@ -242,7 +266,12 @@ async function reconnectAndFinish(
     step(steps, "断开并重新连接", "失败", "设备未能自动重新连接，需要手动连接");
     return result(false, name, recoveryPath, diagnosis, steps, releasedPrograms, remainingPrograms, true, previousRate);
   }
-  const rate = await verifyStableHighRate(name, 8);
-  if (rate === null) step(steps, "最终验证", "失败", "最后兜底后仍未连续两次高于 16 kHz", currentOutputRate(name));
+  let rate = await verifyStableHighRate(name, 12);
+  if (rate === null) step(steps, "最终验证", "失败", "最后兜底后仍未连续六次高于 16 kHz", currentOutputRate(name));
+  if (rate !== null) {
+    synchronizeOutputVolume(initialVolume);
+    step(steps, "同步输出音量", "成功", `已将 A2DP 端点音量重新同步为恢复前的 ${initialVolume.volume}%`);
+    rate = await verifyStableHighRate(name);
+  }
   return result(rate !== null, name, recoveryPath, diagnosis, steps, releasedPrograms, remainingPrograms, true, rate);
 }

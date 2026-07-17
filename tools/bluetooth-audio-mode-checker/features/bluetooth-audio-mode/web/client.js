@@ -145,7 +145,7 @@ async function recoverA2dp(device, badge) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "恢复失败");
-    recoveryFeedback.set(device.name, { kind: result.ok ? "success" : "error", result });
+    recoveryFeedback.set(device.name, { kind: result.ok ? "pending" : "error", result });
     await refreshDevices({ preserveRouteMessage: true });
   } catch (error) {
     recoveryFeedback.set(device.name, { kind: "error", text: `恢复失败：${error.message}` });
@@ -161,7 +161,7 @@ function recoveryResultSection(feedback) {
   }
   const result = feedback.result;
   section.append(
-    createElement("strong", "recovery-title", result.ok ? "A2DP 恢复成功" : "A2DP 恢复失败"),
+    createElement("strong", "recovery-title", result.ok ? "系统参数已恢复，待听感确认" : "A2DP 恢复失败"),
     createElement("p", "recovery-path", `恢复路径：${result.recoveryPath}`),
     createElement("p", "recovery-diagnosis", `${result.diagnosis.confidence}：${result.diagnosis.summary}`),
   );
