@@ -46,6 +46,20 @@ Hacker News 的发帖人描述了同类问题，并介绍了一个自动避免 A
 
 来源：[Hacker News 原文及完整评论](../raw/community/hacker-news-crystalclear-sound.md)。
 
+### 自动修复工具的共同边界
+
+AirPods Sound Quality Fixer（自动把默认麦克风改回其他设备的工具）的项目说明与 Hammerspoon 方案一致：它强制把默认输入改为 Mac 内置或用户指定的其他麦克风。它能减少手工切换，但不能满足“继续使用蓝牙输入 A，同时让蓝牙输出 B 保持 A2DP”的要求。
+
+ToothFairy（用于控制蓝牙连接和声音选择的工具）另有“禁止使用设备声音输入”的选项。其手册同时承认应用可能覆盖设置并重新启用低质量通话编码。本项目的输出 B 在麦克风未被选中时仍会跨设备降级，因此该功能只能复测，不能直接算作修复。
+
+来源：[AirPods Sound Quality Fixer 项目说明](../raw/community/airpods-sound-quality-fixer-readme.md)、[ToothFairy 手册](../raw/community/toothfairy-disable-audio-input.md)。
+
+### 组合声音设备的边界
+
+Apple 官方说明，组合声音设备用于合并多个真实设备的通道、统一采样率、选择时钟源和进行时钟漂移修正。官方资料没有说明组合设备可以锁定蓝牙协议，因此不能只凭创建了逻辑设备就断言 B 不会进入 HFP。
+
+来源：[Apple 组合声音设备原文](../raw/apple/apple-audio-midi-aggregate-device.md)。详细方案判断见[跨设备蓝牙 HFP 降级的解决方案边界](07-跨设备蓝牙HFP降级的解决方案边界.md)。
+
 ## 方案代价
 
 | 方案 | 解决层级 | 代价或边界 |
@@ -54,3 +68,5 @@ Hacker News 的发帖人描述了同类问题，并介绍了一个自动避免 A
 | 语音结束后重新选择输出或输入 | 触发路由重建 | 可能仍有应用重建延迟，不能改变 HFP 能力 |
 | 自动化强制选择其他输入 | 自动化绕过 | 会议软件可能不喜欢通话中途切换设备，仍需测试 |
 | LE Audio 或 USB/2.4G 链路 | 改变底层能力或连接方式 | 需要验证电脑、驱动、耳机或接收器的完整组合 |
+| 组合声音设备 | 待验证 | 官方只说明通道组合，没有协议隔离承诺 |
+| 禁止使用输出 B 的麦克风 | 待验证的软件干预 | 本项目在 B 麦克风未选中时仍观察到降级 |

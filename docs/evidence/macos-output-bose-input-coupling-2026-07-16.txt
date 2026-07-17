@@ -1,5 +1,7 @@
 macOS 输出 Bose 与输入 Bose 联动证据（2026-07-16，东八区）
 
+设备归属：MAC-home01-MacBookAir；主机名 andymacbook-air.local；macOS 14.6.1。不是 MAC-home02-MacMini。
+
 来源运行记录：
 - artifacts/audio-monitor/run-20260716-015223
 - artifacts/audio-monitor/run-20260716-014704

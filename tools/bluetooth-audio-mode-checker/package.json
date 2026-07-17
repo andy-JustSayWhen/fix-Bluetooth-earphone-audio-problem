@@ -1,0 +1,9 @@
+{
+  "name": "bluetooth-audio-mode-checker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node app/index.ts",
+    "test": "node --test features/bluetooth-audio-mode/detector.test.ts"
+  }
+}

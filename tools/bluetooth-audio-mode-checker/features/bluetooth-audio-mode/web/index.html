@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>蓝牙音频模式检查器</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div class="hero__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="img">
+            <path d="M12 2v20l6-6-5-4 5-4-6-6Zm2 4.3L15.7 8 14 9.3v-3Zm0 8.4 1.7 1.3L14 17.7v-3ZM6.5 7.5 11 12l-4.5 4.5" />
+          </svg>
+        </div>
+        <div class="hero__copy">
+          <p class="eyebrow">本机实时检测</p>
+          <h1>蓝牙音频模式检查器</h1>
+          <p>快速确认耳机当前是A2DP模式，还是已经进入HFP模式。</p>
+        </div>
+        <button class="refresh-button" id="refresh-button" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 7v5h-5M4 17v-5h5M6.1 8.5A7 7 0 0 1 18.7 7M17.9 15.5A7 7 0 0 1 5.3 17" />
+          </svg>
+          <span>刷新设备</span>
+        </button>
+      </header>
+
+      <section class="route-panel" aria-label="系统默认声音设备">
+        <div class="route-control">
+          <label for="output-device">当前默认声音输出设备（扬声器）</label>
+          <div class="select-wrap">
+            <select id="output-device" data-direction="output" disabled>
+              <option>正在读取…</option>
+            </select>
+          </div>
+        </div>
+        <div class="route-control">
+          <label for="input-device">当前默认声音输入设备（麦克风）</label>
+          <div class="select-wrap">
+            <select id="input-device" data-direction="input" disabled>
+              <option>正在读取…</option>
+            </select>
+          </div>
+        </div>
+        <p class="route-message" id="route-message" aria-live="polite">选择其他设备后会立即写入系统。</p>
+      </section>
+
+      <section class="status-bar" aria-live="polite">
+        <div>
+          <span class="status-dot" id="status-dot"></span>
+          <strong id="device-count">正在读取设备…</strong>
+        </div>
+        <span id="refresh-time">请稍候</span>
+      </section>
+
+      <section class="device-list" id="device-list" aria-label="蓝牙音频设备列表">
+        <div class="loading-card">
+          <span class="loading-card__pulse"></span>
+          <span class="loading-card__pulse"></span>
+          <span class="loading-card__pulse loading-card__pulse--short"></span>
+        </div>
+      </section>
+
+      <footer class="footer-note">
+        <span class="footer-note__icon">i</span>
+        <p>系统会实时监听当前输出设备；只有正在承担输出的设备才会判定模式，其他设备的待机格式不作为依据。</p>
+      </footer>
+    </main>
+
+    <template id="empty-template">
+      <div class="empty-state">
+        <div class="empty-state__icon" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <h2>没有发现蓝牙音频设备</h2>
+        <p>连接耳机或音箱后，点击右上角“刷新设备”。</p>
+      </div>
+    </template>
+
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

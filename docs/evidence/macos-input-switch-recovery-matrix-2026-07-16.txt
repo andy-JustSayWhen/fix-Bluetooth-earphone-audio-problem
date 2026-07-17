@@ -1,5 +1,7 @@
 macOS 蓝牙音频输入切换恢复矩阵（2026-07-16，东八区）
 
+设备归属：MAC-home01-MacBookAir；主机名 andymacbook-air.local；macOS 14.6.1。不是 MAC-home02-MacMini。
+
 共同条件：语音输入已经结束；QQ音乐输出仍为 Bose QC Headphones。
 
 操作路径 1：输入切到 Redmi 电脑音箱

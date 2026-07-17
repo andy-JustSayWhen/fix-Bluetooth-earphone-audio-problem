@@ -1,4 +1,6 @@
-本机 Bose 麦克风实测记录（2026-07-16，东八区）
+MAC-home01-MacBookAir Bose 麦克风实测记录（2026-07-16，东八区）
+
+设备归属：MAC-home01-MacBookAir；主机名 andymacbook-air.local；macOS 14.6.1。不是 MAC-home02-MacMini。
 
 实验条件：Bose QC Headphones 同时作为默认输入和默认输出；用户完成一次语音输入，QQ音乐自动恢复播放。
 
