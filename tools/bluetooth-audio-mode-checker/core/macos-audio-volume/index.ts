@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,27 @@ const toolRoot = join(moduleDirectory, "..", "..");
 const sourcePath = join(moduleDirectory, "device-output-volume.c");
 const buildDirectory = join(toolRoot, ".build", "audio-volume");
 const executablePath = join(buildDirectory, "device-output-volume");
+const monitorSourcePath = join(moduleDirectory, "watch-output-volume.c");
+const monitorExecutablePath = join(buildDirectory, "watch-output-volume");
+
+export type OutputVolumeEvent = {
+  timestamp: string;
+  event: "initial" | "propertyChanged" | "defaultOutputChanged";
+  selector: string;
+  scope: number;
+  element: number;
+  deviceId: number;
+  name: string | null;
+  masterVolume: number | null;
+  virtualMainVolume: number | null;
+  muted: boolean | null;
+  channelCount: number;
+  channelVolumes: Array<number | null>;
+  averageChannelVolume: number | null;
+  nominalSampleRate: number | null;
+  actualSampleRate: number | null;
+  isRunning: boolean | null;
+};
 
 function modificationTime(path: string): number {
   try {
@@ -36,6 +57,45 @@ function ensureHelperBuilt(): void {
     "-framework", "CoreFoundation",
     "-o", executablePath,
   ], { stdio: ["ignore", "inherit", "inherit"] });
+}
+
+function ensureMonitorBuilt(): void {
+  if (modificationTime(monitorExecutablePath) >= modificationTime(monitorSourcePath)) return;
+  mkdirSync(buildDirectory, { recursive: true });
+  execFileSync("/usr/bin/clang", [
+    monitorSourcePath,
+    "-framework", "CoreAudio",
+    "-framework", "CoreFoundation",
+    "-o", monitorExecutablePath,
+  ], { stdio: ["ignore", "inherit", "inherit"] });
+}
+
+export function startOutputVolumeMonitor(
+  onEvent: (event: OutputVolumeEvent) => void,
+): () => void {
+  if (process.platform !== "darwin") return () => {};
+  ensureMonitorBuilt();
+  const child = spawn(monitorExecutablePath, [], { stdio: ["ignore", "pipe", "pipe"] });
+  let pending = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    pending += chunk;
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        onEvent(JSON.parse(line) as OutputVolumeEvent);
+      } catch {
+        // Drop a malformed native event; the monitor remains read-only and waits for the next event.
+      }
+    }
+  });
+  child.stderr.on("data", (chunk) => process.stderr.write(chunk));
+  child.on("error", (error) => console.error(`音量事件监听启动失败：${error.message}`));
+  return () => {
+    if (!child.killed) child.kill("SIGTERM");
+  };
 }
 
 function runAppleScript(source: string): string {
