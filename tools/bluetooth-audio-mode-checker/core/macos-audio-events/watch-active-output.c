@@ -151,6 +151,20 @@ static OSStatus default_output_changed(
     return noErr;
 }
 
+static OSStatus device_list_changed(
+    AudioObjectID object,
+    UInt32 count,
+    const AudioObjectPropertyAddress addresses[],
+    void *context
+) {
+    (void)object;
+    (void)count;
+    (void)addresses;
+    (void)context;
+    emit_snapshot();
+    return noErr;
+}
+
 int main(void) {
     current_device = read_default_output();
     install_device_listeners(current_device);
@@ -167,6 +181,20 @@ int main(void) {
         NULL
     ) != noErr) {
         return 2;
+    }
+
+    AudioObjectPropertyAddress devices_address = {
+        kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    if (AudioObjectAddPropertyListener(
+        kAudioObjectSystemObject,
+        &devices_address,
+        device_list_changed,
+        NULL
+    ) != noErr) {
+        return 3;
     }
 
     emit_snapshot();

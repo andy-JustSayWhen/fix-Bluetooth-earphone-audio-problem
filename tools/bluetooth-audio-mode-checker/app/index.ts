@@ -167,6 +167,7 @@ function main(): void {
     if (cachedState !== null) {
       cachedState = applyActiveOutputSnapshot(cachedState, snapshot);
       broadcastState();
+      scheduleStateRefresh();
     }
   });
   let occupancyFingerprint = "";
