@@ -41,6 +41,7 @@
 - [Bluetooth SIG：HFP 1.8 音频连接建立与释放](../raw/bluetooth-sig/hfp-1.8-audio-connection.md)
 - [Apple：macOS 蓝牙协议栈与公开接口边界](../raw/apple/apple-bluetooth-stack-and-audio-profile-api.md)
 - [Apple：macOS 蓝牙与音频诊断日志入口](../raw/apple/apple-macos-audio-bluetooth-diagnostic-logs.md)
+- [Rogue Amoeba：SoundSource 调试日志](../raw/community/rogue-amoeba-soundsource-debug-logs.md)
 
 ### 社区资料
 
@@ -72,6 +73,7 @@
 - 新资料补充的是诊断证据的产生方式、启用状态和读取边界，没有改变既有 HFP/A2DP 模式结论。
 - PacketLogger、统一日志、音频异常追踪和 sysdiagnose 的作用层级不同，不能互相替代；这与既有“模式结论需要端点参数和活动链路证据共同支持”的要求一致。
 - 本机日志启用状态只适用于 `MAC-home02-MacMini`，未覆盖 `MAC-home01-MacBookAir` 的历史案例。
+- SoundSource 官方调试日志补充应用内部声音处理和路由活动，不替代系统统一日志、蓝牙链路日志或实际端点参数；两类证据不存在冲突。
 - 本轮未发现需要用户裁决的文献冲突。
 
 ## 2026-07-17 解决方案调研的冲突检查
