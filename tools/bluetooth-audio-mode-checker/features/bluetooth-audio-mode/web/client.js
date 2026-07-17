@@ -161,7 +161,8 @@ function recoveryResultSection(feedback) {
   }
   const result = feedback.result;
   section.append(
-    createElement("strong", "recovery-title", result.ok ? "A2DP 恢复成功" : "A2DP 恢复未成功"),
+    createElement("strong", "recovery-title", result.ok ? "A2DP 恢复成功" : "A2DP 恢复失败"),
+    createElement("p", "recovery-path", `恢复路径：${result.recoveryPath}`),
     createElement("p", "recovery-diagnosis", `${result.diagnosis.confidence}：${result.diagnosis.summary}`),
   );
   if (result.diagnosis.evidence?.length) {

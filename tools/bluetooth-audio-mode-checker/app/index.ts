@@ -297,9 +297,10 @@ function main(): void {
           throw new Error("声音设备选择无效");
         }
         const currentState = cachedState ?? readAudioModeState();
-        const available = currentState.routes[body.direction].some((option) => option.name === body.name);
+        const selectedOption = currentState.routes[body.direction].find((option) => option.name === body.name);
+        const available = selectedOption !== undefined;
         if (!available) throw new Error("所选声音设备当前不可用");
-        setDefaultAudioDevice(body.direction, body.name);
+        if (!selectedOption.isDefault) setDefaultAudioDevice(body.direction, body.name);
         response.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",

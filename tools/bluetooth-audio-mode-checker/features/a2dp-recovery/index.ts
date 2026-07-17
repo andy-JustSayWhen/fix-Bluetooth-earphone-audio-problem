@@ -17,6 +17,7 @@ export type RecoveryDiagnosis = {
 
 export type A2dpRecoveryResult = {
   ok: boolean;
+  recoveryPath: "原因对应恢复" | "逐方法尝试";
   sampleRate: number | null;
   releasedPrograms: string[];
   remainingPrograms: string[];

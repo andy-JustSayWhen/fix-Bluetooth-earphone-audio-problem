@@ -2,10 +2,11 @@ import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { requestOutputSampleRate } from "../../core/macos-audio-format/index.ts";
 import { reconnectBluetoothDevice } from "../../core/macos-bluetooth-link/index.ts";
 import { setDefaultAudioDevice } from "../../core/macos-audio-route/index.ts";
-import { readMicrophoneUsers, releaseMicrophoneUser } from "../../core/macos-microphone-usage/index.ts";
+import { readMicrophoneUsers } from "../../core/macos-microphone-usage/index.ts";
 import { isApplicationRunning } from "../../core/macos-running-apps/index.ts";
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 import type { A2dpRecoveryResult, RecoveryDiagnosis, RecoveryStep } from "./index.ts";
+import { selectRecoveryPolicy } from "./recovery-policy.ts";
 
 const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -77,6 +78,7 @@ function step(
 function result(
   ok: boolean,
   name: string,
+  recoveryPath: A2dpRecoveryResult["recoveryPath"],
   diagnosis: RecoveryDiagnosis,
   steps: RecoveryStep[],
   releasedPrograms: string[],
@@ -86,6 +88,7 @@ function result(
 ): A2dpRecoveryResult {
   return {
     ok,
+    recoveryPath,
     sampleRate,
     releasedPrograms,
     remainingPrograms,
@@ -94,7 +97,7 @@ function result(
     usedReconnect,
     message: ok
       ? `已恢复高音质输出，当前采样率为 ${(sampleRate ?? 0) / 1000} kHz。`
-      : `${name} 未能恢复到高于 16 kHz 的稳定输出。`,
+      : `恢复失败：最后兜底后，${name} 仍未恢复到高于 16 kHz 的稳定输出。`,
   };
 }
 
@@ -122,7 +125,8 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
 
   if (!target) {
     step(steps, "现场诊断", "成功", "确认目标设备输出端点已经消失");
-    return reconnectAndFinish(name, diagnosis, steps, [], [], null);
+    step(steps, "原因对应恢复", "跳过", "设备已断开，直接进入最后兜底");
+    return reconnectAndFinish(name, "原因对应恢复", diagnosis, steps, [], [], null);
   }
 
   if (!target.isDefaultOutput) {
@@ -131,23 +135,26 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
     await wait(500);
   }
 
-  for (const user of initialUsers) releaseMicrophoneUser(user.pid);
-  let remaining = initialUsers;
-  for (let attempt = 0; attempt < 10 && remaining.length > 0; attempt += 1) {
-    await wait(100);
-    remaining = readMicrophoneUsers().filter((user) => user.devices.includes(name));
-  }
-  const releasedPrograms = initialUsers
-    .filter((user) => !remaining.some((item) => item.pid === user.pid))
-    .map((user) => user.name);
-  if (remaining.length > 0) {
-    step(steps, "解除麦克风占用", "失败", `仍有程序正在读取麦克风：${remaining.map((user) => user.name).join("、")}`);
-  } else if (initialUsers.length > 0) {
-    step(steps, "解除麦克风占用", "成功", `已停止：${releasedPrograms.join("、")}`);
-  } else {
-    step(steps, "解除麦克风占用", "跳过", "未检测到本机麦克风占用");
+  if (initialUsers.length > 0) {
+    const policy = selectRecoveryPolicy(true, false);
+    step(
+      steps,
+      "原因对应恢复",
+      "跳过",
+      `命中已确认原因，但实测记录中尚无通过严格验证的对应恢复办法：${policy}`,
+    );
+    return reconnectAndFinish(
+      name,
+      "原因对应恢复",
+      diagnosis,
+      steps,
+      [],
+      initialUsers.map((user) => user.name),
+      currentOutputRate(name),
+    );
   }
 
+  step(steps, "恢复路径", "成功", `未命中已确认原因：${selectRecoveryPolicy(false, false)}`);
   const inputFallback = fallbackDevice(initialSnapshot.devices, "input", name, false);
   if (target.isDefaultInput && inputFallback) {
     setDefaultAudioDevice("input", inputFallback.name);
@@ -162,7 +169,7 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
   let rate = await verifyStableHighRate(name);
   if (rate !== null) {
     step(steps, "等待系统自行恢复", "成功", "实际输出已连续两次高于 16 kHz", rate);
-    return result(true, name, diagnosis, steps, releasedPrograms, remaining.map((user) => user.name), false, rate);
+    return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
   }
   step(steps, "等待系统自行恢复", "失败", "实际输出未稳定高于 16 kHz", currentOutputRate(name));
 
@@ -176,7 +183,7 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
       step(steps, "请求高采样率", "失败", "系统或设备驱动未接受采样率请求");
     }
     rate = await verifyStableHighRate(name);
-    if (rate !== null) return result(true, name, diagnosis, steps, releasedPrograms, [], false, rate);
+    if (rate !== null) return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
   } else {
     step(steps, "请求高采样率", "跳过", "无法读取高于 16 kHz 的可请求采样率");
   }
@@ -193,16 +200,17 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
       step(steps, "重建声音路由", "失败", "临时输出切换未完成");
     }
     rate = await verifyStableHighRate(name);
-    if (rate !== null) return result(true, name, diagnosis, steps, releasedPrograms, [], false, rate);
+    if (rate !== null) return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
   } else {
     step(steps, "重建声音路由", "跳过", "没有任何其他输出设备，继续最后兜底");
   }
 
-  return reconnectAndFinish(name, diagnosis, steps, releasedPrograms, [], currentOutputRate(name));
+  return reconnectAndFinish(name, "逐方法尝试", diagnosis, steps, [], [], currentOutputRate(name));
 }
 
 async function reconnectAndFinish(
   name: string,
+  recoveryPath: A2dpRecoveryResult["recoveryPath"],
   diagnosis: RecoveryDiagnosis,
   steps: RecoveryStep[],
   releasedPrograms: string[],
@@ -213,14 +221,15 @@ async function reconnectAndFinish(
     reconnectBluetoothDevice(name);
     if (!await waitForOutput(name)) {
       step(steps, "断开并重新连接", "失败", "设备已尝试重连，但输出端点没有重新出现");
-      return result(false, name, diagnosis, steps, releasedPrograms, remainingPrograms, true, previousRate);
+      return result(false, name, recoveryPath, diagnosis, steps, releasedPrograms, remainingPrograms, true, previousRate);
     }
     setDefaultAudioDevice("output", name);
     step(steps, "断开并重新连接", "成功", "设备已重新连接并恢复为默认输出");
   } catch {
     step(steps, "断开并重新连接", "失败", "设备未能自动重新连接，需要手动连接");
-    return result(false, name, diagnosis, steps, releasedPrograms, remainingPrograms, true, previousRate);
+    return result(false, name, recoveryPath, diagnosis, steps, releasedPrograms, remainingPrograms, true, previousRate);
   }
   const rate = await verifyStableHighRate(name, 8);
-  return result(rate !== null, name, diagnosis, steps, releasedPrograms, remainingPrograms, true, rate);
+  if (rate === null) step(steps, "最终验证", "失败", "最后兜底后仍未连续两次高于 16 kHz", currentOutputRate(name));
+  return result(rate !== null, name, recoveryPath, diagnosis, steps, releasedPrograms, remainingPrograms, true, rate);
 }
