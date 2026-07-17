@@ -121,7 +121,10 @@ function main(): void {
     const message = `data: ${JSON.stringify(payload)}\n\n`;
     for (const client of eventClients) client.write(message);
   };
-  const refreshState = () => {
+  const refreshState = (): boolean => {
+    const previousFingerprint = cachedState === null
+      ? null
+      : JSON.stringify({ devices: cachedState.devices, routes: cachedState.routes });
     const previousOccupancy = new Map(
       (cachedState?.devices ?? []).map((device) => [device.name, device.microphoneOccupancy]),
     );
@@ -137,14 +140,15 @@ function main(): void {
         };
     if (latestSnapshot !== null) nextState = applyActiveOutputSnapshot(nextState, latestSnapshot);
     cachedState = nextState;
+    const nextFingerprint = JSON.stringify({ devices: nextState.devices, routes: nextState.routes });
+    return nextFingerprint !== previousFingerprint;
   };
   const scheduleStateRefresh = () => {
     if (stateRefreshRunning) return;
     stateRefreshRunning = true;
     setImmediate(() => {
       try {
-        refreshState();
-        broadcastState();
+        if (refreshState()) broadcastState();
       } catch {
         // Keep the last valid state when a background system scan fails.
       } finally {

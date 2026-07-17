@@ -11,6 +11,7 @@ const routeMessage = document.querySelector("#route-message");
 const expandedDevices = new Set();
 const occupancyFeedback = new Map();
 let lastRenderedDevices = [];
+let lastRenderedStateFingerprint = "";
 const recoveryFeedback = new Map();
 
 function createElement(tag, className, text) {
@@ -286,8 +287,12 @@ async function changeDefaultDevice(select) {
 }
 
 function renderState(result, options = {}) {
-  renderRoutes(result.routes);
-  renderDevices(result.devices);
+  const fingerprint = JSON.stringify({ devices: result.devices, routes: result.routes });
+  if (fingerprint !== lastRenderedStateFingerprint) {
+    renderRoutes(result.routes);
+    renderDevices(result.devices);
+    lastRenderedStateFingerprint = fingerprint;
+  }
   countElement.textContent = result.devices.length
     ? `发现 ${result.devices.length} 台蓝牙音频设备`
     : "未发现蓝牙音频设备";
