@@ -205,6 +205,7 @@ function main(): void {
     }, 750);
   };
   scheduleOccupancyScan();
+  scheduleStateRefresh();
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -224,7 +225,15 @@ function main(): void {
 
     if (request.method === "GET" && url.pathname === "/api/devices") {
       try {
-        if (cachedState === null) refreshState();
+        if (cachedState === null) {
+          scheduleStateRefresh();
+          response.writeHead(202, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          response.end(JSON.stringify({ loading: true }));
+          return;
+        }
         response.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",

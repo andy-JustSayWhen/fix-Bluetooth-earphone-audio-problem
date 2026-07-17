@@ -23,6 +23,7 @@
 8. [REDMI 跨设备蓝牙输入输出联动案例（macOS 15.7.7 / 24G720 / MACMINI9,1-175AC621）](cases/2026-07-17-REDMI跨设备蓝牙输入输出联动.md)
 9. [跨设备蓝牙 HFP 降级的解决方案边界](07-跨设备蓝牙HFP降级的解决方案边界.md)
 10. [跨设备 HFP 候选解决方案调研案例（macOS 15.7.7 / 24G720 / MACMINI9,1-175AC621）](cases/2026-07-17-跨设备HFP候选解决方案调研.md)
+11. [HFP 与 A2DP 链路建立及恢复接口边界](08-HFP与A2DP链路建立及恢复接口边界.md)
 
 ## 原文目录
 
@@ -35,6 +36,8 @@
 - [Microsoft：通信场景下的音频格式能力](../raw/microsoft/communications-audio-format-capabilities.md)
 - [Microsoft：蓝牙 LE Audio（低功耗蓝牙音频）](../raw/microsoft/bluetooth-low-energy-audio.md)
 - [Bluetooth SIG：LE Audio](../raw/bluetooth-sig/le-audio.md)
+- [Bluetooth SIG：HFP 1.8 音频连接建立与释放](../raw/bluetooth-sig/hfp-1.8-audio-connection.md)
+- [Apple：macOS 蓝牙协议栈与公开接口边界](../raw/apple/apple-bluetooth-stack-and-audio-profile-api.md)
 
 ### 社区资料
 
@@ -43,6 +46,13 @@
 - [AirPods Sound Quality Fixer：自动改回其他输入的项目说明](../raw/community/airpods-sound-quality-fixer-readme.md)
 - [ToothFairy：禁用设备声音输入功能说明](../raw/community/toothfairy-disable-audio-input.md)
 - [HIKKIE!：2026 年 7 月各系统 LE Audio 支持状况综述](../raw/community/hikkie-leaudio-ready-2026-07.md)
+- [BlueZ：A2DP 与 HFP 传输分别管理的实现证据](../raw/community/bluez-a2dp-hfp-transport-evidence.md)
+
+## 2026-07-17 HFP 音频连接与恢复接口调研的冲突检查
+
+- 新资料没有推翻既有“麦克风使用会触发传统蓝牙低质量双向路径”的结论，而是补充了连接分层与恢复控制边界。
+- 既有恢复规格中的“请求高采样率”超出了文献所能支持的作用范围；它将被从恢复动作降为恢复后的验证或格式请求，不保留为协议级恢复办法。
+- BlueZ 的实现只作为分层旁证，不覆盖 macOS 的系统行为；Apple 公开文档未提供强制模式切换接口，因此不存在需要用户裁决的来源冲突。
 
 ## 首次沉淀的冲突检查
 

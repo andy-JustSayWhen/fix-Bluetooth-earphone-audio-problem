@@ -353,6 +353,11 @@ async function refreshDevices(options = {}) {
   try {
     const response = await fetch(`/api/devices?time=${Date.now()}`, { cache: "no-store" });
     const result = await response.json();
+    if (response.status === 202 && result.loading) {
+      countElement.textContent = "正在读取本机音频设备…";
+      timeElement.textContent = "首次扫描完成后会自动更新";
+      return;
+    }
     if (!response.ok) throw new Error(result.error || "设备读取失败");
     renderState(result, options);
   } catch (error) {

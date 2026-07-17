@@ -1,5 +1,4 @@
 import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
-import { requestOutputSampleRate } from "../../core/macos-audio-format/index.ts";
 import { reconnectBluetoothDevice } from "../../core/macos-bluetooth-link/index.ts";
 import { setDefaultAudioDevice } from "../../core/macos-audio-route/index.ts";
 import { readMicrophoneUsers } from "../../core/macos-microphone-usage/index.ts";
@@ -173,20 +172,14 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
   }
   step(steps, "等待系统自行恢复", "失败", "实际输出未稳定高于 16 kHz", currentOutputRate(name));
 
-  target = outputDevice(name) ?? target;
-  const desiredRate = target.maxSupportedOutputRate ?? 0;
-  if (desiredRate > 16_000) {
-    try {
-      requestOutputSampleRate(name, desiredRate);
-      step(steps, "请求高采样率", "成功", `已请求 ${desiredRate / 1000} kHz，等待系统确认`);
-    } catch {
-      step(steps, "请求高采样率", "失败", "系统或设备驱动未接受采样率请求");
-    }
-    rate = await verifyStableHighRate(name);
-    if (rate !== null) return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
-  } else {
-    step(steps, "请求高采样率", "跳过", "无法读取高于 16 kHz 的可请求采样率");
+  try {
+    setDefaultAudioDevice("output", name);
+    step(steps, "重新评估输出路由", "成功", "已重新向系统提交当前默认输出，等待系统重新评估音频链路");
+  } catch {
+    step(steps, "重新评估输出路由", "失败", "系统未接受当前输出路由的重新提交");
   }
+  rate = await verifyStableHighRate(name);
+  if (rate !== null) return result(true, name, "逐方法尝试", diagnosis, steps, [], [], false, rate);
 
   const latestDevices = readAudioDevices().devices;
   const outputFallback = fallbackDevice(latestDevices, "output", name, true);
