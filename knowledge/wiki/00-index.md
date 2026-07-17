@@ -24,6 +24,8 @@
 9. [跨设备蓝牙 HFP 降级的解决方案边界](07-跨设备蓝牙HFP降级的解决方案边界.md)
 10. [跨设备 HFP 候选解决方案调研案例（macOS 15.7.7 / 24G720 / MACMINI9,1-175AC621）](cases/2026-07-17-跨设备HFP候选解决方案调研.md)
 11. [HFP 与 A2DP 链路建立及恢复接口边界](08-HFP与A2DP链路建立及恢复接口边界.md)
+12. [macOS 蓝牙与音频日志能力矩阵](09-macOS蓝牙与音频日志能力矩阵.md)
+13. [2026-07-17 MAC-home02-MacMini 日志能力启用现场](cases/2026-07-17-MAC-home02日志启用现场.md)
 
 ## 原文目录
 
@@ -38,6 +40,7 @@
 - [Bluetooth SIG：LE Audio](../raw/bluetooth-sig/le-audio.md)
 - [Bluetooth SIG：HFP 1.8 音频连接建立与释放](../raw/bluetooth-sig/hfp-1.8-audio-connection.md)
 - [Apple：macOS 蓝牙协议栈与公开接口边界](../raw/apple/apple-bluetooth-stack-and-audio-profile-api.md)
+- [Apple：macOS 蓝牙与音频诊断日志入口](../raw/apple/apple-macos-audio-bluetooth-diagnostic-logs.md)
 
 ### 社区资料
 
@@ -63,6 +66,13 @@
 - 社区资料记录的是绕过或自动化切换输入设备的实践，不能替代官方协议能力说明。
 
 后续新增文献仍必须先进入 `raw/`，再逐项检查本索引及相关主题文档；如果出现无法按版本、设备、系统或来源质量化解的冲突，保留双方证据并提交用户裁决。
+
+## 2026-07-17 日志能力资料的冲突检查
+
+- 新资料补充的是诊断证据的产生方式、启用状态和读取边界，没有改变既有 HFP/A2DP 模式结论。
+- PacketLogger、统一日志、音频异常追踪和 sysdiagnose 的作用层级不同，不能互相替代；这与既有“模式结论需要端点参数和活动链路证据共同支持”的要求一致。
+- 本机日志启用状态只适用于 `MAC-home02-MacMini`，未覆盖 `MAC-home01-MacBookAir` 的历史案例。
+- 本轮未发现需要用户裁决的文献冲突。
 
 ## 2026-07-17 解决方案调研的冲突检查
 
