@@ -243,10 +243,7 @@ function createDeviceCard(device) {
       metric("声道", device.inputChannels ? `${device.inputChannels} 声道` : "无"),
     ),
   );
-  const explanation = createElement("p", "explanation", device.explanation);
-  const evidence = createElement("ul", "evidence");
-  for (const item of device.evidence) evidence.append(createElement("li", "", item));
-  details.append(metrics, explanation, evidence, microphoneOccupancySection(device));
+  details.append(metrics, microphoneOccupancySection(device));
   const recovery = recoveryFeedback.get(device.name);
   if (recovery) details.append(recoveryResultSection(recovery));
   card.append(summary, details);

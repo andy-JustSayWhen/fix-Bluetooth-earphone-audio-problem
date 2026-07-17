@@ -175,8 +175,6 @@ button { font: inherit; }
 .metric { padding: 13px; background: #f7f9fc; border: 1px solid #e8edf4; border-radius: 12px; }
 .metric span { display: block; margin-bottom: 5px; color: #8a95a6; font-size: 11px; }
 .metric strong { font-size: 14px; font-weight: 700; }
-.explanation { margin: 17px 0 13px; color: #49566b; font-size: 14px; line-height: 1.6; }
-.evidence { margin: 0; padding: 14px 16px 14px 33px; color: #667187; background: #f9fafc; border-left: 3px solid #8eaff0; border-radius: 5px 11px 11px 5px; font-size: 12px; line-height: 1.8; }
 .inactive-state { padding: 16px 18px; color: #647086; background: #f7f9fc; border: 1px dashed #bdc8d8; border-radius: 13px; }
 .inactive-state strong { display: block; margin-bottom: 6px; color: #4f5c72; font-size: 13px; }
 .inactive-state p { margin: 0; font-size: 12px; line-height: 1.65; }
