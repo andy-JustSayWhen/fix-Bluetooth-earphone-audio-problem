@@ -17,6 +17,21 @@ export async function attachMicrophoneOccupancyAsync(
   return attachOccupancy(devices, users);
 }
 
+export function mergeMicrophoneOccupancy(
+  currentDevices: AudioModeAssessment[],
+  occupancySnapshot: AudioModeAssessment[],
+): AudioModeAssessment[] {
+  const occupancyByName = new Map(
+    occupancySnapshot
+      .filter((device) => device.microphoneOccupancy !== undefined)
+      .map((device) => [device.name, device.microphoneOccupancy] as const),
+  );
+  return currentDevices.map((device) => {
+    const microphoneOccupancy = occupancyByName.get(device.name);
+    return microphoneOccupancy === undefined ? device : { ...device, microphoneOccupancy };
+  });
+}
+
 function attachOccupancy(
   devices: AudioModeAssessment[],
   users: ReturnType<typeof readMicrophoneUsers>,

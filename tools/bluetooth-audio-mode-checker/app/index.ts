@@ -13,6 +13,7 @@ import {
 import {
   attachMicrophoneOccupancy,
   attachMicrophoneOccupancyAsync,
+  mergeMicrophoneOccupancy,
   releaseMicrophoneUsers,
 } from "../features/microphone-occupancy/index.ts";
 import { recoverA2dp } from "../features/a2dp-recovery/index.ts";
@@ -184,13 +185,14 @@ function main(): void {
       }
       occupancyScanRunning = true;
     try {
-      const devices = await attachMicrophoneOccupancyAsync(cachedState.devices);
-      const nextFingerprint = JSON.stringify(devices.map((device) => ({
+      const occupancySnapshot = await attachMicrophoneOccupancyAsync(cachedState.devices);
+      const nextFingerprint = JSON.stringify(occupancySnapshot.map((device) => ({
         name: device.name,
         users: device.microphoneOccupancy?.users ?? [],
       })));
       if (nextFingerprint === occupancyFingerprint) return;
       occupancyFingerprint = nextFingerprint;
+      const devices = mergeMicrophoneOccupancy(cachedState.devices, occupancySnapshot);
       cachedState = { ...cachedState, devices };
       broadcastState();
       scheduleModeTransitionChecks();
