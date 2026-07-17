@@ -1,8 +1,26 @@
-import { readMicrophoneUsers, releaseMicrophoneUser } from "../../core/macos-microphone-usage/index.ts";
+import {
+  readMicrophoneUsers,
+  readMicrophoneUsersAsync,
+  releaseMicrophoneUser,
+} from "../../core/macos-microphone-usage/index.ts";
 import type { AudioModeAssessment, MicrophoneOccupancy } from "../../shared/audio-device-types/index.ts";
 
 export function attachMicrophoneOccupancy(devices: AudioModeAssessment[]): AudioModeAssessment[] {
   const users = readMicrophoneUsers();
+  return attachOccupancy(devices, users);
+}
+
+export async function attachMicrophoneOccupancyAsync(
+  devices: AudioModeAssessment[],
+): Promise<AudioModeAssessment[]> {
+  const users = await readMicrophoneUsersAsync();
+  return attachOccupancy(devices, users);
+}
+
+function attachOccupancy(
+  devices: AudioModeAssessment[],
+  users: ReturnType<typeof readMicrophoneUsers>,
+): AudioModeAssessment[] {
   return devices.map((device) => {
     const matchingUsers = users.filter((user) => user.devices.includes(device.name));
     const microphoneOccupancy: MicrophoneOccupancy = {

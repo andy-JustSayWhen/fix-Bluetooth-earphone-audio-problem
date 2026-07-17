@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,23 @@ export function readMicrophoneUsers(): MicrophoneUser[] {
   ensureHelperBuilt();
   const output = execFileSync(executablePath, [], { encoding: "utf8" });
   return JSON.parse(output) as MicrophoneUser[];
+}
+
+export function readMicrophoneUsersAsync(): Promise<MicrophoneUser[]> {
+  ensureHelperBuilt();
+  return new Promise((resolve, reject) => {
+    execFile(executablePath, [], { encoding: "utf8" }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout) as MicrophoneUser[]);
+      } catch (parseError) {
+        reject(parseError);
+      }
+    });
+  });
 }
 
 export function releaseMicrophoneUser(pid: number): void {

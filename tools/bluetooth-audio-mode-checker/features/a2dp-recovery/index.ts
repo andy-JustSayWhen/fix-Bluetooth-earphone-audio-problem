@@ -1,6 +1,5 @@
 import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { setDefaultAudioDevice } from "../../core/macos-audio-route/index.ts";
-import { reconnectBluetoothDevice } from "../../core/macos-bluetooth-link/index.ts";
 import { readMicrophoneUsers, releaseMicrophoneUser } from "../../core/macos-microphone-usage/index.ts";
 
 export type A2dpRecoveryResult = {
@@ -32,17 +31,6 @@ function preferredFallback(
       const priority = (transport: string) => transport === "built-in" ? 3 : transport === "usb" ? 2 : 1;
       return priority(right.transport) - priority(left.transport);
     })[0];
-}
-
-async function waitUntilOutputAvailable(name: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const available = readAudioDevices().devices.some((device) =>
-      device.name === name && device.outputChannels > 0
-    );
-    if (available) return true;
-    await wait(200);
-  }
-  return false;
 }
 
 export async function recoverA2dp(name: string): Promise<A2dpRecoveryResult> {
@@ -95,28 +83,7 @@ export async function recoverA2dp(name: string): Promise<A2dpRecoveryResult> {
     };
   }
   setDefaultAudioDevice("output", fallback.name);
-  await wait(900);
-
-  try {
-    reconnectBluetoothDevice(name);
-  } catch (error) {
-    return {
-      ok: false,
-      sampleRate: null,
-      releasedPrograms: users.map((user) => user.name),
-      remainingPrograms: [],
-      message: `麦克风占用已释放，但蓝牙链路重建失败：${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  if (!await waitUntilOutputAvailable(name)) {
-    return {
-      ok: false,
-      sampleRate: null,
-      releasedPrograms: users.map((user) => user.name),
-      remainingPrograms: [],
-      message: "蓝牙设备已尝试重新连接，但系统未重新提供它的声音输出。",
-    };
-  }
+  await wait(1_500);
   setDefaultAudioDevice("output", name);
 
   let sampleRate: number | null = null;
@@ -140,6 +107,6 @@ export async function recoverA2dp(name: string): Promise<A2dpRecoveryResult> {
     sampleRate,
     releasedPrograms,
     remainingPrograms: [],
-    message: "麦克风占用和旧蓝牙链路均已释放，但输出仍未超过 16 kHz；请检查双设备连接或重新开始播放器的播放。",
+    message: "未断开蓝牙连接；麦克风占用已释放并重新切换了声音输出，但采样率仍未超过 16 kHz。",
   };
 }

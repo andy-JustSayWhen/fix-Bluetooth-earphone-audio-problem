@@ -11,6 +11,7 @@ import {
 } from "../features/bluetooth-audio-mode/index.ts";
 import {
   attachMicrophoneOccupancy,
+  attachMicrophoneOccupancyAsync,
   releaseMicrophoneUsers,
 } from "../features/microphone-occupancy/index.ts";
 import { recoverA2dp } from "../features/a2dp-recovery/index.ts";
@@ -108,6 +109,7 @@ function main(): void {
   let cachedState: AudioModeState | null = null;
   let latestSnapshot: ActiveOutputSnapshot | null = null;
   const eventClients = new Set<import("node:http").ServerResponse>();
+  let stateRefreshRunning = false;
 
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
@@ -119,6 +121,37 @@ function main(): void {
     const message = `data: ${JSON.stringify(payload)}\n\n`;
     for (const client of eventClients) client.write(message);
   };
+  const refreshState = () => {
+    const previousOccupancy = new Map(
+      (cachedState?.devices ?? []).map((device) => [device.name, device.microphoneOccupancy]),
+    );
+    let nextState = readAudioModeState();
+    nextState = previousOccupancy.size === 0
+      ? { ...nextState, devices: attachMicrophoneOccupancy(nextState.devices) }
+      : {
+          ...nextState,
+          devices: nextState.devices.map((device) => ({
+            ...device,
+            microphoneOccupancy: previousOccupancy.get(device.name),
+          })),
+        };
+    if (latestSnapshot !== null) nextState = applyActiveOutputSnapshot(nextState, latestSnapshot);
+    cachedState = nextState;
+  };
+  const scheduleStateRefresh = () => {
+    if (stateRefreshRunning) return;
+    stateRefreshRunning = true;
+    setImmediate(() => {
+      try {
+        refreshState();
+        broadcastState();
+      } catch {
+        // Keep the last valid state when a background system scan fails.
+      } finally {
+        stateRefreshRunning = false;
+      }
+    });
+  };
   const stopRealtimeMonitor = startAudioModeRealtimeMonitor((snapshot) => {
     latestSnapshot = snapshot;
     if (cachedState !== null) {
@@ -127,10 +160,17 @@ function main(): void {
     }
   });
   let occupancyFingerprint = "";
-  const occupancyTimer = setInterval(() => {
-    if (cachedState === null) return;
+  let occupancyTimer: NodeJS.Timeout | null = null;
+  let occupancyScanRunning = false;
+  const scheduleOccupancyScan = () => {
+    occupancyTimer = setTimeout(async () => {
+      if (cachedState === null || occupancyScanRunning) {
+        scheduleOccupancyScan();
+        return;
+      }
+      occupancyScanRunning = true;
     try {
-      const devices = attachMicrophoneOccupancy(cachedState.devices);
+      const devices = await attachMicrophoneOccupancyAsync(cachedState.devices);
       const nextFingerprint = JSON.stringify(devices.map((device) => ({
         name: device.name,
         users: device.microphoneOccupancy?.users ?? [],
@@ -141,8 +181,13 @@ function main(): void {
       broadcastState();
     } catch {
       // A transient system read failure must not interrupt device monitoring.
+    } finally {
+      occupancyScanRunning = false;
+      scheduleOccupancyScan();
     }
-  }, 750);
+    }, 750);
+  };
+  scheduleOccupancyScan();
 
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -162,28 +207,13 @@ function main(): void {
 
     if (request.method === "GET" && url.pathname === "/api/devices") {
       try {
-        const previousOccupancy = new Map(
-          (cachedState?.devices ?? []).map((device) => [device.name, device.microphoneOccupancy]),
-        );
-        cachedState = readAudioModeState();
-        cachedState = previousOccupancy.size === 0
-          ? { ...cachedState, devices: attachMicrophoneOccupancy(cachedState.devices) }
-          : {
-              ...cachedState,
-              devices: cachedState.devices.map((device) => ({
-                ...device,
-                microphoneOccupancy: previousOccupancy.get(device.name),
-              })),
-            };
-        if (latestSnapshot !== null) {
-          cachedState = applyActiveOutputSnapshot(cachedState, latestSnapshot);
-        }
+        if (cachedState === null) refreshState();
         response.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",
         });
         response.end(JSON.stringify(statePayload()));
-        broadcastState();
+        scheduleStateRefresh();
       } catch (error) {
         response.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
         response.end(JSON.stringify({
@@ -291,7 +321,7 @@ function main(): void {
 
   const shutdown = () => {
     stopRealtimeMonitor();
-    clearInterval(occupancyTimer);
+    if (occupancyTimer !== null) clearTimeout(occupancyTimer);
     for (const client of eventClients) client.end();
     server.close(() => process.exit(0));
   };
