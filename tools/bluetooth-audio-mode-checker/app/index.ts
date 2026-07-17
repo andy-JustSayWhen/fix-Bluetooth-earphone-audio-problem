@@ -18,6 +18,7 @@ import {
 } from "../features/microphone-occupancy/index.ts";
 import { recoverA2dp } from "../features/a2dp-recovery/index.ts";
 import { setDefaultAudioDevice } from "../core/macos-audio-route/index.ts";
+import { detailedLog, getDetailedLogStatus } from "../core/detailed-logging/index.ts";
 
 import type {
   ActiveOutputSnapshot,
@@ -85,6 +86,7 @@ async function serveAsset(assetName: string, response: import("node:http").Serve
 function openBrowser(url: string): void {
   execFile("/usr/bin/open", [url], (error) => {
     if (error) {
+      detailedLog("error", "browser.open-failed", { url, error });
       console.error(`浏览器未能自动打开，请手动访问：${url}`);
     }
   });
@@ -108,10 +110,18 @@ function main(): void {
     process.exit(2);
   }
 
+  detailedLog("info", "service.starting", {
+    port: options.port,
+    openBrowser: options.openBrowser,
+    platform: process.platform,
+    nodeVersion: process.version,
+  });
+
   let cachedState: AudioModeState | null = null;
   let latestSnapshot: ActiveOutputSnapshot | null = null;
   const eventClients = new Set<import("node:http").ServerResponse>();
   let stateRefreshRunning = false;
+  let realtimeFingerprint = "";
 
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
@@ -150,10 +160,23 @@ function main(): void {
     if (stateRefreshRunning) return;
     stateRefreshRunning = true;
     setImmediate(async () => {
+      const startedAt = performance.now();
       try {
         const refreshedState = await readAudioModeStateAsync();
-        if (applyRefreshedState(refreshedState)) broadcastState();
-      } catch {
+        if (applyRefreshedState(refreshedState)) {
+          detailedLog("info", "device-state.changed", {
+            durationMs: Number((performance.now() - startedAt).toFixed(3)),
+            deviceCount: refreshedState.devices.length,
+            defaultInput: refreshedState.routes.input.find((device) => device.isDefault)?.name ?? null,
+            defaultOutput: refreshedState.routes.output.find((device) => device.isDefault)?.name ?? null,
+          });
+          broadcastState();
+        }
+      } catch (error) {
+        detailedLog("error", "device-state.refresh-failed", {
+          durationMs: Number((performance.now() - startedAt).toFixed(3)),
+          error,
+        });
         // Keep the last valid state when a background system scan fails.
       } finally {
         stateRefreshRunning = false;
@@ -167,6 +190,11 @@ function main(): void {
     }
   };
   const stopRealtimeMonitor = startAudioModeRealtimeMonitor((snapshot) => {
+    const nextFingerprint = JSON.stringify(snapshot);
+    if (nextFingerprint !== realtimeFingerprint) {
+      realtimeFingerprint = nextFingerprint;
+      detailedLog("info", "active-output.changed", { snapshot });
+    }
     latestSnapshot = snapshot;
     if (cachedState !== null) {
       cachedState = applyActiveOutputSnapshot(cachedState, snapshot);
@@ -184,6 +212,7 @@ function main(): void {
         return;
       }
       occupancyScanRunning = true;
+    const startedAt = performance.now();
     try {
       const occupancySnapshot = await attachMicrophoneOccupancyAsync(cachedState.devices);
       const nextFingerprint = JSON.stringify(occupancySnapshot.map((device) => ({
@@ -192,11 +221,22 @@ function main(): void {
       })));
       if (nextFingerprint === occupancyFingerprint) return;
       occupancyFingerprint = nextFingerprint;
+      detailedLog("info", "microphone-occupancy.changed", {
+        durationMs: Number((performance.now() - startedAt).toFixed(3)),
+        devices: occupancySnapshot.map((device) => ({
+          name: device.name,
+          users: device.microphoneOccupancy?.users ?? [],
+        })),
+      });
       const devices = mergeMicrophoneOccupancy(cachedState.devices, occupancySnapshot);
       cachedState = { ...cachedState, devices };
       broadcastState();
       scheduleModeTransitionChecks();
-    } catch {
+    } catch (error) {
+      detailedLog("error", "microphone-occupancy.scan-failed", {
+        durationMs: Number((performance.now() - startedAt).toFixed(3)),
+        error,
+      });
       // A transient system read failure must not interrupt device monitoring.
     } finally {
       occupancyScanRunning = false;
@@ -207,8 +247,19 @@ function main(): void {
   scheduleOccupancyScan();
   scheduleStateRefresh();
 
+  let requestSequence = 0;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const requestId = `${process.pid}-${++requestSequence}`;
+    const requestStartedAt = performance.now();
+    detailedLog("debug", "http.request.started", { requestId, method: request.method, path: url.pathname });
+    response.once("finish", () => detailedLog("info", "http.request.completed", {
+      requestId,
+      method: request.method,
+      path: url.pathname,
+      statusCode: response.statusCode,
+      durationMs: Number((performance.now() - requestStartedAt).toFixed(3)),
+    }));
     if (request.method === "GET" && url.pathname === "/api/events") {
       response.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
@@ -249,6 +300,15 @@ function main(): void {
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/api/logs/status") {
+      response.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      response.end(JSON.stringify(getDetailedLogStatus()));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/microphone-occupancy/release") {
       try {
         if (!request.headers["content-type"]?.startsWith("application/json")) {
@@ -262,13 +322,16 @@ function main(): void {
         if (!Array.isArray(body.pids) || !body.pids.every(Number.isInteger)) {
           throw new Error("占用程序列表无效");
         }
+        detailedLog("info", "microphone-occupancy.release-requested", { pids: body.pids });
         const result = await releaseMicrophoneUsers(body.pids as number[]);
+        detailedLog("info", "microphone-occupancy.release-completed", { result });
         response.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",
         });
         response.end(JSON.stringify({ ok: result.remainingPids.length === 0, ...result }));
       } catch (error) {
+        detailedLog("error", "microphone-occupancy.release-failed", { error });
         response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
         response.end(JSON.stringify({
           error: error instanceof Error ? error.message : "解除麦克风占用失败",
@@ -284,10 +347,13 @@ function main(): void {
         if (request.headers.origin && request.headers.origin !== expectedOrigin) throw new Error("请求来源不正确");
         const body = await readJsonBody(request) as { name?: unknown };
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
+        detailedLog("info", "a2dp-recovery.requested", { deviceName: body.name });
         const result = await recoverA2dp(body.name);
+        detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.returned", { deviceName: body.name, result });
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
         response.end(JSON.stringify(result));
       } catch (error) {
+        detailedLog("error", "a2dp-recovery.request-failed", { error });
         response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
         response.end(JSON.stringify({ error: error instanceof Error ? error.message : "恢复失败" }));
       }
@@ -311,13 +377,20 @@ function main(): void {
         const selectedOption = currentState.routes[body.direction].find((option) => option.name === body.name);
         const available = selectedOption !== undefined;
         if (!available) throw new Error("所选声音设备当前不可用");
+        detailedLog("info", "default-device.change-requested", {
+          direction: body.direction,
+          deviceName: body.name,
+          alreadyDefault: selectedOption.isDefault,
+        });
         if (!selectedOption.isDefault) setDefaultAudioDevice(body.direction, body.name);
+        detailedLog("info", "default-device.change-completed", { direction: body.direction, deviceName: body.name });
         response.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",
         });
         response.end(JSON.stringify({ ok: true }));
       } catch (error) {
+        detailedLog("error", "default-device.change-failed", { error });
         response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
         response.end(JSON.stringify({
           error: error instanceof Error ? error.message : "声音设备切换失败",
@@ -337,6 +410,7 @@ function main(): void {
   });
 
   server.on("error", (error: NodeJS.ErrnoException) => {
+    detailedLog("error", "service.server-error", { error, port: options.port });
     stopRealtimeMonitor();
     if (error.code === "EADDRINUSE") {
       console.error(`端口 ${options.port} 已被占用，请运行 ./run.command --port 4174 重试。`);
@@ -347,10 +421,14 @@ function main(): void {
   });
 
   const shutdown = () => {
+    detailedLog("info", "service.stopping", { eventClients: eventClients.size });
     stopRealtimeMonitor();
     if (occupancyTimer !== null) clearTimeout(occupancyTimer);
     for (const client of eventClients) client.end();
-    server.close(() => process.exit(0));
+    server.close(() => {
+      detailedLog("info", "service.stopped");
+      process.exit(0);
+    });
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
@@ -358,6 +436,8 @@ function main(): void {
   server.listen(options.port, "127.0.0.1", () => {
     const url = `http://127.0.0.1:${options.port}`;
     console.log(`蓝牙音频模式检查器已启动：${url}`);
+    console.log(`详细日志：${getDetailedLogStatus().path}`);
+    detailedLog("info", "service.listening", { url, log: getDetailedLogStatus() });
     console.log("保持这个窗口运行；按 Control-C 关闭应用。");
     if (options.openBrowser) {
       openBrowser(url);

@@ -6,8 +6,10 @@ import { isApplicationRunning } from "../../core/macos-running-apps/index.ts";
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 import type { A2dpRecoveryResult, RecoveryDiagnosis, RecoveryStep } from "./index.ts";
 import { selectRecoveryPolicy } from "./recovery-policy.ts";
+import { detailedLog } from "../../core/detailed-logging/index.ts";
 
 const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+let recoveryDeviceName = "";
 
 function outputDevice(name: string): RawAudioDevice | undefined {
   return readAudioDevices().devices.find((device) =>
@@ -72,6 +74,13 @@ function step(
   sampleRate?: number | null,
 ): void {
   steps.push({ stage, status, detail, sampleRate });
+  detailedLog(status === "失败" ? "warn" : "info", "a2dp-recovery.step", {
+    deviceName: recoveryDeviceName,
+    stage,
+    status,
+    detail,
+    sampleRate,
+  });
 }
 
 function result(
@@ -85,7 +94,7 @@ function result(
   usedReconnect: boolean,
   sampleRate: number | null,
 ): A2dpRecoveryResult {
-  return {
+  const recoveryResult: A2dpRecoveryResult = {
     ok,
     recoveryPath,
     sampleRate,
@@ -98,9 +107,13 @@ function result(
       ? `已恢复高音质输出，当前采样率为 ${(sampleRate ?? 0) / 1000} kHz。`
       : `恢复失败：最后兜底后，${name} 仍未恢复到高于 16 kHz 的稳定输出。`,
   };
+  detailedLog(ok ? "info" : "error", "a2dp-recovery.completed", { deviceName: name, result: recoveryResult });
+  return recoveryResult;
 }
 
 export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
+  recoveryDeviceName = name;
+  detailedLog("info", "a2dp-recovery.started", { deviceName: name });
   const steps: RecoveryStep[] = [];
   const initialSnapshot = readAudioDevices();
   let target = initialSnapshot.devices.find((device) => device.name === name && device.outputChannels > 0);
@@ -121,6 +134,13 @@ export async function runRecovery(name: string): Promise<A2dpRecoveryResult> {
     diagnosis = { confidence: "无法确认", summary: "未发现可直接证明的本机原因", evidence: ["可能存在系统链路残留或非本机占用"] };
   }
   if (soundSourceRunning) diagnosis.evidence.push("检测到 SoundSource 正在运行，可能保留旧应用输出通道");
+  detailedLog("info", "a2dp-recovery.diagnosed", {
+    deviceName: name,
+    diagnosis,
+    soundSourceRunning,
+    microphoneUsers: initialUsers,
+    initialOutputRate: target?.sampleRateOutput ?? null,
+  });
 
   if (!target) {
     step(steps, "现场诊断", "成功", "确认目标设备输出端点已经消失");

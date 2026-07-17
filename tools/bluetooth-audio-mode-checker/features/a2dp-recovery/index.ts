@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { detailedLog } from "../../core/detailed-logging/index.ts";
 
 export type RecoveryStep = {
   stage: string;
@@ -36,20 +37,32 @@ export function recoverA2dp(name: string): Promise<A2dpRecoveryResult> {
       cwd: join(moduleDirectory, "..", ".."),
       stdio: ["ignore", "pipe", "pipe"],
     });
+    detailedLog("info", "a2dp-recovery.worker-started", { deviceName: name, pid: child.pid });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });
     child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-    child.once("error", reject);
+    child.once("error", (error) => {
+      detailedLog("error", "a2dp-recovery.worker-failed", { deviceName: name, error });
+      reject(error);
+    });
     child.once("close", (code) => {
+      detailedLog(code === 0 ? "info" : "error", "a2dp-recovery.worker-stopped", {
+        deviceName: name,
+        pid: child.pid,
+        code,
+        stderr,
+      });
       if (code !== 0) {
         reject(new Error(stderr.trim() || "恢复进程执行失败"));
         return;
       }
       try {
-        resolve(JSON.parse(stdout) as A2dpRecoveryResult);
+        const result = JSON.parse(stdout) as A2dpRecoveryResult;
+        detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.worker-result", { deviceName: name, result });
+        resolve(result);
       } catch {
         reject(new Error("恢复结果无法读取"));
       }
