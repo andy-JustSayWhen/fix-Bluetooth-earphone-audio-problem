@@ -134,9 +134,9 @@ function microphoneOccupancySection(device) {
 }
 
 async function recoverA2dp(device, badge) {
-  if (!window.confirm("恢复时会结束正在读取该设备麦克风的本机程序，并短暂切换声音输出。是否继续？")) return;
+  if (!window.confirm("工具会先诊断原因并从低扰动方案开始；其他方案全部失败后，最后可能断开并重新连接目标设备。是否继续？")) return;
   badge.classList.add("is-recovering");
-  badge.textContent = "正在恢复…";
+  badge.textContent = "正在诊断与恢复…";
   try {
     const response = await fetch("/api/a2dp-recovery", {
       method: "POST",
@@ -145,12 +145,42 @@ async function recoverA2dp(device, badge) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "恢复失败");
-    recoveryFeedback.set(device.name, { kind: result.ok ? "success" : "error", text: result.message });
+    recoveryFeedback.set(device.name, { kind: result.ok ? "success" : "error", result });
     await refreshDevices({ preserveRouteMessage: true });
   } catch (error) {
     recoveryFeedback.set(device.name, { kind: "error", text: `恢复失败：${error.message}` });
     await refreshDevices({ preserveRouteMessage: true });
   }
+}
+
+function recoveryResultSection(feedback) {
+  const section = createElement("section", `recovery-feedback is-${feedback.kind}`);
+  if (!feedback.result) {
+    section.append(createElement("p", "recovery-summary", feedback.text));
+    return section;
+  }
+  const result = feedback.result;
+  section.append(
+    createElement("strong", "recovery-title", result.ok ? "A2DP 恢复成功" : "A2DP 恢复未成功"),
+    createElement("p", "recovery-diagnosis", `${result.diagnosis.confidence}：${result.diagnosis.summary}`),
+  );
+  if (result.diagnosis.evidence?.length) {
+    const evidence = createElement("ul", "recovery-evidence");
+    for (const item of result.diagnosis.evidence) evidence.append(createElement("li", "", item));
+    section.append(evidence);
+  }
+  const steps = createElement("ol", "recovery-steps");
+  for (const item of result.steps ?? []) {
+    const row = createElement("li", `is-${item.status}`);
+    row.append(
+      createElement("strong", "", `${item.stage}：${item.status}`),
+      createElement("span", "", item.detail),
+    );
+    steps.append(row);
+  }
+  section.append(steps, createElement("p", "recovery-summary", result.message));
+  if (result.usedReconnect) section.append(createElement("p", "recovery-reconnect-note", "本次已使用最后兜底：断开并重新连接目标设备。"));
+  return section;
 }
 
 function createDeviceCard(device) {
@@ -217,7 +247,7 @@ function createDeviceCard(device) {
   for (const item of device.evidence) evidence.append(createElement("li", "", item));
   details.append(metrics, explanation, evidence, microphoneOccupancySection(device));
   const recovery = recoveryFeedback.get(device.name);
-  if (recovery) details.append(createElement("p", `recovery-feedback is-${recovery.kind}`, recovery.text));
+  if (recovery) details.append(recoveryResultSection(recovery));
   card.append(summary, details);
   }
 

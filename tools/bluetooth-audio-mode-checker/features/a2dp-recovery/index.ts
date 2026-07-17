@@ -1,112 +1,57 @@
-import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
-import { setDefaultAudioDevice } from "../../core/macos-audio-route/index.ts";
-import { readMicrophoneUsers, releaseMicrophoneUser } from "../../core/macos-microphone-usage/index.ts";
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export type RecoveryStep = {
+  stage: string;
+  status: "成功" | "失败" | "跳过";
+  detail: string;
+  sampleRate?: number | null;
+};
+
+export type RecoveryDiagnosis = {
+  confidence: "已确认" | "高度疑似" | "无法确认";
+  summary: string;
+  evidence: string[];
+};
 
 export type A2dpRecoveryResult = {
   ok: boolean;
   sampleRate: number | null;
   releasedPrograms: string[];
   remainingPrograms: string[];
+  diagnosis: RecoveryDiagnosis;
+  steps: RecoveryStep[];
+  usedReconnect: boolean;
   message: string;
 };
 
-const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+const runnerPath = join(moduleDirectory, "runner.ts");
 
-function currentOutputRate(name: string): number | null {
-  const output = readAudioDevices().devices.find((device) =>
-    device.name === name && device.outputChannels > 0 && device.isDefaultOutput
-  );
-  return output?.sampleRateOutput ?? null;
-}
-
-function preferredFallback(
-  devices: ReturnType<typeof readAudioDevices>["devices"],
-  direction: "input" | "output",
-  excludedName: string,
-) {
-  const channelsKey = direction === "input" ? "inputChannels" : "outputChannels";
-  return devices
-    .filter((device) => device[channelsKey] > 0 && device.name !== excludedName && device.transport !== "bluetooth")
-    .sort((left, right) => {
-      const priority = (transport: string) => transport === "built-in" ? 3 : transport === "usb" ? 2 : 1;
-      return priority(right.transport) - priority(left.transport);
-    })[0];
-}
-
-export async function recoverA2dp(name: string): Promise<A2dpRecoveryResult> {
-  const snapshot = readAudioDevices();
-  const target = snapshot.devices.find((device) => device.name === name && device.outputChannels > 0);
-  if (!target || target.transport !== "bluetooth") throw new Error("所选蓝牙输出设备当前不可用");
-
-  const inputFallback = preferredFallback(snapshot.devices, "input", name);
-  if (target.isDefaultInput && !inputFallback) {
-    return {
-      ok: false,
-      sampleRate: currentOutputRate(name),
-      releasedPrograms: [],
-      remainingPrograms: [],
-      message: "没有可用的非蓝牙输入设备，无法阻止系统立即重新进入通话模式。",
-    };
-  }
-  if (target.isDefaultInput && inputFallback) {
-    setDefaultAudioDevice("input", inputFallback.name);
-    await wait(500);
-  }
-
-  const users = readMicrophoneUsers().filter((user) => user.devices.includes(name));
-  for (const user of users) releaseMicrophoneUser(user.pid);
-
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const remaining = readMicrophoneUsers().filter((user) => user.devices.includes(name));
-    if (remaining.length === 0) break;
-    await wait(100);
-  }
-  const remaining = readMicrophoneUsers().filter((user) => user.devices.includes(name));
-  if (remaining.length > 0) {
-    return {
-      ok: false,
-      sampleRate: currentOutputRate(name),
-      releasedPrograms: users.filter((user) => !remaining.some((item) => item.pid === user.pid)).map((user) => user.name),
-      remainingPrograms: remaining.map((user) => user.name),
-      message: `仍有程序正在读取该麦克风：${remaining.map((user) => user.name).join("、")}。`,
-    };
-  }
-
-  const fallback = preferredFallback(snapshot.devices, "output", name);
-  if (!fallback) {
-    return {
-      ok: false,
-      sampleRate: currentOutputRate(name),
-      releasedPrograms: users.map((user) => user.name),
-      remainingPrograms: [],
-      message: "没有可用的非蓝牙输出设备，无法安全重建蓝牙播放链路。",
-    };
-  }
-  setDefaultAudioDevice("output", fallback.name);
-  await wait(1_500);
-  setDefaultAudioDevice("output", name);
-
-  let sampleRate: number | null = null;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    await wait(250);
-    sampleRate = currentOutputRate(name);
-    if (sampleRate !== null && sampleRate > 16_000) break;
-  }
-  const releasedPrograms = users.map((user) => user.name);
-  if (sampleRate !== null && sampleRate > 16_000) {
-    return {
-      ok: true,
-      sampleRate,
-      releasedPrograms,
-      remainingPrograms: [],
-      message: `已恢复高音质输出，当前采样率为 ${sampleRate / 1000} kHz。`,
-    };
-  }
-  return {
-    ok: false,
-    sampleRate,
-    releasedPrograms,
-    remainingPrograms: [],
-    message: "未断开蓝牙连接；麦克风占用已释放并重新切换了声音输出，但采样率仍未超过 16 kHz。",
-  };
+export function recoverA2dp(name: string): Promise<A2dpRecoveryResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [runnerPath, name], {
+      cwd: join(moduleDirectory, "..", ".."),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || "恢复进程执行失败"));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout) as A2dpRecoveryResult);
+      } catch {
+        reject(new Error("恢复结果无法读取"));
+      }
+    });
+  });
 }

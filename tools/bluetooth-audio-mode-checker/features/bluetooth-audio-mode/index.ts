@@ -1,5 +1,6 @@
 import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { startActiveOutputMonitor } from "../../core/macos-audio-events/index.ts";
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -182,6 +183,33 @@ export function readAudioModeState(): AudioModeState {
       output: routeOptions(devices, "output"),
     },
   };
+}
+
+export function readAudioModeStateAsync(): Promise<AudioModeState> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [join(moduleDirectory, "state-reader.ts")], {
+      cwd: join(moduleDirectory, "..", ".."),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || "后台设备扫描失败"));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout) as AudioModeState);
+      } catch {
+        reject(new Error("后台设备扫描结果无法读取"));
+      }
+    });
+  });
 }
 
 export function applyActiveOutputSnapshot(
