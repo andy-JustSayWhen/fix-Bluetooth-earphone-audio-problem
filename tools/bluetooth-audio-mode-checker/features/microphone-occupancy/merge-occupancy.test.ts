@@ -6,6 +6,7 @@ import {
   attachEmptyMicrophoneOccupancy,
   mergeMicrophoneOccupancy,
   shouldContinueOccupancyScanning,
+  shouldStartOccupancyScanForInputActivity,
 } from "./index.ts";
 
 function device(overrides: Partial<AudioModeAssessment>): AudioModeAssessment {
@@ -69,4 +70,25 @@ test("仍有占用程序时继续扫描直到释放", () => {
     },
   }];
   assert.equal(shouldContinueOccupancyScanning(devices), true);
+});
+
+test("默认输入从空闲变为运行时触发一次占用扫描", () => {
+  assert.equal(shouldStartOccupancyScanForInputActivity(
+    { name: "蓝牙麦克风", isRunning: false },
+    { name: "蓝牙麦克风", isRunning: true },
+  ), true);
+});
+
+test("默认输入持续运行时不重复触发占用扫描", () => {
+  assert.equal(shouldStartOccupancyScanForInputActivity(
+    { name: "蓝牙麦克风", isRunning: true },
+    { name: "蓝牙麦克风", isRunning: true },
+  ), false);
+});
+
+test("监听启动时发现默认输入已运行也触发占用扫描", () => {
+  assert.equal(shouldStartOccupancyScanForInputActivity(
+    null,
+    { name: "蓝牙麦克风", isRunning: true },
+  ), true);
 });

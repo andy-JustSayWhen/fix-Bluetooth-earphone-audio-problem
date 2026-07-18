@@ -3,7 +3,11 @@ import {
   readMicrophoneUsersAsync,
   releaseMicrophoneUser,
 } from "../../core/macos-microphone-usage/index.ts";
-import type { AudioModeAssessment, MicrophoneOccupancy } from "../../shared/audio-device-types/index.ts";
+import type {
+  ActiveInputSnapshot,
+  AudioModeAssessment,
+  MicrophoneOccupancy,
+} from "../../shared/audio-device-types/index.ts";
 
 export function attachMicrophoneOccupancy(devices: AudioModeAssessment[]): AudioModeAssessment[] {
   const users = readMicrophoneUsers();
@@ -27,6 +31,14 @@ export function shouldContinueOccupancyScanning(
   devices: AudioModeAssessment[],
 ): boolean {
   return devices.some((device) => (device.microphoneOccupancy?.users.length ?? 0) > 0);
+}
+
+export function shouldStartOccupancyScanForInputActivity(
+  previous: ActiveInputSnapshot | null,
+  current: ActiveInputSnapshot,
+): boolean {
+  if (!current.isRunning || current.name === null) return false;
+  return previous === null || !previous.isRunning || previous.name !== current.name;
 }
 
 export function mergeMicrophoneOccupancy(

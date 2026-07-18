@@ -81,5 +81,11 @@ export type ActiveOutputSnapshot = {
   nominalSampleRate: number | null;
   actualSampleRate: number | null;
   isRunning: boolean;
+  defaultInput?: ActiveInputSnapshot;
   timestamp: string;
+};
+
+export type ActiveInputSnapshot = {
+  name: string | null;
+  isRunning: boolean;
 };

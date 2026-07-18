@@ -3,7 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static AudioDeviceID current_device = kAudioObjectUnknown;
+static AudioDeviceID current_output_device = kAudioObjectUnknown;
+static AudioDeviceID current_input_device = kAudioObjectUnknown;
 
 static int read_property(AudioObjectID object, AudioObjectPropertySelector selector, void *value, UInt32 size) {
     AudioObjectPropertyAddress address = {
@@ -17,6 +18,12 @@ static int read_property(AudioObjectID object, AudioObjectPropertySelector selec
 static AudioDeviceID read_default_output(void) {
     AudioDeviceID device = kAudioObjectUnknown;
     read_property(kAudioObjectSystemObject, kAudioHardwarePropertyDefaultOutputDevice, &device, sizeof(device));
+    return device;
+}
+
+static AudioDeviceID read_default_input(void) {
+    AudioDeviceID device = kAudioObjectUnknown;
+    read_property(kAudioObjectSystemObject, kAudioHardwarePropertyDefaultInputDevice, &device, sizeof(device));
     return device;
 }
 
@@ -54,33 +61,39 @@ static void print_json_string(CFStringRef value) {
 }
 
 static void emit_snapshot(void) {
-    AudioDeviceID device = read_default_output();
-    if (device == kAudioObjectUnknown) {
-        fputs("{\"name\":null,\"nominalSampleRate\":null,\"actualSampleRate\":null,\"isRunning\":false}\n", stdout);
-        fflush(stdout);
-        return;
-    }
-
-    CFStringRef name = NULL;
+    AudioDeviceID output_device = read_default_output();
+    AudioDeviceID input_device = read_default_input();
+    CFStringRef output_name = NULL;
+    CFStringRef input_name = NULL;
     Float64 nominal = 0;
     Float64 actual = 0;
-    UInt32 running = 0;
-    read_property(device, kAudioObjectPropertyName, &name, sizeof(name));
-    read_property(device, kAudioDevicePropertyNominalSampleRate, &nominal, sizeof(nominal));
-    read_property(device, kAudioDevicePropertyActualSampleRate, &actual, sizeof(actual));
-    read_property(device, kAudioDevicePropertyDeviceIsRunning, &running, sizeof(running));
+    UInt32 output_running = 0;
+    UInt32 input_running = 0;
+    if (output_device != kAudioObjectUnknown) {
+        read_property(output_device, kAudioObjectPropertyName, &output_name, sizeof(output_name));
+        read_property(output_device, kAudioDevicePropertyNominalSampleRate, &nominal, sizeof(nominal));
+        read_property(output_device, kAudioDevicePropertyActualSampleRate, &actual, sizeof(actual));
+        read_property(output_device, kAudioDevicePropertyDeviceIsRunning, &output_running, sizeof(output_running));
+    }
+    if (input_device != kAudioObjectUnknown) {
+        read_property(input_device, kAudioObjectPropertyName, &input_name, sizeof(input_name));
+        read_property(input_device, kAudioDevicePropertyDeviceIsRunningSomewhere, &input_running, sizeof(input_running));
+    }
 
     fputs("{\"name\":", stdout);
-    print_json_string(name);
+    print_json_string(output_name);
     fprintf(
         stdout,
-        ",\"nominalSampleRate\":%.0f,\"actualSampleRate\":%.0f,\"isRunning\":%s}\n",
+        ",\"nominalSampleRate\":%.0f,\"actualSampleRate\":%.0f,\"isRunning\":%s,\"defaultInput\":{\"name\":",
         nominal,
         actual,
-        running ? "true" : "false"
+        output_running ? "true" : "false"
     );
+    print_json_string(input_name);
+    fprintf(stdout, ",\"isRunning\":%s}}\n", input_running ? "true" : "false");
     fflush(stdout);
-    if (name != NULL) CFRelease(name);
+    if (output_name != NULL) CFRelease(output_name);
+    if (input_name != NULL) CFRelease(input_name);
 }
 
 static OSStatus device_changed(
@@ -97,7 +110,7 @@ static OSStatus device_changed(
     return noErr;
 }
 
-static void remove_device_listeners(AudioDeviceID device) {
+static void remove_output_device_listeners(AudioDeviceID device) {
     if (device == kAudioObjectUnknown) return;
     AudioObjectPropertySelector selectors[] = {
         kAudioDevicePropertyNominalSampleRate,
@@ -114,7 +127,7 @@ static void remove_device_listeners(AudioDeviceID device) {
     }
 }
 
-static void install_device_listeners(AudioDeviceID device) {
+static void install_output_device_listeners(AudioDeviceID device) {
     if (device == kAudioObjectUnknown) return;
     AudioObjectPropertySelector selectors[] = {
         kAudioDevicePropertyNominalSampleRate,
@@ -131,6 +144,26 @@ static void install_device_listeners(AudioDeviceID device) {
     }
 }
 
+static void remove_input_device_listener(AudioDeviceID device) {
+    if (device == kAudioObjectUnknown) return;
+    AudioObjectPropertyAddress address = {
+        kAudioDevicePropertyDeviceIsRunningSomewhere,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    AudioObjectRemovePropertyListener(device, &address, device_changed, NULL);
+}
+
+static void install_input_device_listener(AudioDeviceID device) {
+    if (device == kAudioObjectUnknown) return;
+    AudioObjectPropertyAddress address = {
+        kAudioDevicePropertyDeviceIsRunningSomewhere,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    AudioObjectAddPropertyListener(device, &address, device_changed, NULL);
+}
+
 static OSStatus default_output_changed(
     AudioObjectID object,
     UInt32 count,
@@ -142,10 +175,30 @@ static OSStatus default_output_changed(
     (void)addresses;
     (void)context;
     AudioDeviceID next_device = read_default_output();
-    if (next_device != current_device) {
-        remove_device_listeners(current_device);
-        current_device = next_device;
-        install_device_listeners(current_device);
+    if (next_device != current_output_device) {
+        remove_output_device_listeners(current_output_device);
+        current_output_device = next_device;
+        install_output_device_listeners(current_output_device);
+    }
+    emit_snapshot();
+    return noErr;
+}
+
+static OSStatus default_input_changed(
+    AudioObjectID object,
+    UInt32 count,
+    const AudioObjectPropertyAddress addresses[],
+    void *context
+) {
+    (void)object;
+    (void)count;
+    (void)addresses;
+    (void)context;
+    AudioDeviceID next_device = read_default_input();
+    if (next_device != current_input_device) {
+        remove_input_device_listener(current_input_device);
+        current_input_device = next_device;
+        install_input_device_listener(current_input_device);
     }
     emit_snapshot();
     return noErr;
@@ -175,8 +228,10 @@ static void poll_active_output(
 }
 
 int main(void) {
-    current_device = read_default_output();
-    install_device_listeners(current_device);
+    current_output_device = read_default_output();
+    current_input_device = read_default_input();
+    install_output_device_listeners(current_output_device);
+    install_input_device_listener(current_input_device);
 
     AudioObjectPropertyAddress address = {
         kAudioHardwarePropertyDefaultOutputDevice,
@@ -192,6 +247,20 @@ int main(void) {
         return 2;
     }
 
+    AudioObjectPropertyAddress input_address = {
+        kAudioHardwarePropertyDefaultInputDevice,
+        kAudioObjectPropertyScopeGlobal,
+        kAudioObjectPropertyElementMain
+    };
+    if (AudioObjectAddPropertyListener(
+        kAudioObjectSystemObject,
+        &input_address,
+        default_input_changed,
+        NULL
+    ) != noErr) {
+        return 3;
+    }
+
     AudioObjectPropertyAddress devices_address = {
         kAudioHardwarePropertyDevices,
         kAudioObjectPropertyScopeGlobal,
@@ -203,7 +272,7 @@ int main(void) {
         device_list_changed,
         NULL
     ) != noErr) {
-        return 3;
+        return 4;
     }
 
     CFRunLoopTimerContext timer_context = {0, NULL, NULL, NULL, NULL};
@@ -217,7 +286,7 @@ int main(void) {
         &timer_context
     );
     if (timer == NULL) {
-        return 4;
+        return 5;
     }
     CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
     CFRelease(timer);
