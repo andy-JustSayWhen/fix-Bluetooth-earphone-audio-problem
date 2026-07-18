@@ -45,7 +45,6 @@ button { font: inherit; }
 .hero__mark svg { width: 31px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .hero__copy h1 { margin: 1px 0 5px; font-size: clamp(26px, 4vw, 36px); letter-spacing: -0.035em; }
 .hero__copy > p:last-child { margin: 0; color: #647086; font-size: 15px; }
-.eyebrow { margin: 0; color: #3472ed; font-size: 12px; font-weight: 700; letter-spacing: 0.12em; }
 
 .refresh-button {
   display: inline-flex;
@@ -93,15 +92,16 @@ button { font: inherit; }
 
 .status-bar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   margin: 24px 2px 13px;
   color: #788398;
   font-size: 13px;
 }
 
-.status-bar > div { display: flex; align-items: center; gap: 9px; }
+.status-bar > div { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
 .status-bar strong { color: #435068; font-weight: 650; }
+.status-bar #refresh-time { margin-left: 8px; padding-left: 16px; border-left: 1px solid #d9e0ea; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa4b4; box-shadow: 0 0 0 4px rgba(154, 164, 180, 0.13); }
 .status-dot.is-ready { background: #29a86b; box-shadow: 0 0 0 4px rgba(41, 168, 107, 0.13); }
 .status-dot.is-error { background: #dc5264; box-shadow: 0 0 0 4px rgba(220, 82, 100, 0.13); }
@@ -173,6 +173,7 @@ button { font: inherit; }
 .metric-group { min-width: 0; margin: 0; padding: 7px 9px 10px; border: 1px dashed #aebdd3; border-radius: 13px; }
 .metric-group legend { padding: 0 7px; color: #5d6f8c; font-size: 11px; font-weight: 750; letter-spacing: 0.08em; }
 .metric-group__items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.metric-group__note { margin: 8px 4px 0; color: #7d889b; font-size: 10px; line-height: 1.5; }
 .metric { padding: 13px; background: #f7f9fc; border: 1px solid #e8edf4; border-radius: 12px; }
 .metric span { display: block; margin-bottom: 5px; color: #8a95a6; font-size: 11px; }
 .metric strong { font-size: 14px; font-weight: 700; }
@@ -217,10 +218,6 @@ button { font: inherit; }
 .loading-card__pulse--short { width: 31%; }
 
 .error-state { padding: 24px; color: #9f3346; background: #fff0f2; border: 1px solid #f4c5cd; border-radius: 16px; }
-.footer-note { display: flex; align-items: flex-start; gap: 9px; margin: 22px 3px 0; color: #8a94a5; font-size: 12px; line-height: 1.55; }
-.footer-note p { margin: 0; }
-.footer-note__icon { display: grid; place-items: center; flex: 0 0 17px; height: 17px; margin-top: 1px; color: #7c8aa2; border: 1px solid #aeb7c5; border-radius: 50%; font-size: 10px; font-weight: 700; }
-
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes reveal { from { opacity: 0; transform: translateY(-5px); } }
 @keyframes shimmer { to { background-position: -220% 0; } }

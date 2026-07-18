@@ -11,11 +11,12 @@ const routeMessage = document.querySelector("#route-message");
 const expandedDevices = new Set();
 const occupancyFeedback = new Map();
 let lastRenderedDevices = [];
+let lastRenderedRoutes = null;
 let lastRenderedStateFingerprint = "";
 const recoveryFeedback = new Map();
-const refreshButtonCooldownMs = 1_500;
 let refreshRequestRunning = false;
-let refreshCooldownTimer = 0;
+let pendingRouteChange = null;
+let pendingRouteTimer = 0;
 
 function createElement(tag, className, text) {
   const element = document.createElement(tag);
@@ -45,12 +46,13 @@ function metric(label, value) {
   return item;
 }
 
-function metricGroup(label, firstMetric, secondMetric) {
+function metricGroup(label, firstMetric, secondMetric, note = "") {
   const group = createElement("fieldset", "metric-group");
   group.append(createElement("legend", "", label));
   const items = createElement("div", "metric-group__items");
   items.append(firstMetric, secondMetric);
   group.append(items);
+  if (note) group.append(createElement("p", "metric-group__note", note));
   return group;
 }
 
@@ -244,9 +246,10 @@ function createDeviceCard(device) {
   const metrics = createElement("div", "metric-groups");
   metrics.append(
     metricGroup(
-      device.isDefaultOutput ? "输出" : "输出端点（当前未播放）",
+      device.isDefaultOutput ? "系统输出端点（当前输出）" : "系统输出端点（当前未播放）",
       metric("采样率", formatRate(device.sampleRateOutput)),
       metric("声道", device.outputChannels ? `${device.outputChannels} 声道` : "无"),
+      "这是系统暴露的输出端点，不代表设备具有物理扬声器。",
     ),
     metricGroup(
       device.isInputActive ? "输入（正在使用）" : "输入",
@@ -295,9 +298,24 @@ function renderRoutes(routes) {
   renderRouteSelect(inputSelect, routes.input);
 }
 
+function updatePendingRouteMessage(routes) {
+  if (!pendingRouteChange) return false;
+  const activeRoute = routes[pendingRouteChange.direction].find((route) => route.isDefault);
+  if (activeRoute?.name !== pendingRouteChange.name) return false;
+  if (pendingRouteTimer) window.clearTimeout(pendingRouteTimer);
+  pendingRouteTimer = 0;
+  routeMessage.className = "route-message is-success";
+  routeMessage.textContent = `已切换到“${pendingRouteChange.name}”，系统状态已确认。`;
+  pendingRouteChange = null;
+  return true;
+}
+
 async function changeDefaultDevice(select) {
   const direction = select.dataset.direction;
   const name = select.value;
+  pendingRouteChange = null;
+  if (pendingRouteTimer) window.clearTimeout(pendingRouteTimer);
+  pendingRouteTimer = 0;
   outputSelect.disabled = true;
   inputSelect.disabled = true;
   routeMessage.className = "route-message";
@@ -310,13 +328,18 @@ async function changeDefaultDevice(select) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "切换失败");
-    routeMessage.className = "route-message is-success";
-    routeMessage.textContent = `已切换为“${name}”，正在刷新设备状态。`;
+    pendingRouteChange = { direction, name };
+    routeMessage.className = "route-message";
+    routeMessage.textContent = `切换请求已提交，等待系统确认“${name}”…`;
     outputSelect.disabled = false;
     inputSelect.disabled = false;
-    for (const delay of [0, 800, 1_700, 3_000]) {
-      window.setTimeout(() => refreshDevices({ preserveRouteMessage: true }), delay);
-    }
+    if (pendingRouteTimer) window.clearTimeout(pendingRouteTimer);
+    pendingRouteTimer = window.setTimeout(() => {
+      if (!pendingRouteChange || pendingRouteChange.direction !== direction || pendingRouteChange.name !== name) return;
+      routeMessage.className = "route-message";
+      routeMessage.textContent = `切换请求已提交，但暂未收到“${name}”成为系统默认设备的确认。`;
+    }, 8_000);
+    if (lastRenderedRoutes) updatePendingRouteMessage(lastRenderedRoutes);
   } catch (error) {
     routeMessage.className = "route-message is-error";
     routeMessage.textContent = `切换失败：${error.message}`;
@@ -326,6 +349,7 @@ async function changeDefaultDevice(select) {
 }
 
 function renderState(result, options = {}) {
+  lastRenderedRoutes = result.routes;
   const fingerprint = JSON.stringify({ devices: result.devices, routes: result.routes });
   if (fingerprint !== lastRenderedStateFingerprint) {
     renderRoutes(result.routes);
@@ -338,7 +362,8 @@ function renderState(result, options = {}) {
   const refreshedAt = new Date(result.refreshedAt);
   timeElement.textContent = `更新于 ${refreshedAt.toLocaleTimeString("zh-CN", { hour12: false })}`;
   statusDot.className = "status-dot is-ready";
-  if (!options.preserveRouteMessage) {
+  const routeWasConfirmed = updatePendingRouteMessage(result.routes);
+  if (!options.preserveRouteMessage && !pendingRouteChange && !routeWasConfirmed) {
     routeMessage.className = "route-message";
     routeMessage.textContent = "选择其他设备后会立即写入系统。";
   }
@@ -346,6 +371,11 @@ function renderState(result, options = {}) {
 
 function renderDevices(devices) {
   lastRenderedDevices = devices;
+  const occupiedDevice = devices.find((device) => device.microphoneOccupancy?.isInUse);
+  if (occupiedDevice) {
+    expandedDevices.clear();
+    expandedDevices.add(occupiedDevice.name);
+  }
   listElement.replaceChildren();
   if (devices.length === 0) {
     listElement.append(emptyTemplate.content.cloneNode(true));
@@ -359,11 +389,6 @@ function renderDevices(devices) {
 async function refreshDevices(options = {}) {
   if (refreshRequestRunning) return;
   refreshRequestRunning = true;
-  if (refreshCooldownTimer) {
-    window.clearTimeout(refreshCooldownTimer);
-    refreshCooldownTimer = 0;
-  }
-  const startedAt = performance.now();
   refreshButton.disabled = true;
   refreshButton.classList.add("is-loading");
   countElement.textContent = "正在刷新设备…";
@@ -385,12 +410,8 @@ async function refreshDevices(options = {}) {
     statusDot.className = "status-dot is-error";
   } finally {
     refreshRequestRunning = false;
-    const remainingCooldownMs = Math.max(0, refreshButtonCooldownMs - (performance.now() - startedAt));
-    refreshCooldownTimer = window.setTimeout(() => {
-      refreshButton.disabled = false;
-      refreshButton.classList.remove("is-loading");
-      refreshCooldownTimer = 0;
-    }, remainingCooldownMs);
+    refreshButton.disabled = false;
+    refreshButton.classList.remove("is-loading");
   }
 }
 
