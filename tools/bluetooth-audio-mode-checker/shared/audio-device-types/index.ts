@@ -30,6 +30,8 @@ export type AudioModeAssessment = {
   label: string;
   confidence: "高" | "中" | "低";
   isActive: boolean;
+  isInputActive: boolean;
+  inputTransport: string | null;
   sampleRateOutput: number | null;
   maxSupportedOutputRate: number | null;
   outputChannels: number;
@@ -88,4 +90,6 @@ export type ActiveOutputSnapshot = {
 export type ActiveInputSnapshot = {
   name: string | null;
   isRunning: boolean;
+  nominalSampleRate?: number | null;
+  actualSampleRate?: number | null;
 };

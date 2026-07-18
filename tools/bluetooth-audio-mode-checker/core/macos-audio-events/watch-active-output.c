@@ -67,6 +67,8 @@ static void emit_snapshot(void) {
     CFStringRef input_name = NULL;
     Float64 nominal = 0;
     Float64 actual = 0;
+    Float64 input_nominal = 0;
+    Float64 input_actual = 0;
     UInt32 output_running = 0;
     UInt32 input_running = 0;
     if (output_device != kAudioObjectUnknown) {
@@ -77,6 +79,8 @@ static void emit_snapshot(void) {
     }
     if (input_device != kAudioObjectUnknown) {
         read_property(input_device, kAudioObjectPropertyName, &input_name, sizeof(input_name));
+        read_property(input_device, kAudioDevicePropertyNominalSampleRate, &input_nominal, sizeof(input_nominal));
+        read_property(input_device, kAudioDevicePropertyActualSampleRate, &input_actual, sizeof(input_actual));
         read_property(input_device, kAudioDevicePropertyDeviceIsRunningSomewhere, &input_running, sizeof(input_running));
     }
 
@@ -90,7 +94,13 @@ static void emit_snapshot(void) {
         output_running ? "true" : "false"
     );
     print_json_string(input_name);
-    fprintf(stdout, ",\"isRunning\":%s}}\n", input_running ? "true" : "false");
+    fprintf(
+        stdout,
+        ",\"isRunning\":%s,\"nominalSampleRate\":%.0f,\"actualSampleRate\":%.0f}}\n",
+        input_running ? "true" : "false",
+        input_nominal,
+        input_actual
+    );
     fflush(stdout);
     if (output_name != NULL) CFRelease(output_name);
     if (input_name != NULL) CFRelease(input_name);

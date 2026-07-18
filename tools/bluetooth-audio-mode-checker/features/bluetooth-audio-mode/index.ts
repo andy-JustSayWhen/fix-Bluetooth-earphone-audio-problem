@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
+  ActiveInputSnapshot,
   AudioModeState,
   AudioModeAssessment,
   AudioRouteOption,
@@ -64,6 +65,35 @@ function groupBluetoothDevices(devices: RawAudioDevice[]): DeviceGroup[] {
 function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
   const outputRate = base.sampleRateOutput;
   const maxSupportedOutputRate = base.maxSupportedOutputRate;
+
+  if (base.isInputActive && base.inputTransport === "bluetooth") {
+    return {
+      ...base,
+      evidence: [
+        "当前经典蓝牙默认输入正在被系统实际运行。",
+        `当前输入采样率：${base.sampleRateInput === null ? "无法读取" : formatRate(base.sampleRateInput)}`,
+        `同名输出端点格式：${outputRate === null ? "无法读取" : formatRate(outputRate)}`,
+      ],
+      mode: "HFP_HSP",
+      label: "HFP/HSP 模式",
+      confidence: "高",
+      explanation: "系统已经实际启动经典蓝牙麦克风；A2DP 不承载麦克风上行声音，因此当前使用的是 HFP/HSP 输入链路。该状态属于正常录音，不自动视为需要恢复的异常。",
+    };
+  }
+
+  if (base.isInputActive) {
+    return {
+      ...base,
+      evidence: [
+        "当前默认蓝牙输入正在被系统实际运行。",
+        `当前输入采样率：${base.sampleRateInput === null ? "无法读取" : formatRate(base.sampleRateInput)}`,
+      ],
+      mode: "UNKNOWN",
+      label: "蓝牙麦克风活动中",
+      confidence: "低",
+      explanation: "系统正在使用此蓝牙麦克风，但当前传输类型不足以可靠区分 HFP/HSP 与低功耗蓝牙音频，因此只展示活动参数，不强行归类。",
+    };
+  }
 
   if (!base.isDefaultOutput) {
     return {
@@ -129,6 +159,8 @@ function assessGroup(group: DeviceGroup): AudioModeAssessment {
   return classifyFacts({
     name: group.name,
     isActive: isDefaultOutput,
+    isInputActive: false,
+    inputTransport: input?.transport ?? null,
     sampleRateOutput: outputRate,
     maxSupportedOutputRate,
     outputChannels: output?.outputChannels ?? 0,
@@ -226,7 +258,9 @@ export function applyActiveOutputSnapshot(
       const isDefaultOutput = snapshot.name !== null && device.name === snapshot.name;
       return classifyFacts({
         name: device.name,
-        isActive: isDefaultOutput,
+        isActive: isDefaultOutput || device.isInputActive,
+        isInputActive: device.isInputActive,
+        inputTransport: device.inputTransport,
         sampleRateOutput: isDefaultOutput ? sampleRate : device.sampleRateOutput,
         maxSupportedOutputRate: device.maxSupportedOutputRate,
         outputChannels: device.outputChannels,
@@ -245,6 +279,45 @@ export function applyActiveOutputSnapshot(
         isDefault: snapshot.name !== null && route.name === snapshot.name,
         sampleRate: route.name === snapshot.name ? sampleRate : route.sampleRate,
       })),
+    },
+  };
+}
+
+export function applyActiveInputSnapshot(
+  state: AudioModeState,
+  snapshot: ActiveInputSnapshot,
+): AudioModeState {
+  const sampleRate = snapshot.actualSampleRate && snapshot.actualSampleRate > 0
+    ? snapshot.actualSampleRate
+    : snapshot.nominalSampleRate && snapshot.nominalSampleRate > 0
+      ? snapshot.nominalSampleRate
+      : null;
+  return {
+    devices: state.devices.map((device) => {
+      const isInputActive = snapshot.isRunning && snapshot.name !== null && device.name === snapshot.name;
+      return classifyFacts({
+        name: device.name,
+        isActive: device.isDefaultOutput || isInputActive,
+        isInputActive,
+        inputTransport: device.inputTransport,
+        sampleRateOutput: device.sampleRateOutput,
+        maxSupportedOutputRate: device.maxSupportedOutputRate,
+        outputChannels: device.outputChannels,
+        sampleRateInput: isInputActive && sampleRate !== null ? sampleRate : device.sampleRateInput,
+        inputChannels: device.inputChannels,
+        isDefaultInput: snapshot.name !== null && device.name === snapshot.name,
+        isDefaultOutput: device.isDefaultOutput,
+        isDefaultSystemOutput: device.isDefaultSystemOutput,
+        microphoneOccupancy: device.microphoneOccupancy,
+      });
+    }),
+    routes: {
+      input: state.routes.input.map((route) => ({
+        ...route,
+        isDefault: snapshot.name !== null && route.name === snapshot.name,
+        sampleRate: route.name === snapshot.name && sampleRate !== null ? sampleRate : route.sampleRate,
+      })),
+      output: state.routes.output,
     },
   };
 }

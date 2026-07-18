@@ -34,6 +34,7 @@ function routeText(device) {
   const routes = [];
   if (device.isDefaultOutput) routes.push("默认输出");
   if (device.isDefaultInput) routes.push("默认输入");
+  if (device.isInputActive) routes.push("麦克风使用中");
   if (device.isDefaultSystemOutput && routes.length === 0) routes.push("系统提示音输出");
   return routes.length ? routes.join(" · ") : "已连接，非默认设备";
 }
@@ -202,9 +203,11 @@ function createDeviceCard(device) {
   icon.setAttribute("aria-hidden", "true");
   const title = createElement("div", "device-title");
   title.append(createElement("h2", "", device.name), createElement("p", "", routeText(device)));
-  const badgeText = device.mode === "HFP_HSP" ? "HFP/HSP模式（点我定位）" : device.label;
+  const badgeText = device.mode === "HFP_HSP"
+    ? device.isInputActive ? "HFP/HSP模式（麦克风使用中）" : "HFP/HSP模式（点我定位）"
+    : device.label;
   const badge = createElement("span", `mode-badge mode-badge--${device.mode.toLowerCase()}`, badgeText);
-  if (device.mode === "HFP_HSP") {
+  if (device.mode === "HFP_HSP" && !device.isInputActive) {
     badge.classList.add("is-recoverable");
     badge.dataset.modeLabel = device.label;
     badge.dataset.recoveryLabel = "定位原因并按因处理";
@@ -225,7 +228,7 @@ function createDeviceCard(device) {
   summary.append(icon, title, badge, chevron);
 
   const details = createElement("div", "device-card__details");
-  if (!device.isDefaultOutput) {
+  if (!device.isDefaultOutput && !device.isInputActive) {
     const inactiveState = createElement("div", "inactive-state");
     inactiveState.append(
       createElement("strong", "", "当前未刷新输入输出参数"),
@@ -241,12 +244,12 @@ function createDeviceCard(device) {
   const metrics = createElement("div", "metric-groups");
   metrics.append(
     metricGroup(
-      "输出",
+      device.isDefaultOutput ? "输出" : "输出端点（当前未播放）",
       metric("采样率", formatRate(device.sampleRateOutput)),
       metric("声道", device.outputChannels ? `${device.outputChannels} 声道` : "无"),
     ),
     metricGroup(
-      "输入",
+      device.isInputActive ? "输入（正在使用）" : "输入",
       metric("采样率", formatRate(device.sampleRateInput)),
       metric("声道", device.inputChannels ? `${device.inputChannels} 声道` : "无"),
     ),

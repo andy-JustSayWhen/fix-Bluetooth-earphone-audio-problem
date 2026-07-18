@@ -4,6 +4,7 @@ import { extname, join } from "node:path";
 import { execFile } from "node:child_process";
 
 import {
+  applyActiveInputSnapshot,
   applyActiveOutputSnapshot,
   readAudioModeState,
   readAudioModeStateAsync,
@@ -163,6 +164,9 @@ function main(): void {
     if (latestSnapshot !== null && Date.parse(latestSnapshot.timestamp) >= minimumSnapshotTimestampMs) {
       nextState = applyActiveOutputSnapshot(nextState, latestSnapshot);
     }
+    if (latestInputSnapshot !== null) {
+      nextState = applyActiveInputSnapshot(nextState, latestInputSnapshot);
+    }
     cachedState = nextState;
     cachedStateUpdatedAt = new Date().toISOString();
     const nextFingerprint = JSON.stringify({ devices: nextState.devices, routes: nextState.routes });
@@ -248,6 +252,12 @@ function main(): void {
         inputActivityFingerprint = nextInputFingerprint;
         latestInputSnapshot = inputSnapshot;
         detailedLog("info", "default-input-activity.changed", { snapshot: inputSnapshot });
+        if (cachedState !== null) {
+          cachedState = applyActiveInputSnapshot(cachedState, inputSnapshot);
+          cachedStateUpdatedAt = snapshot.timestamp;
+          broadcastState();
+          scheduleStateRefresh();
+        }
         if (shouldScan) {
           inputActivityScanPending = true;
           scheduleOccupancyScan(0, "default-input-started");

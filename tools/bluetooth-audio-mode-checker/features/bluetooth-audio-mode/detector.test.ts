@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyActiveInputSnapshot,
   applyActiveOutputSnapshot,
   assessBluetoothDevices,
 } from "./index.ts";
@@ -141,6 +142,82 @@ test("实时输出事件会切换活动设备并立即重新判定", () => {
   });
   assert.equal(next.devices.find((item) => item.name === "耳机")?.mode, "INACTIVE");
   assert.equal(next.devices.find((item) => item.name === "音箱")?.mode, "HFP_HSP");
+});
+
+test("经典蓝牙默认输入开始运行时立即显示 HFP 和活动参数", () => {
+  const [assessment] = assessBluetoothDevices([
+    device({
+      sampleRateInput: 16_000,
+      sampleRateOutput: 16_000,
+      maxSupportedOutputRate: 16_000,
+      inputChannels: 1,
+      outputChannels: 1,
+      isDefaultInput: true,
+    }),
+  ]);
+  const next = applyActiveInputSnapshot({
+    devices: [assessment],
+    routes: {
+      input: [{ name: "测试耳机", direction: "input", transport: "bluetooth", channels: 1, sampleRate: 16_000, isDefault: true }],
+      output: [{ name: "测试耳机", direction: "output", transport: "bluetooth", channels: 1, sampleRate: 16_000, isDefault: false }],
+    },
+  }, {
+    name: "测试耳机",
+    isRunning: true,
+    nominalSampleRate: 16_000,
+    actualSampleRate: 16_000,
+  });
+
+  assert.equal(next.devices[0].isActive, true);
+  assert.equal(next.devices[0].isInputActive, true);
+  assert.equal(next.devices[0].mode, "HFP_HSP");
+  assert.equal(next.devices[0].sampleRateInput, 16_000);
+  assert.match(next.devices[0].explanation, /正常录音/);
+});
+
+test("默认输入停止运行后非默认输出设备恢复为未活动", () => {
+  const [assessment] = assessBluetoothDevices([
+    device({
+      sampleRateInput: 16_000,
+      sampleRateOutput: 16_000,
+      inputChannels: 1,
+      outputChannels: 1,
+      isDefaultInput: true,
+    }),
+  ]);
+  const active = applyActiveInputSnapshot({ devices: [assessment], routes: { input: [], output: [] } }, {
+    name: "测试耳机",
+    isRunning: true,
+    actualSampleRate: 16_000,
+  });
+  const stopped = applyActiveInputSnapshot(active, {
+    name: "测试耳机",
+    isRunning: false,
+    actualSampleRate: 16_000,
+  });
+
+  assert.equal(stopped.devices[0].isInputActive, false);
+  assert.equal(stopped.devices[0].mode, "INACTIVE");
+});
+
+test("低功耗蓝牙输入运行时展示活动参数但不冒充已识别模式", () => {
+  const [assessment] = assessBluetoothDevices([
+    device({
+      transport: "bluetooth-le",
+      sampleRateInput: 32_000,
+      inputChannels: 1,
+      isDefaultInput: true,
+    }),
+  ]);
+  const next = applyActiveInputSnapshot({ devices: [assessment], routes: { input: [], output: [] } }, {
+    name: "测试耳机",
+    isRunning: true,
+    actualSampleRate: 32_000,
+  });
+
+  assert.equal(next.devices[0].isInputActive, true);
+  assert.equal(next.devices[0].mode, "UNKNOWN");
+  assert.equal(next.devices[0].label, "蓝牙麦克风活动中");
 });
 
 test("忽略非蓝牙设备", () => {
