@@ -165,6 +165,15 @@ static OSStatus device_list_changed(
     return noErr;
 }
 
+static void poll_active_output(
+    CFRunLoopTimerRef timer,
+    void *context
+) {
+    (void)timer;
+    (void)context;
+    emit_snapshot();
+}
+
 int main(void) {
     current_device = read_default_output();
     install_device_listeners(current_device);
@@ -196,6 +205,22 @@ int main(void) {
     ) != noErr) {
         return 3;
     }
+
+    CFRunLoopTimerContext timer_context = {0, NULL, NULL, NULL, NULL};
+    CFRunLoopTimerRef timer = CFRunLoopTimerCreate(
+        kCFAllocatorDefault,
+        CFAbsoluteTimeGetCurrent() + 1.0,
+        1.0,
+        0,
+        0,
+        poll_active_output,
+        &timer_context
+    );
+    if (timer == NULL) {
+        return 4;
+    }
+    CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
+    CFRelease(timer);
 
     emit_snapshot();
     CFRunLoopRun();

@@ -13,6 +13,9 @@ const occupancyFeedback = new Map();
 let lastRenderedDevices = [];
 let lastRenderedStateFingerprint = "";
 const recoveryFeedback = new Map();
+const refreshButtonCooldownMs = 1_500;
+let refreshRequestRunning = false;
+let refreshCooldownTimer = 0;
 
 function createElement(tag, className, text) {
   const element = document.createElement(tag);
@@ -195,7 +198,8 @@ function createDeviceCard(device) {
   icon.setAttribute("aria-hidden", "true");
   const title = createElement("div", "device-title");
   title.append(createElement("h2", "", device.name), createElement("p", "", routeText(device)));
-  const badge = createElement("span", `mode-badge mode-badge--${device.mode.toLowerCase()}`, device.label);
+  const badgeText = device.mode === "HFP_HSP" ? "HFP/HSP模式（点我修复）" : device.label;
+  const badge = createElement("span", `mode-badge mode-badge--${device.mode.toLowerCase()}`, badgeText);
   if (device.mode === "HFP_HSP") {
     badge.classList.add("is-recoverable");
     badge.dataset.modeLabel = device.label;
@@ -300,11 +304,11 @@ async function changeDefaultDevice(select) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "切换失败");
     routeMessage.className = "route-message is-success";
-    routeMessage.textContent = `已切换为“${name}”，系统设置已生效。`;
+    routeMessage.textContent = `已切换为“${name}”，正在刷新设备状态。`;
     outputSelect.disabled = false;
     inputSelect.disabled = false;
-    if (direction === "input") {
-      setTimeout(() => refreshDevices({ preserveRouteMessage: true }), 0);
+    for (const delay of [0, 800, 1_700, 3_000]) {
+      window.setTimeout(() => refreshDevices({ preserveRouteMessage: true }), delay);
     }
   } catch (error) {
     routeMessage.className = "route-message is-error";
@@ -346,6 +350,13 @@ function renderDevices(devices) {
 }
 
 async function refreshDevices(options = {}) {
+  if (refreshRequestRunning) return;
+  refreshRequestRunning = true;
+  if (refreshCooldownTimer) {
+    window.clearTimeout(refreshCooldownTimer);
+    refreshCooldownTimer = 0;
+  }
+  const startedAt = performance.now();
   refreshButton.disabled = true;
   refreshButton.classList.add("is-loading");
   countElement.textContent = "正在刷新设备…";
@@ -366,8 +377,13 @@ async function refreshDevices(options = {}) {
     timeElement.textContent = "请稍后重试";
     statusDot.className = "status-dot is-error";
   } finally {
-    refreshButton.disabled = false;
-    refreshButton.classList.remove("is-loading");
+    refreshRequestRunning = false;
+    const remainingCooldownMs = Math.max(0, refreshButtonCooldownMs - (performance.now() - startedAt));
+    refreshCooldownTimer = window.setTimeout(() => {
+      refreshButton.disabled = false;
+      refreshButton.classList.remove("is-loading");
+      refreshCooldownTimer = 0;
+    }, remainingCooldownMs);
   }
 }
 

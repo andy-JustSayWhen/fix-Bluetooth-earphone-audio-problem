@@ -37,6 +37,7 @@ const contentTypes: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
 };
+const manualRefreshMinimumIntervalMs = 2_500;
 
 function parseArguments(argumentsList: string[]): Options {
   const options: Options = { port: 4173, openBrowser: true };
@@ -119,15 +120,17 @@ function main(): void {
   });
 
   let cachedState: AudioModeState | null = null;
+  let cachedStateUpdatedAt: string | null = null;
   let latestSnapshot: ActiveOutputSnapshot | null = null;
   const eventClients = new Set<import("node:http").ServerResponse>();
   let stateRefreshRunning = false;
+  let lastManualRefreshStartedAt = 0;
   let realtimeFingerprint = "";
   let initialOccupancyScanScheduled = false;
 
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
-    refreshedAt: latestSnapshot?.timestamp ?? new Date().toISOString(),
+    refreshedAt: cachedStateUpdatedAt ?? new Date().toISOString(),
   };
   const broadcastState = () => {
     const payload = statePayload();
@@ -135,7 +138,7 @@ function main(): void {
     const message = `data: ${JSON.stringify(payload)}\n\n`;
     for (const client of eventClients) client.write(message);
   };
-  const applyRefreshedState = (refreshedState: AudioModeState): boolean => {
+  const applyRefreshedState = (refreshedState: AudioModeState, minimumSnapshotTimestampMs = Date.now()): boolean => {
     const previousFingerprint = cachedState === null
       ? null
       : JSON.stringify({ devices: cachedState.devices, routes: cachedState.routes });
@@ -152,20 +155,28 @@ function main(): void {
             microphoneOccupancy: previousOccupancy.get(device.name),
           })),
         };
-    if (latestSnapshot !== null) nextState = applyActiveOutputSnapshot(nextState, latestSnapshot);
+    if (latestSnapshot !== null && Date.parse(latestSnapshot.timestamp) >= minimumSnapshotTimestampMs) {
+      nextState = applyActiveOutputSnapshot(nextState, latestSnapshot);
+    }
     cachedState = nextState;
+    cachedStateUpdatedAt = new Date().toISOString();
     const nextFingerprint = JSON.stringify({ devices: nextState.devices, routes: nextState.routes });
     return nextFingerprint !== previousFingerprint;
   };
-  const refreshState = (): boolean => applyRefreshedState(readAudioModeState());
-  const scheduleStateRefresh = () => {
-    if (stateRefreshRunning) return;
+  const refreshState = (): boolean => {
+    const startedAt = Date.now();
+    return applyRefreshedState(readAudioModeState(), startedAt);
+  };
+  const scheduleStateRefresh = (): boolean => {
+    if (stateRefreshRunning) return false;
     stateRefreshRunning = true;
     setImmediate(async () => {
       const startedAt = performance.now();
+      const startedAtWallClock = Date.now();
       try {
         const refreshedState = await readAudioModeStateAsync();
-        if (applyRefreshedState(refreshedState)) {
+        const changed = applyRefreshedState(refreshedState, startedAtWallClock);
+        if (changed) {
           detailedLog("info", "device-state.changed", {
             durationMs: Number((performance.now() - startedAt).toFixed(3)),
             deviceCount: refreshedState.devices.length,
@@ -174,6 +185,9 @@ function main(): void {
           });
           broadcastState();
         }
+        if (cachedState?.devices.some((device) =>
+          device.isDefaultOutput && device.sampleRateOutput !== null && device.sampleRateOutput <= 16_000
+        )) scheduleOccupancyScan(0);
         if (!initialOccupancyScanScheduled && cachedState !== null) {
           initialOccupancyScanScheduled = true;
           if (cachedState.devices.some((device) =>
@@ -190,6 +204,28 @@ function main(): void {
         stateRefreshRunning = false;
       }
     });
+    return true;
+  };
+  const scheduleManualStateRefresh = () => {
+    if (stateRefreshRunning) {
+      detailedLog("debug", "device-state.refresh-skipped", {
+        source: "manual",
+        reason: "already-running",
+      });
+      return;
+    }
+    const now = performance.now();
+    const elapsedMs = now - lastManualRefreshStartedAt;
+    if (cachedState !== null && elapsedMs < manualRefreshMinimumIntervalMs) {
+      detailedLog("debug", "device-state.refresh-skipped", {
+        source: "manual",
+        reason: "throttled",
+        elapsedMs: Number(elapsedMs.toFixed(3)),
+        minimumIntervalMs: manualRefreshMinimumIntervalMs,
+      });
+      return;
+    }
+    if (scheduleStateRefresh()) lastManualRefreshStartedAt = now;
   };
   const scheduleModeTransitionChecks = () => {
     scheduleStateRefresh();
@@ -198,16 +234,21 @@ function main(): void {
     }
   };
   const stopRealtimeMonitor = startAudioModeRealtimeMonitor((snapshot) => {
-    const nextFingerprint = JSON.stringify(snapshot);
-    if (nextFingerprint !== realtimeFingerprint) {
-      realtimeFingerprint = nextFingerprint;
-      detailedLog("info", "active-output.changed", { snapshot });
-      const activeRate = snapshot.actualSampleRate ?? snapshot.nominalSampleRate;
-      if (activeRate !== null && activeRate <= 16_000) scheduleOccupancyScan(0);
-    }
+    const nextFingerprint = JSON.stringify({
+      name: snapshot.name,
+      nominalSampleRate: snapshot.nominalSampleRate,
+      actualSampleRate: snapshot.actualSampleRate,
+      isRunning: snapshot.isRunning,
+    });
+    if (nextFingerprint === realtimeFingerprint) return;
+    realtimeFingerprint = nextFingerprint;
+    detailedLog("info", "active-output.changed", { snapshot });
+    const activeRate = snapshot.actualSampleRate ?? snapshot.nominalSampleRate;
+    if (activeRate !== null && activeRate <= 16_000) scheduleOccupancyScan(0);
     latestSnapshot = snapshot;
     if (cachedState !== null) {
       cachedState = applyActiveOutputSnapshot(cachedState, snapshot);
+      cachedStateUpdatedAt = snapshot.timestamp;
       broadcastState();
       scheduleStateRefresh();
     }
@@ -241,6 +282,7 @@ function main(): void {
       });
       const devices = mergeMicrophoneOccupancy(cachedState.devices, occupancySnapshot);
       cachedState = { ...cachedState, devices };
+      cachedStateUpdatedAt = new Date().toISOString();
       broadcastState();
       if (!continueScanning) scheduleModeTransitionChecks();
     } catch (error) {
@@ -292,7 +334,7 @@ function main(): void {
     if (request.method === "GET" && url.pathname === "/api/devices") {
       try {
         if (cachedState === null) {
-          scheduleStateRefresh();
+          scheduleManualStateRefresh();
           response.writeHead(202, {
             "Content-Type": "application/json; charset=utf-8",
             "Cache-Control": "no-store",
@@ -305,7 +347,7 @@ function main(): void {
           "Cache-Control": "no-store",
         });
         response.end(JSON.stringify(statePayload()));
-        scheduleStateRefresh();
+        scheduleManualStateRefresh();
       } catch (error) {
         response.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
         response.end(JSON.stringify({
@@ -397,7 +439,10 @@ function main(): void {
           deviceName: body.name,
           alreadyDefault: selectedOption.isDefault,
         });
-        if (!selectedOption.isDefault) setDefaultAudioDevice(body.direction, body.name);
+        if (!selectedOption.isDefault) {
+          setDefaultAudioDevice(body.direction, body.name);
+          scheduleModeTransitionChecks();
+        }
         detailedLog("info", "default-device.change-completed", { direction: body.direction, deviceName: body.name });
         response.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
