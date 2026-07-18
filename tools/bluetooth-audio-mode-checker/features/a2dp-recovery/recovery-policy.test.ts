@@ -7,32 +7,23 @@ import { selectRecoveryPolicy } from "./recovery-policy.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 
-test("命中原因且有确证方法时只执行对应方法", () => {
-  assert.equal(selectRecoveryPolicy(true, true), "执行原因对应方法");
+test("只有命中已确认原因时才执行原因对应处理", () => {
+  assert.equal(selectRecoveryPolicy(true), "执行原因对应处理");
+  assert.equal(selectRecoveryPolicy(false), "停止，不执行处理");
 });
 
-test("命中原因但无确证方法时直接进入最后兜底", () => {
-  assert.equal(selectRecoveryPolicy(true, false), "直接进入最后兜底");
-});
-
-test("未命中原因时按方法清单逐项尝试", () => {
-  assert.equal(selectRecoveryPolicy(false, false), "按方法清单逐项尝试");
-});
-
-test("恢复编排不得把采样率写入当作模式切换", () => {
+test("严格原因工作流不得执行通用方法或兜底", () => {
   const source = readFileSync(join(moduleDirectory, "run-recovery.ts"), "utf8");
-  assert.doesNotMatch(source, /requestOutputSampleRate|请求高采样率/);
-  assert.match(source, /重新评估输出路由/);
+  assert.doesNotMatch(source, /reconnectBluetoothDevice|disconnectBluetooth|setDefaultAudioDevice/);
+  assert.doesNotMatch(source, /synchronizeOutput|fallbackDevice|重新评估输出路由|重建声音路由/);
+  assert.match(source, /strict-cause-only/);
+  assert.match(source, /没有执行其他方法或兜底/);
 });
 
-test("目标麦克风仍被占用时不得断开重连并假报恢复", () => {
+test("格式请求证据不完整时不得结束候选进程", () => {
   const source = readFileSync(join(moduleDirectory, "run-recovery.ts"), "utf8");
-  const occupiedBranches = [...source.matchAll(/if \(initialUsers\.length > 0\) \{([\s\S]*?)\n  \}/g)];
-  const occupiedBranch = occupiedBranches.at(-1)?.[1] ?? "";
-  assert.match(occupiedBranch, /return result\(/);
-  assert.match(occupiedBranch, /false,/);
-  assert.doesNotMatch(occupiedBranch, /reconnectAndFinish/);
-  assert.match(occupiedBranch, /占用存在时不执行断开重连/);
+  assert.match(source, /formatCause\.confidence !== "已确认"/);
+  assert.match(source, /没有结束候选进程/);
 });
 
 test("高采样率必须持续六次读取才可判定稳定", () => {

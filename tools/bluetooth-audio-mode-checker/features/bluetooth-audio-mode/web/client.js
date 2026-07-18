@@ -137,9 +137,9 @@ function microphoneOccupancySection(device) {
 }
 
 async function recoverA2dp(device, badge) {
-  if (!window.confirm("工具会先诊断原因并从低扰动方案开始；其他方案全部失败后，最后可能断开并重新连接目标设备。是否继续？")) return;
+  if (!window.confirm("工具会读取最近 10 分钟系统声音日志；只有完整证据链命中原因时，才请求对应进程正常退出。不会切换路由、重启服务或断开重连。是否继续？")) return;
   badge.classList.add("is-recovering");
-  badge.textContent = "正在诊断与恢复…";
+  badge.textContent = "正在定位原因…";
   try {
     const response = await fetch("/api/a2dp-recovery", {
       method: "POST",
@@ -148,7 +148,7 @@ async function recoverA2dp(device, badge) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "恢复失败");
-    recoveryFeedback.set(device.name, { kind: result.ok ? "pending" : "error", result });
+    recoveryFeedback.set(device.name, { kind: result.ok || !result.handledCause ? "pending" : "error", result });
     await refreshDevices({ preserveRouteMessage: true });
   } catch (error) {
     recoveryFeedback.set(device.name, { kind: "error", text: `恢复失败：${error.message}` });
@@ -163,9 +163,14 @@ function recoveryResultSection(feedback) {
     return section;
   }
   const result = feedback.result;
+  const title = result.ok
+    ? "系统参数已恢复，待听感确认"
+    : result.handledCause
+      ? "原因处理完成，系统参数未恢复"
+      : "原因定位完成，未执行处理";
   section.append(
-    createElement("strong", "recovery-title", result.ok ? "系统参数已恢复，待听感确认" : "A2DP 恢复失败"),
-    createElement("p", "recovery-path", `恢复路径：${result.recoveryPath}`),
+    createElement("strong", "recovery-title", title),
+    createElement("p", "recovery-path", `工作流：${result.recoveryPath}`),
     createElement("p", "recovery-diagnosis", `${result.diagnosis.confidence}：${result.diagnosis.summary}`),
   );
   if (result.diagnosis.evidence?.length) {
@@ -183,7 +188,6 @@ function recoveryResultSection(feedback) {
     steps.append(row);
   }
   section.append(steps, createElement("p", "recovery-summary", result.message));
-  if (result.usedReconnect) section.append(createElement("p", "recovery-reconnect-note", "本次已使用最后兜底：断开并重新连接目标设备。"));
   return section;
 }
 
@@ -198,12 +202,12 @@ function createDeviceCard(device) {
   icon.setAttribute("aria-hidden", "true");
   const title = createElement("div", "device-title");
   title.append(createElement("h2", "", device.name), createElement("p", "", routeText(device)));
-  const badgeText = device.mode === "HFP_HSP" ? "HFP/HSP模式（点我修复）" : device.label;
+  const badgeText = device.mode === "HFP_HSP" ? "HFP/HSP模式（点我定位）" : device.label;
   const badge = createElement("span", `mode-badge mode-badge--${device.mode.toLowerCase()}`, badgeText);
   if (device.mode === "HFP_HSP") {
     badge.classList.add("is-recoverable");
     badge.dataset.modeLabel = device.label;
-    badge.dataset.recoveryLabel = "一键恢复 A2DP";
+    badge.dataset.recoveryLabel = "定位原因并按因处理";
     badge.setAttribute("role", "button");
     badge.setAttribute("tabindex", "0");
     const activateRecovery = (event) => {
