@@ -28,6 +28,8 @@
 13. [2026-07-17 MAC-home02-MacMini 日志能力启用现场](cases/2026-07-17-MAC-home02日志启用现场.md)
 14. [如何快速、完整地停用、恢复和监测 SoundSource](soundsource服务运维/00-SoundSource服务运维.md)
 15. [2026-07-17 MAC-home02-MacMini SoundSource 服务运维实测](soundsource服务运维/cases/2026-07-17-MAC-home02-SoundSource服务运维实测.md)
+16. [macOS 设备非预期进入 HFP 的原因与定位](10-macOS设备非预期进入HFP的原因与定位.md)
+17. [2026-07-18 微信输入法探测蓝牙输入触发 HFP](cases/2026-07-18-微信输入法探测蓝牙输入触发HFP.md)
 
 ## 原文目录
 
