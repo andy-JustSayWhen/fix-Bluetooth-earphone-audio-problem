@@ -151,9 +151,10 @@ button { font: inherit; }
 .mode-badge.is-recoverable:hover, .mode-badge.is-recoverable:focus-visible { color: white; background: #2870e8; outline: 3px solid rgba(40, 112, 232, 0.22); outline-offset: 2px; }
 .mode-badge.is-recoverable:hover, .mode-badge.is-recoverable:focus-visible { font-size: 0; }
 .mode-badge.is-recoverable:hover::after, .mode-badge.is-recoverable:focus-visible::after { content: attr(data-recovery-label); font-size: 12px; }
-.mode-badge.is-recovering { color: white; background: #667895; pointer-events: none; }
+.mode-badge.is-recovering { min-width: 172px; color: white; background: #667895; text-align: center; pointer-events: none; }
 .recovery-feedback { margin: 13px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 11px; line-height: 1.55; }
 .recovery-feedback.is-success { color: #20704f; background: #e7f7ef; }
+.recovery-feedback.is-running { color: #435673; background: #edf3fb; }
 .recovery-feedback.is-pending { color: #6f571f; background: #fff8df; }
 .recovery-feedback.is-error { color: #9f3346; background: #fff0f2; }
 .recovery-title { display: block; margin-bottom: 5px; font-size: 12px; }

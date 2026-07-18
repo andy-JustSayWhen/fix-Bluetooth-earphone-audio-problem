@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -225,4 +226,22 @@ test("忽略非蓝牙设备", () => {
     device({ transport: "usb", isDefaultOutput: true }),
   ]);
   assert.deepEqual(result, []);
+});
+
+test("一键修复请求期间立即显示忙碌状态并阻止重复提交", () => {
+  const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+  const busyState = source.indexOf("recoveryRunningDevices.add(device.name)");
+  const request = source.indexOf('fetch("/api/a2dp-recovery"');
+
+  assert.ok(busyState >= 0 && busyState < request);
+  assert.match(source, /正在修复，请稍候/);
+  assert.match(source, /if \(recoveryRunningDevices\.has\(device\.name\)\) return/);
+});
+
+test("一键修复结果不会因麦克风仍在使用而被页面删除", () => {
+  const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+
+  assert.doesNotMatch(source, /microphoneOccupancy\?\.isInUse\) recoveryFeedback\.delete/);
+  assert.match(source, /kind: result\.ok \? "success" : result\.handledCause \? "error" : "pending"/);
+  assert.match(source, /finally \{\s+recoveryRunningDevices\.delete\(device\.name\);\s+renderDevices\(lastRenderedDevices\);/s);
 });

@@ -14,6 +14,7 @@ let lastRenderedDevices = [];
 let lastRenderedRoutes = null;
 let lastRenderedStateFingerprint = "";
 const recoveryFeedback = new Map();
+const recoveryRunningDevices = new Set();
 let refreshRequestRunning = false;
 let pendingRouteChange = null;
 let pendingRouteTimer = 0;
@@ -139,10 +140,16 @@ function microphoneOccupancySection(device) {
   return section;
 }
 
-async function recoverA2dp(device, badge) {
+async function recoverA2dp(device) {
+  if (recoveryRunningDevices.has(device.name)) return;
   if (!window.confirm("工具会核对当前麦克风占用并读取最近 10 分钟系统声音日志；只有确认实际占用或完整日志证据链命中原因时，才请求对应进程正常退出。不会切换路由、重启服务或断开重连。是否继续？")) return;
-  badge.classList.add("is-recovering");
-  badge.textContent = "正在定位原因…";
+  recoveryRunningDevices.add(device.name);
+  recoveryFeedback.set(device.name, {
+    kind: "running",
+    text: "正在读取当前麦克风占用和最近 10 分钟系统声音日志，请稍候。",
+  });
+  expandedDevices.add(device.name);
+  renderDevices(lastRenderedDevices);
   try {
     const response = await fetch("/api/a2dp-recovery", {
       method: "POST",
@@ -151,17 +158,25 @@ async function recoverA2dp(device, badge) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "恢复失败");
-    recoveryFeedback.set(device.name, { kind: result.ok || !result.handledCause ? "pending" : "error", result });
-    await refreshDevices({ preserveRouteMessage: true });
+    recoveryFeedback.set(device.name, {
+      kind: result.ok ? "success" : result.handledCause ? "error" : "pending",
+      result,
+    });
   } catch (error) {
     recoveryFeedback.set(device.name, { kind: "error", text: `恢复失败：${error.message}` });
-    await refreshDevices({ preserveRouteMessage: true });
+  } finally {
+    recoveryRunningDevices.delete(device.name);
+    renderDevices(lastRenderedDevices);
   }
+  await refreshDevices({ preserveRouteMessage: true });
 }
 
 function recoveryResultSection(feedback) {
   const section = createElement("section", `recovery-feedback is-${feedback.kind}`);
+  section.setAttribute("role", "status");
+  section.setAttribute("aria-live", "polite");
   if (!feedback.result) {
+    if (feedback.kind === "running") section.append(createElement("strong", "recovery-title", "正在修复，请稍候…"));
     section.append(createElement("p", "recovery-summary", feedback.text));
     return section;
   }
@@ -195,7 +210,6 @@ function recoveryResultSection(feedback) {
 }
 
 function createDeviceCard(device) {
-  if (device.microphoneOccupancy?.isInUse) recoveryFeedback.delete(device.name);
   const card = createElement("article", "device-card");
   const summary = createElement("button", "device-card__summary");
   summary.type = "button";
@@ -209,7 +223,10 @@ function createDeviceCard(device) {
     ? device.isInputActive ? "HFP/HSP模式（麦克风使用中）" : device.label
     : device.label;
   const badge = createElement("span", `mode-badge mode-badge--${device.mode.toLowerCase()}`, badgeText);
-  if (device.mode === "HFP_HSP") {
+  if (recoveryRunningDevices.has(device.name)) {
+    badge.classList.add("is-recovering");
+    badge.textContent = "正在修复，请稍候…";
+  } else if (device.mode === "HFP_HSP") {
     badge.classList.add("is-recoverable");
     badge.dataset.modeLabel = device.label;
     badge.dataset.recoveryLabel = "一键修复 HFP";
@@ -218,7 +235,7 @@ function createDeviceCard(device) {
     const activateRecovery = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      recoverA2dp(device, badge);
+      recoverA2dp(device);
     };
     badge.addEventListener("click", activateRecovery);
     badge.addEventListener("keydown", (event) => {
@@ -230,6 +247,8 @@ function createDeviceCard(device) {
   summary.append(icon, title, badge, chevron);
 
   const details = createElement("div", "device-card__details");
+  const recovery = recoveryFeedback.get(device.name);
+  if (recovery) details.append(recoveryResultSection(recovery));
   if (!device.isDefaultOutput && !device.isInputActive) {
     const inactiveState = createElement("div", "inactive-state");
     inactiveState.append(
@@ -258,8 +277,6 @@ function createDeviceCard(device) {
     ),
   );
   details.append(metrics, microphoneOccupancySection(device));
-  const recovery = recoveryFeedback.get(device.name);
-  if (recovery) details.append(recoveryResultSection(recovery));
   card.append(summary, details);
   }
 
