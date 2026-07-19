@@ -37,7 +37,3 @@
 - [BlueZ A2DP 与 HFP 传输实现证据](../raw/community/bluez-a2dp-hfp-transport-evidence.md)
 
 ## 本项目关联案例
-
-- [REDMI 跨设备蓝牙输入输出联动](cases/2026-07-17-REDMI跨设备蓝牙输入输出联动.md)
-- [跨设备 HFP 候选解决方案调研](cases/2026-07-17-跨设备HFP候选解决方案调研.md)
-- [一键恢复 A2DP 规格](../../reference/SPEC/如何一键恢复A2DP模式.md)
