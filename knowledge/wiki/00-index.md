@@ -26,7 +26,7 @@
 11. [2026-07-17 MAC-home02-MacMini 日志能力启用现场](cases/2026-07-17-MAC-home02日志启用现场.md)
 12. [如何快速、完整地停用、恢复和监测 SoundSource](soundsource服务运维/00-SoundSource服务运维.md)
 13. [2026-07-17 MAC-home02-MacMini SoundSource 服务运维实测](soundsource服务运维/cases/2026-07-17-MAC-home02-SoundSource服务运维实测.md)
-14. [蓝牙设备处于 HFP 模式的问题实例记录](10-macOS设备非预期进入HFP的原因与定位.md)
+14. [蓝牙音频设备进入HFP模式的原因](蓝牙音频设备进入HFP模式的原因.md)
 
 ## 原文目录
 

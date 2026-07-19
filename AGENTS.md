@@ -32,6 +32,6 @@ Agent需要遵守的规则如下：
 
 ## 其他
 
-- 当用户反馈某蓝牙音频设备处于 HFP 模式时，必须维护 `knowledge/wiki/10-macOS设备非预期进入HFP的原因与定位.md`。
+- 当用户反馈某蓝牙音频设备处于 HFP 模式时，必须维护 `knowledge/wiki/蓝牙音频设备进入HFP模式的原因.md`。
 
 必须遵守 `reference/SOP/`。
