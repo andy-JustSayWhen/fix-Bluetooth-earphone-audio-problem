@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   diagnoseFormatRequestCause,
+  diagnoseMultiEndpointCause,
   parseSystemAudioLog,
   type FormatRequestEvidence,
 } from "./format-request-diagnosis.ts";
 import type { RunningProcess } from "../../core/macos-running-apps/index.ts";
+import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
 const processInfo: RunningProcess = {
   pid: 30114,
@@ -16,6 +18,28 @@ const processInfo: RunningProcess = {
 
 const requestLine = "2026-07-18 12:47:04.276197+0800  localhost coreaudiod[90589]: [ 30114 ]BTUnifiedAudioDevice: kBluetoothAudioDevicePropertyFormat request 0 ->1";
 const tscoLine = "2026-07-18 12:47:04.309000+0800  localhost coreaudiod[90589]: BTUnifiedAudioDevice: Current profile tsco";
+const multiEndpointLines = `2026-07-18 15:28:17.939653+0800 localhost coreaudiod[90589]: session: WeType(30114)
+details:
+  deviceUIDs:
+    - 50-C0-F0-F3-6A-66:output
+    - 58-B8-58-9D-C1-E8:input
+2026-07-18 15:28:18.000000+0800 localhost coreaudiod[90589]: There was an error setting the deviceUUIDs as there are more than one BT device connected`;
+
+const multiTarget: RawAudioDevice = {
+  id: 1,
+  name: "XIBERIA K03S",
+  uid: "50-C0-F0-F3-6A-66:output",
+  manufacturer: "",
+  transport: "bluetooth",
+  sampleRateInput: 16_000,
+  sampleRateOutput: 16_000,
+  inputChannels: 1,
+  outputChannels: 2,
+  isRunning: true,
+  isDefaultInput: false,
+  isDefaultOutput: true,
+  isDefaultSystemOutput: true,
+};
 
 function evidence(lines: string): FormatRequestEvidence {
   return {
@@ -65,6 +89,17 @@ test("同一进程存在 StartIO 时只标为高度疑似", () => {
   assert.match(cause.gaps.join("\n"), /StartIO/);
 });
 
+test("同进程号程序启动时间晚于格式请求时不得结束它", () => {
+  const cause = diagnoseFormatRequestCause(
+    evidence(`${requestLine}\n${tscoLine}`),
+    "Redmi电脑音箱-3899",
+    ["Redmi电脑音箱-3899"],
+    () => ({ ...processInfo, startedAt: "Sat Jul 18 13:00:00 2026" }),
+  );
+  assert.equal(cause.confidence, "高度疑似");
+  assert.match(cause.gaps.join("\n"), /进程号复用/);
+});
+
 test("缺少 tsco 或存在多个低采样率蓝牙输出时不确认原因", () => {
   const missingTsco = diagnoseFormatRequestCause(
     evidence(requestLine),
@@ -95,4 +130,31 @@ test("已有反向格式请求时不把旧的 0 -> 1 当作当前原因", () => 
   );
   assert.equal(cause.confidence, "无法确认");
   assert.equal(cause.request, null);
+});
+
+test("同一会话绑定两台蓝牙设备且系统拒绝时确认多端点原因", () => {
+  const cause = diagnoseMultiEndpointCause(
+    evidence(multiEndpointLines),
+    multiTarget,
+    () => processInfo,
+  );
+  assert.equal(cause.confidence, "已确认");
+  assert.equal(cause.bindings.length, 2);
+  assert.match(cause.rejection ?? "", /more than one BT device connected/);
+});
+
+test("多端点日志缺少系统拒绝或目标对应时不得确认", () => {
+  const withoutRejection = diagnoseMultiEndpointCause(
+    evidence(multiEndpointLines.split("\n").slice(0, -1).join("\n")),
+    multiTarget,
+    () => processInfo,
+  );
+  assert.equal(withoutRejection.confidence, "高度疑似");
+
+  const wrongTarget = diagnoseMultiEndpointCause(
+    evidence(multiEndpointLines),
+    { ...multiTarget, uid: "AA-BB-CC-DD-EE-FF:output" },
+    () => processInfo,
+  );
+  assert.equal(wrongTarget.confidence, "高度疑似");
 });

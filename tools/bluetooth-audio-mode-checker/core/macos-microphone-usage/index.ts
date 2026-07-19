@@ -32,10 +32,10 @@ export function readMicrophoneUsers(): MicrophoneUser[] {
   return JSON.parse(output) as MicrophoneUser[];
 }
 
-export function readMicrophoneUsersAsync(): Promise<MicrophoneUser[]> {
+export function readMicrophoneUsersAsync(timeoutMs = 2_000): Promise<MicrophoneUser[]> {
   ensureHelperBuilt();
   return new Promise((resolve, reject) => {
-    execFile(executablePath, [], { encoding: "utf8" }, (error, stdout) => {
+    execFile(executablePath, [], { encoding: "utf8", timeout: timeoutMs }, (error, stdout) => {
       if (error) {
         reject(error);
         return;

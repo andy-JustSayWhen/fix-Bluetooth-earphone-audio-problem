@@ -1,3 +1,4 @@
+export function startBluetoothAudioModePage(createA2dpRecoveryController) {
 const listElement = document.querySelector("#device-list");
 const refreshButton = document.querySelector("#refresh-button");
 const countElement = document.querySelector("#device-count");
@@ -13,8 +14,7 @@ const occupancyFeedback = new Map();
 let lastRenderedDevices = [];
 let lastRenderedRoutes = null;
 let lastRenderedStateFingerprint = "";
-const recoveryFeedback = new Map();
-const recoveryRunningDevices = new Set();
+let recoveryController;
 let refreshRequestRunning = false;
 let pendingRouteChange = null;
 let pendingRouteTimer = 0;
@@ -140,75 +140,6 @@ function microphoneOccupancySection(device) {
   return section;
 }
 
-async function recoverA2dp(device) {
-  if (recoveryRunningDevices.has(device.name)) return;
-  if (!window.confirm("工具会核对当前麦克风占用并读取最近 10 分钟系统声音日志；只有确认实际占用或完整日志证据链命中原因时，才请求对应进程正常退出。不会切换路由、重启服务或断开重连。是否继续？")) return;
-  recoveryRunningDevices.add(device.name);
-  recoveryFeedback.set(device.name, {
-    kind: "running",
-    text: "正在读取当前麦克风占用和最近 10 分钟系统声音日志，请稍候。",
-  });
-  expandedDevices.add(device.name);
-  renderDevices(lastRenderedDevices);
-  try {
-    const response = await fetch("/api/a2dp-recovery", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: device.name }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "恢复失败");
-    recoveryFeedback.set(device.name, {
-      kind: result.ok ? "success" : result.handledCause ? "error" : "pending",
-      result,
-    });
-  } catch (error) {
-    recoveryFeedback.set(device.name, { kind: "error", text: `恢复失败：${error.message}` });
-  } finally {
-    recoveryRunningDevices.delete(device.name);
-    renderDevices(lastRenderedDevices);
-  }
-  await refreshDevices({ preserveRouteMessage: true });
-}
-
-function recoveryResultSection(feedback) {
-  const section = createElement("section", `recovery-feedback is-${feedback.kind}`);
-  section.setAttribute("role", "status");
-  section.setAttribute("aria-live", "polite");
-  if (!feedback.result) {
-    if (feedback.kind === "running") section.append(createElement("strong", "recovery-title", "正在修复，请稍候…"));
-    section.append(createElement("p", "recovery-summary", feedback.text));
-    return section;
-  }
-  const result = feedback.result;
-  const title = result.ok
-    ? "系统参数已恢复，待听感确认"
-    : result.handledCause
-      ? "原因处理完成，系统参数未恢复"
-      : "原因定位完成，未执行处理";
-  section.append(
-    createElement("strong", "recovery-title", title),
-    createElement("p", "recovery-path", `工作流：${result.recoveryPath}`),
-    createElement("p", "recovery-diagnosis", `${result.diagnosis.confidence}：${result.diagnosis.summary}`),
-  );
-  if (result.diagnosis.evidence?.length) {
-    const evidence = createElement("ul", "recovery-evidence");
-    for (const item of result.diagnosis.evidence) evidence.append(createElement("li", "", item));
-    section.append(evidence);
-  }
-  const steps = createElement("ol", "recovery-steps");
-  for (const item of result.steps ?? []) {
-    const row = createElement("li", `is-${item.status}`);
-    row.append(
-      createElement("strong", "", `${item.stage}：${item.status}`),
-      createElement("span", "", item.detail),
-    );
-    steps.append(row);
-  }
-  section.append(steps, createElement("p", "recovery-summary", result.message));
-  return section;
-}
-
 function createDeviceCard(device) {
   const card = createElement("article", "device-card");
   const summary = createElement("button", "device-card__summary");
@@ -223,7 +154,7 @@ function createDeviceCard(device) {
     ? device.isInputActive ? "HFP/HSP模式（麦克风使用中）" : device.label
     : device.label;
   const badge = createElement("span", `mode-badge mode-badge--${device.mode.toLowerCase()}`, badgeText);
-  if (recoveryRunningDevices.has(device.name)) {
+  if (recoveryController.runningDevices.has(device.name)) {
     badge.classList.add("is-recovering");
     badge.textContent = "正在修复，请稍候…";
   } else if (device.mode === "HFP_HSP") {
@@ -235,7 +166,7 @@ function createDeviceCard(device) {
     const activateRecovery = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      recoverA2dp(device);
+      recoveryController.recover(device);
     };
     badge.addEventListener("click", activateRecovery);
     badge.addEventListener("keydown", (event) => {
@@ -247,8 +178,8 @@ function createDeviceCard(device) {
   summary.append(icon, title, badge, chevron);
 
   const details = createElement("div", "device-card__details");
-  const recovery = recoveryFeedback.get(device.name);
-  if (recovery) details.append(recoveryResultSection(recovery));
+  const recovery = recoveryController.feedbackByDevice.get(device.name);
+  if (recovery) details.append(recoveryController.resultSection(recovery, device.name));
   if (!device.isDefaultOutput && !device.isInputActive) {
     const inactiveState = createElement("div", "inactive-state");
     inactiveState.append(
@@ -432,6 +363,14 @@ async function refreshDevices(options = {}) {
   }
 }
 
+recoveryController = createA2dpRecoveryController({
+  createElement,
+  expandedDevices,
+  getLastRenderedDevices: () => lastRenderedDevices,
+  refreshDevices,
+  renderDevices,
+});
+
 refreshButton.addEventListener("click", refreshDevices);
 outputSelect.addEventListener("change", () => changeDefaultDevice(outputSelect));
 inputSelect.addEventListener("change", () => changeDefaultDevice(inputSelect));
@@ -445,3 +384,12 @@ realtimeEvents.addEventListener("message", (event) => {
     // A later system event will replace a malformed update.
   }
 });
+realtimeEvents.addEventListener("recovery", (event) => {
+  try {
+    const { deviceName, progress } = JSON.parse(event.data);
+    recoveryController.handleProgress(deviceName, progress);
+  } catch {
+    // The request response remains the final source of truth.
+  }
+});
+}

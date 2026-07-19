@@ -2,71 +2,100 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detailedLog } from "../../core/detailed-logging/index.ts";
+import type {
+  A2dpRecoveryResult,
+  RecoveryProgress,
+  RecoveryRequest,
+} from "./types.ts";
 
-export type RecoveryStep = {
-  stage: string;
-  status: "成功" | "失败" | "跳过";
-  detail: string;
-  sampleRate?: number | null;
-};
-
-export type RecoveryDiagnosis = {
-  confidence: "已确认" | "高度疑似" | "无法确认";
-  summary: string;
-  evidence: string[];
-};
-
-export type A2dpRecoveryResult = {
-  ok: boolean;
-  recoveryPath: "原因对应处理" | "仅原因定位";
-  handledCause: boolean;
-  sampleRate: number | null;
-  releasedPrograms: string[];
-  remainingPrograms: string[];
-  diagnosis: RecoveryDiagnosis;
-  steps: RecoveryStep[];
-  usedReconnect: boolean;
-  message: string;
-};
+export type {
+  A2dpRecoveryResult,
+  RecoveryActionRequired,
+  RecoveryDiagnosis,
+  RecoveryOutcome,
+  RecoveryProgress,
+  RecoveryRequest,
+  RecoveryRequestContext,
+  RecoveryRouteChoice,
+  RecoveryStep,
+} from "./types.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+export const recoveryWebAssetsDirectory = join(moduleDirectory, "web");
 const runnerPath = join(moduleDirectory, "runner.ts");
+const relaunchGuardRunnerPath = join(moduleDirectory, "relaunch-guard-runner.ts");
+const guardedCommands = new Set<string>();
 
-export function recoverA2dp(name: string): Promise<A2dpRecoveryResult> {
+function startThisBootRelaunchGuard(command: string, processName: string): void {
+  if (guardedCommands.has(command)) return;
+  const child = spawn(process.execPath, [relaunchGuardRunnerPath, command], {
+    cwd: join(moduleDirectory, "..", ".."),
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  guardedCommands.add(command);
+  detailedLog("info", "a2dp-recovery.relaunch-guard-started", {
+    processName,
+    command,
+    pid: child.pid,
+    lifetime: "current-boot",
+  });
+}
+
+export function recoverA2dp(
+  request: RecoveryRequest,
+  onProgress: (progress: RecoveryProgress) => void = () => {},
+): Promise<A2dpRecoveryResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [runnerPath, name], {
+    const child = spawn(process.execPath, [runnerPath, JSON.stringify(request)], {
       cwd: join(moduleDirectory, "..", ".."),
       stdio: ["ignore", "pipe", "pipe"],
     });
-    detailedLog("info", "a2dp-recovery.worker-started", { deviceName: name, pid: child.pid });
-    let stdout = "";
+    detailedLog("info", "a2dp-recovery.worker-started", { deviceName: request.name, pid: child.pid });
+    let bufferedOutput = "";
     let stderr = "";
+    let result: A2dpRecoveryResult | null = null;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stdout.on("data", (chunk: string) => {
+      bufferedOutput += chunk;
+      const lines = bufferedOutput.split("\n");
+      bufferedOutput = lines.pop() ?? "";
+      for (const line of lines.filter(Boolean)) {
+        try {
+          const message = JSON.parse(line) as
+            | { type: "progress"; progress: RecoveryProgress }
+            | { type: "result"; result: A2dpRecoveryResult };
+          if (message.type === "progress") onProgress(message.progress);
+          else result = message.result;
+        } catch {
+          stderr += `无法读取工作进度：${line}\n`;
+        }
+      }
+    });
     child.stderr.on("data", (chunk: string) => { stderr += chunk; });
     child.once("error", (error) => {
-      detailedLog("error", "a2dp-recovery.worker-failed", { deviceName: name, error });
+      detailedLog("error", "a2dp-recovery.worker-failed", { deviceName: request.name, error });
       reject(error);
     });
     child.once("close", (code) => {
       detailedLog(code === 0 ? "info" : "error", "a2dp-recovery.worker-stopped", {
-        deviceName: name,
+        deviceName: request.name,
         pid: child.pid,
         code,
         stderr,
       });
-      if (code !== 0) {
-        reject(new Error(stderr.trim() || "恢复进程执行失败"));
+      if (code !== 0 || result === null) {
+        reject(new Error(stderr.trim() || "恢复进程没有返回可读取结果"));
         return;
       }
-      try {
-        const result = JSON.parse(stdout) as A2dpRecoveryResult;
-        detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.worker-result", { deviceName: name, result });
-        resolve(result);
-      } catch {
-        reject(new Error("恢复结果无法读取"));
+      if (result._relaunchGuard) {
+        startThisBootRelaunchGuard(result._relaunchGuard.command, result._relaunchGuard.processName);
+        delete result._relaunchGuard;
       }
+      detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.worker-result", { deviceName: request.name, result });
+      resolve(result);
     });
   });
 }

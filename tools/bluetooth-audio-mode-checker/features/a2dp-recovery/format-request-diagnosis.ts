@@ -3,6 +3,7 @@ import {
   readRunningProcess,
   type RunningProcess,
 } from "../../core/macos-running-apps/index.ts";
+import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
 export type FormatRequestEvent = {
   kind: "format-request";
@@ -46,6 +47,15 @@ export type FormatRequestCause = {
   sameProcessStartIo: StartIoEvent | null;
   matchingTsco: ProfileEvent | null;
   requestCount: number;
+  gaps: string[];
+};
+
+export type MultiEndpointCause = {
+  confidence: "已确认" | "高度疑似" | "无法确认";
+  requester: RunningProcess | null;
+  requesterPid: number | null;
+  bindings: Array<{ address: string; direction: "input" | "output" }>;
+  rejection: string | null;
   gaps: string[];
 };
 
@@ -109,7 +119,7 @@ export function parseSystemAudioLog(output: string): SystemAudioEvent[] {
   return events.sort((left, right) => left.timestampMs - right.timestampMs);
 }
 
-export function readRecentSystemAudioEvidence(windowMinutes = 10): FormatRequestEvidence {
+function readSystemAudioEvidence(argumentsList: string[], windowMinutes: number): FormatRequestEvidence {
   const predicate = [
     'process IN {"coreaudiod", "bluetoothd", "audioaccessoryd", "audiomxd"}',
     "AND",
@@ -121,16 +131,22 @@ export function readRecentSystemAudioEvidence(windowMinutes = 10): FormatRequest
     'eventMessage CONTAINS[c] "Current profile tsco"',
     "OR",
     'eventMessage CONTAINS[c] "Current profile tacl"',
+    "OR",
+    'eventMessage CONTAINS[c] "deviceUIDs"',
+    "OR",
+    'eventMessage CONTAINS[c] "more than one BT device connected"',
     ")",
   ].join(" ");
   try {
     const output = execFileSync("/usr/bin/log", [
       "show",
       "--style", "syslog",
-      "--last", `${windowMinutes}m`,
+      ...argumentsList,
       "--predicate", predicate,
-    ], { encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
-    const rawLines = output.split("\n").filter((line) => /^\d{4}-\d{2}-\d{2}/.test(line));
+    ], { encoding: "utf8", timeout: 5_000, maxBuffer: 4 * 1024 * 1024 });
+    const rawLines = output.split("\n").filter((line) =>
+      line.trim().length > 0 && !line.startsWith("Timestamp")
+    );
     return {
       windowMinutes,
       events: parseSystemAudioLog(rawLines.join("\n")),
@@ -145,6 +161,74 @@ export function readRecentSystemAudioEvidence(windowMinutes = 10): FormatRequest
       queryError: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+export function readRecentSystemAudioEvidence(windowMinutes = 10): FormatRequestEvidence {
+  return readSystemAudioEvidence(["--last", `${windowMinutes}m`], windowMinutes);
+}
+
+export function readSystemAudioEvidenceSince(startedAtMs: number): FormatRequestEvidence {
+  const boundedStart = Math.max(startedAtMs, Date.now() - 10 * 60_000);
+  const windowMinutes = Math.max(1, Math.ceil((Date.now() - boundedStart) / 60_000));
+  return readSystemAudioEvidence(["--start", new Date(boundedStart).toISOString()], windowMinutes);
+}
+
+function normalizedBluetoothIdentity(value: string): string {
+  return value.replace(/[^0-9a-f]/gi, "").toUpperCase();
+}
+
+export function diagnoseMultiEndpointCause(
+  evidence: FormatRequestEvidence,
+  target: RawAudioDevice,
+  processReader: (pid: number) => RunningProcess | null = readRunningProcess,
+): MultiEndpointCause {
+  const raw = evidence.rawLines.join("\n");
+  const sessionRegex = new RegExp(`${timestampPattern}[^\\n]*session:\\s*([^\\n(]+)\\((\\d+)\\)`, "gi");
+  const sessionMatches = [...raw.matchAll(sessionRegex)];
+  const sessionPids = [...new Set(sessionMatches.map((match) => Number(match[3])))];
+  const requesterPid = sessionPids.length === 1 ? sessionPids[0] : null;
+  const requester = requesterPid === null ? null : processReader(requesterPid);
+  const bindings = [...raw.matchAll(/([0-9a-f]{2}(?:[-:][0-9a-f]{2}){5}):(input|output)\b/gi)]
+    .map((match) => ({
+      address: normalizedBluetoothIdentity(match[1]),
+      direction: match[2].toLowerCase() as "input" | "output",
+    }));
+  const uniqueBindings = [...new Map(bindings.map((binding) =>
+    [`${binding.address}:${binding.direction}`, binding] as const
+  )).values()];
+  const rejectionMatch = raw.match(/There was an error setting the deviceUUIDs[^\n]*more than one BT device connected[^\n]*/i);
+  const rejection = rejectionMatch?.[0] ?? null;
+  const targetIdentities = [target.uid, target.bluetoothAddress ?? ""]
+    .map(normalizedBluetoothIdentity)
+    .filter(Boolean);
+  const addresses = new Set(uniqueBindings.map((binding) => binding.address));
+  const gaps: string[] = [];
+  if (sessionPids.length !== 1) gaps.push("同一日志窗口内无法锁定唯一声音会话进程");
+  if (!requester) gaps.push("声音会话进程已经退出或无法复核身份");
+  const latestSessionTimestampMs = Math.max(0, ...sessionMatches.map((match) => timestampToMilliseconds(match[1])));
+  if (requester && Date.parse(requester.startedAt) > latestSessionTimestampMs + 1_000) {
+    gaps.push("当前同进程号程序的启动时间晚于声音会话，可能发生了进程号复用");
+  }
+  if (!uniqueBindings.some((binding) => binding.direction === "input")) gaps.push("会话没有完整记录蓝牙输入端点");
+  if (!uniqueBindings.some((binding) => binding.direction === "output")) gaps.push("会话没有完整记录蓝牙输出端点");
+  if (addresses.size < 2) gaps.push("没有证明输入输出来自两台不同蓝牙设备");
+  if (!rejection) gaps.push("系统没有记录拒绝多个蓝牙设备绑定");
+  if (!uniqueBindings.some((binding) =>
+    binding.direction === "output" && targetIdentities.includes(binding.address)
+  )) gaps.push("日志中的蓝牙输出端点无法与目标设备对应");
+  if (!target.isDefaultOutput || target.sampleRateOutput === null || target.sampleRateOutput > 16_000) {
+    gaps.push("目标当前不是低采样率默认输出");
+  }
+
+  const hasCandidate = sessionMatches.length > 0 || uniqueBindings.length > 0 || rejection !== null;
+  return {
+    confidence: gaps.length === 0 ? "已确认" : hasCandidate ? "高度疑似" : "无法确认",
+    requester,
+    requesterPid,
+    bindings: uniqueBindings,
+    rejection,
+    gaps,
+  };
 }
 
 export function diagnoseFormatRequestCause(
@@ -187,6 +271,9 @@ export function diagnoseFormatRequestCause(
   const requestCount = requests.filter((event) => event.requesterPid === request.requesterPid).length;
   const gaps: string[] = [];
   if (!requester) gaps.push("请求进程已经退出或无法核对其路径和启动时间");
+  if (requester && Date.parse(requester.startedAt) > request.timestampMs + 1_000) {
+    gaps.push("当前同进程号程序的启动时间晚于格式请求，可能发生了进程号复用");
+  }
   if (sameProcessStartIo) gaps.push("同一进程在两秒时间窗内存在 StartIO，不能归入仅格式请求");
   if (!matchingTsco) gaps.push("格式请求后两秒内没有匹配的 tsco 日志");
   if (lowRateBluetoothOutputNames.length !== 1 || lowRateBluetoothOutputNames[0] !== targetName) {

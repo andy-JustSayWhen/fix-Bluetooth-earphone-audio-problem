@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 
 import {
@@ -19,7 +20,11 @@ import {
   shouldContinueOccupancyScanning,
   shouldStartOccupancyScanForInputActivity,
 } from "../features/microphone-occupancy/index.ts";
-import { recoverA2dp } from "../features/a2dp-recovery/index.ts";
+import {
+  recoverA2dp,
+  recoveryWebAssetsDirectory,
+  type RecoveryProgress,
+} from "../features/a2dp-recovery/index.ts";
 import { setDefaultAudioDevice } from "../core/macos-audio-route/index.ts";
 import { detailedLog, getDetailedLogStatus } from "../core/detailed-logging/index.ts";
 
@@ -34,7 +39,15 @@ type Options = {
   openBrowser: boolean;
 };
 
-const allowedAssets = new Set(["index.html", "styles.css", "client.js"]);
+const appWebAssetsDirectory = join(dirname(fileURLToPath(import.meta.url)), "web");
+const allowedAssets = new Set([
+  "index.html",
+  "app-client.js",
+  "styles.css",
+  "bluetooth-audio-mode-client.js",
+  "a2dp-recovery-client.js",
+  "a2dp-recovery.css",
+]);
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -76,7 +89,18 @@ async function serveAsset(assetName: string, response: import("node:http").Serve
     return;
   }
   try {
-    const data = await readFile(join(webAssetsDirectory, assetName));
+    const source = assetName === "index.html" || assetName === "app-client.js"
+      ? { directory: appWebAssetsDirectory, name: assetName === "app-client.js" ? "client.js" : assetName }
+      : assetName === "a2dp-recovery-client.js" || assetName === "a2dp-recovery.css"
+        ? {
+            directory: recoveryWebAssetsDirectory,
+            name: assetName === "a2dp-recovery-client.js" ? "client.js" : "styles.css",
+          }
+        : {
+            directory: webAssetsDirectory,
+            name: assetName === "bluetooth-audio-mode-client.js" ? "client.js" : assetName,
+          };
+    const data = await readFile(join(source.directory, source.name));
     response.writeHead(200, {
       "Content-Type": contentTypes[extname(assetName)] ?? "application/octet-stream",
       "Cache-Control": "no-cache",
@@ -131,8 +155,10 @@ function main(): void {
   let realtimeFingerprint = "";
   let inputActivityFingerprint = "";
   let latestInputSnapshot: ActiveInputSnapshot | null = null;
+  let latestOccupancyCapturedAt: string | null = null;
   let inputActivityScanPending = false;
   let initialOccupancyScanScheduled = false;
+  const pendingRelaunchAuthorizations = new Set<string>();
 
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
@@ -142,6 +168,10 @@ function main(): void {
     const payload = statePayload();
     if (payload === null) return;
     const message = `data: ${JSON.stringify(payload)}\n\n`;
+    for (const client of eventClients) client.write(message);
+  };
+  const broadcastRecoveryProgress = (deviceName: string, progress: RecoveryProgress) => {
+    const message = `event: recovery\ndata: ${JSON.stringify({ deviceName, progress })}\n\n`;
     for (const client of eventClients) client.write(message);
   };
   const applyRefreshedState = (refreshedState: AudioModeState, minimumSnapshotTimestampMs = Date.now()): boolean => {
@@ -312,6 +342,7 @@ function main(): void {
       const startedAt = performance.now();
       try {
         const occupancySnapshot = await attachMicrophoneOccupancyAsync(cachedState.devices);
+        latestOccupancyCapturedAt = new Date().toISOString();
         continueScanning = shouldContinueOccupancyScanning(occupancySnapshot);
         const nextFingerprint = JSON.stringify(occupancySnapshot.map((device) => ({
           name: device.name,
@@ -452,10 +483,44 @@ function main(): void {
         if (!request.headers["content-type"]?.startsWith("application/json")) throw new Error("请求格式不正确");
         const expectedOrigin = `http://127.0.0.1:${options.port}`;
         if (request.headers.origin && request.headers.origin !== expectedOrigin) throw new Error("请求来源不正确");
-        const body = await readJsonBody(request) as { name?: unknown };
+        const body = await readJsonBody(request) as {
+          name?: unknown;
+          routeChoiceId?: unknown;
+          authorizeRelaunchBlock?: unknown;
+        };
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
+        if (body.routeChoiceId !== undefined && (typeof body.routeChoiceId !== "string" || body.routeChoiceId.length > 512)) {
+          throw new Error("输入输出组合无效");
+        }
+        if (body.authorizeRelaunchBlock !== undefined && typeof body.authorizeRelaunchBlock !== "boolean") {
+          throw new Error("授权信息无效");
+        }
+        if (body.authorizeRelaunchBlock === true && !pendingRelaunchAuthorizations.has(body.name)) {
+          throw new Error("当前没有等待确认的自动拉起阻止授权");
+        }
+        if (body.authorizeRelaunchBlock === true) pendingRelaunchAuthorizations.delete(body.name);
         detailedLog("info", "a2dp-recovery.requested", { deviceName: body.name });
-        const result = await recoverA2dp(body.name);
+        const clickedAt = new Date().toISOString();
+        const currentState = cachedState ?? readAudioModeState();
+        const currentDevice = currentState.devices.find((device) => device.name === body.name);
+        const result = await recoverA2dp({
+          name: body.name,
+          routeChoiceId: body.routeChoiceId as string | undefined,
+          authorizeRelaunchBlock: body.authorizeRelaunchBlock as boolean | undefined,
+          context: {
+            clickedAt,
+            defaultInput: currentState.routes.input.find((route) => route.isDefault)?.name ?? null,
+            defaultOutput: currentState.routes.output.find((route) => route.isDefault)?.name ?? null,
+            targetSampleRate: currentDevice?.sampleRateOutput ?? null,
+            occupancySnapshot: latestOccupancyCapturedAt && currentDevice?.microphoneOccupancy ? {
+              capturedAt: latestOccupancyCapturedAt,
+              users: currentDevice.microphoneOccupancy.users,
+            } : undefined,
+          },
+        }, (progress) => broadcastRecoveryProgress(body.name as string, progress));
+        if (result.actionRequired?.kind === "relaunch-authorization") {
+          pendingRelaunchAuthorizations.add(body.name);
+        }
         detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.returned", { deviceName: body.name, result });
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
         response.end(JSON.stringify(result));

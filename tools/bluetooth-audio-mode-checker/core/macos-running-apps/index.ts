@@ -39,6 +39,33 @@ export function readRunningProcess(pid: number): RunningProcess | null {
   }
 }
 
+export function readRunningProcessesByCommand(command: string): RunningProcess[] {
+  if (!command) return [];
+  try {
+    const output = execFileSync("/bin/ps", [
+      "-axo", "pid=,lstart=,comm=",
+    ], { encoding: "utf8" });
+    const processes: RunningProcess[] = [];
+    for (const line of output.split("\n")) {
+      const match = line.trim().match(
+        /^(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/,
+      );
+      if (!match || match[3].trim() !== command) continue;
+      const pid = Number(match[1]);
+      if (pid <= 1 || pid === process.pid) continue;
+      processes.push({
+        pid,
+        name: basename(command),
+        command,
+        startedAt: match[2].replace(/\s+/g, " "),
+      });
+    }
+    return processes;
+  } catch {
+    return [];
+  }
+}
+
 export function terminateRunningProcess(expected: RunningProcess): void {
   const current = readRunningProcess(expected.pid);
   if (!current) return;

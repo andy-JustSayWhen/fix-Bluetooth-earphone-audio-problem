@@ -147,24 +147,6 @@ button { font: inherit; }
 .mode-badge--le_audio { color: #6944ad; background: #f0eaff; }
 .mode-badge--inactive { color: #657086; background: #eef1f5; }
 .mode-badge--unknown { color: #a34051; background: #fdecef; }
-.mode-badge.is-recoverable { position: relative; min-width: 172px; text-align: center; cursor: pointer; transition: color 140ms ease, background 140ms ease; }
-.mode-badge.is-recoverable:hover, .mode-badge.is-recoverable:focus-visible { color: white; background: #2870e8; outline: 3px solid rgba(40, 112, 232, 0.22); outline-offset: 2px; }
-.mode-badge.is-recoverable:hover, .mode-badge.is-recoverable:focus-visible { font-size: 0; }
-.mode-badge.is-recoverable:hover::after, .mode-badge.is-recoverable:focus-visible::after { content: attr(data-recovery-label); font-size: 12px; }
-.mode-badge.is-recovering { min-width: 172px; color: white; background: #667895; text-align: center; pointer-events: none; }
-.recovery-feedback { margin: 13px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 11px; line-height: 1.55; }
-.recovery-feedback.is-success { color: #20704f; background: #e7f7ef; }
-.recovery-feedback.is-running { color: #435673; background: #edf3fb; }
-.recovery-feedback.is-pending { color: #6f571f; background: #fff8df; }
-.recovery-feedback.is-error { color: #9f3346; background: #fff0f2; }
-.recovery-title { display: block; margin-bottom: 5px; font-size: 12px; }
-.recovery-path, .recovery-diagnosis, .recovery-summary, .recovery-reconnect-note { margin: 6px 0 0; }
-.recovery-evidence, .recovery-steps { margin: 7px 0 0; padding-left: 20px; }
-.recovery-steps { display: grid; gap: 5px; }
-.recovery-steps li strong, .recovery-steps li span { display: block; }
-.recovery-steps li span { opacity: 0.82; }
-.recovery-steps li.is-跳过 { color: #657086; }
-.recovery-reconnect-note { font-weight: 700; }
 .chevron { width: 10px; height: 10px; border-right: 2px solid #8d98aa; border-bottom: 2px solid #8d98aa; transform: rotate(45deg); transition: transform 180ms ease; }
 .device-card.is-expanded .chevron { transform: rotate(225deg) translate(-2px, -2px); }
 
