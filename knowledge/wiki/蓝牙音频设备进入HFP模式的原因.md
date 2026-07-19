@@ -40,16 +40,10 @@
 宿主机：MAC-home02-MacMini；Mac mini（M1）；macOS 15.7.7 / 24G720；环境记录号 `MACMINI9,1-175AC621`
 
 输入设备：
-
-- 名称：`Redmi电脑音箱-3899`
-- 唯一标识：本条实测记录未留存蓝牙地址
-- 状态：默认输入，并被 Codex 实际读取
+`Redmi电脑音箱-3899`
 
 输出设备：
-
-- 名称：`Redmi电脑音箱-3899`
-- 唯一标识：本条实测记录未留存蓝牙地址
-- 状态：默认输出
+`Redmi电脑音箱-3899`
 
 问题现象：Codex 语音输入开始后，设备输出从高质量播放链路切入 16 kHz 单声道的 HFP 通话链路。
 
@@ -76,16 +70,10 @@
 宿主机：MAC-home02-MacMini；Mac mini（M1）；macOS 15.7.7 / 24G720；环境记录号 `MACMINI9,1-175AC621`
 
 输入设备：
-
-- 名称：`Redmi电脑音箱-3899`
-- 唯一标识：本条摘要未留存蓝牙地址
-- 状态：系统声音设置的“输入”页面持续监测输入电平
+`Redmi电脑音箱-3899`
 
 输出设备：
-
-- 名称：`Redmi电脑音箱-3899`
-- 唯一标识：本条摘要未留存蓝牙地址
-- 状态：默认输出
+`Redmi电脑音箱-3899`
 
 问题现象：打开系统设置“声音 -> 输入”并持续监测输入电平后，目标设备进入 HFP；切走输入后退出。
 
@@ -104,16 +92,10 @@ HFPInputShim StartIO
 宿主机：MAC-home02-MacMini；Mac mini（M1）；macOS 15.7.7 / 24G720；环境记录号 `MACMINI9,1-175AC621`
 
 输入设备：
-
-- 名称：`Redmi电脑音箱-3899`
-- 唯一标识：蓝牙地址 `50:88:11:07:63:DA`
-- 状态：被系统临时设为默认输入，但没有真正开始录音
+`Redmi电脑音箱-3899`
 
 输出设备：
-
-- 名称：`Redmi电脑音箱-3899`
-- 唯一标识：蓝牙地址 `50:88:11:07:63:DA`
-- 状态：默认输出
+`Redmi电脑音箱-3899`
 
 问题现象：微信输入法没有真正开始录音，但设备从 A2DP 切入 HFP，输出变为 16 kHz 单声道。
 
@@ -134,18 +116,10 @@ HFPInputShim StartIO
 宿主机：MAC-home02-MacMini；Mac mini（M1）；机型标识 `Macmini9,1`；硬件唯一标识 `175AC621-14A2-5E02-AEFD-F7D360137359`；macOS 15.7.7 / 24G720；蓝牙控制器 `BCM_4378`
 
 输入设备：
-
-- 名称：`Redmi电脑音箱-3899`
-- 唯一标识：蓝牙地址 `50:88:11:07:63:DA`
-- 角色：蓝牙输入 A
-- 状态：默认输入；实验中没有应用实际采集输入
+`Redmi电脑音箱-3899`
 
 输出设备：
-
-- 名称：`REDMI Buds 6 Pro 电竞版`
-- 唯一标识：蓝牙地址 `00:BB:43:41:6B:81`
-- 角色：蓝牙输出 B
-- 状态：默认输出
+`REDMI Buds 6 Pro 电竞版`
 
 问题现象：选择蓝牙输入 A 后，另一台蓝牙输出 B 从 `tacl`、约 44.1 kHz、双声道切换为 `tsco`、16 kHz、单声道。
 
@@ -168,14 +142,10 @@ HFPInputShim StartIO
 宿主机：MAC-home02-MacMini；Mac mini（M1）；macOS 15.7.7 / 24G720
 
 输入设备：
-
-- 名称：当次记录未固定为单一设备
-- 唯一标识：当次记录未完整留存
+未确认
 
 输出设备：
-
-- 名称：当次记录中的蓝牙输出设备
-- 唯一标识：当次记录未完整留存
+未确认
 
 问题现象：Codex 已停止录音，但 SoundSource 后台进程 `arkaudiod` 继续保持播放和录音会话，设备在 16 kHz 通话格式附近持续存在。
 
@@ -193,9 +163,9 @@ HFPInputShim StartIO
 
 宿主机：本机实测记录；具体主机和设备身份以原始日志为准
 
-输入设备：当次记录未能确认具体输入设备及唯一标识。
+输入设备：未确认
 
-输出设备：QQMusic 播放使用的蓝牙输出设备；唯一标识未在现有摘要中完整留存。
+输出设备：未确认
 
 问题现象：QQMusic 仅播放、没有录音时，观察到 SCO/HFP 切换。
 
@@ -215,16 +185,10 @@ HFPInputShim StartIO
 宿主机：`andymacbook-air`；MacBookAir10,1；系统版本未在本实例摘要中固定
 
 输入设备：
-
-- 名称：`DJI Mic Mini-9DC1E8`
-- 唯一标识：蓝牙地址 `58:B8:58:9D:C1:E8`
-- 状态：微信输入法录音会话的输入端点
+`DJI Mic Mini-9DC1E8`
 
 输出设备：
-
-- 名称：`XIBERIA K03S`
-- 唯一标识：蓝牙地址 `50:C0:F0:F3:6A:66`
-- 状态：微信输入法录音会话的输出端点
+`XIBERIA K03S`
 
 问题现象：微信输入法语音输入短暂出现波形，随后耳机反复提示“已断开、已连接”，输入没有声音，XIBERIA 输出进入 HFP/HSP。
 
@@ -255,16 +219,10 @@ There was an error setting the deviceUUIDs as there are more than one BT device 
 宿主机：`MAC-home01-MacBookAir`；`andymacbook-air.local`；macOS 14.6.1
 
 输入设备：
-
-- 名称：Bose QC Headphones
-- 唯一标识：本实例摘要未留存蓝牙地址
-- 状态：选择 Bose 输出后被系统联动为输入
+`Bose QC Headphones`
 
 输出设备：
-
-- 名称：Bose QC Headphones
-- 唯一标识：本实例摘要未留存蓝牙地址
-- 状态：默认输出
+`Bose QC Headphones`
 
 问题现象：Bose 从 `44.1 kHz / 双声道` 切为 `16 kHz / 单声道`，传统蓝牙通话链路建立；语音结束后 QQMusic 出现卡顿、静音和恢复异常。
 
@@ -286,16 +244,10 @@ stereo 0
 宿主机：`MAC-home01-MacBookAir`；`andymacbook-air.local`；macOS 14.6.1
 
 输入设备：
-
-- 名称：XIBERIA K03S
-- 唯一标识：本实例摘要未留存蓝牙地址
-- 状态：输入输出都使用 K03S 的蓝牙端点
+`XIBERIA K03S`
 
 输出设备：
-
-- 名称：XIBERIA K03S
-- 唯一标识：本实例摘要未留存蓝牙地址
-- 状态：默认输出
+`XIBERIA K03S`
 
 问题现象：K03S 从 `44.1 kHz / 双声道` 降为 `16 kHz / 单声道`；输入切走后可能短暂恢复又再次降级，QQMusic 出现输出队列停止、启动和控制延迟。
 
