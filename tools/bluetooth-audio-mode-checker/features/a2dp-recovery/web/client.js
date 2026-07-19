@@ -5,16 +5,45 @@ export function createA2dpRecoveryController({
   refreshDevices,
   renderDevices,
 }) {
-  const feedbackByDevice = new Map();
+  const storageKey = "a2dp-recovery-feedback-v1";
+
+  function readStoredFeedback() {
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem(storageKey) || "{}");
+      return stored && typeof stored === "object" ? stored : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function writeStoredFeedback(stored) {
+    try {
+      window.sessionStorage.setItem(storageKey, JSON.stringify(stored));
+    } catch {
+      // The current page still shows the result when browser storage is unavailable.
+    }
+  }
+
+  const storedFeedback = readStoredFeedback();
+  const feedbackByDevice = new Map(Object.entries(storedFeedback));
   const runningDevices = new Set();
+  for (const deviceName of feedbackByDevice.keys()) expandedDevices.add(deviceName);
+
+  function setFeedback(deviceName, feedback, persist = true) {
+    feedbackByDevice.set(deviceName, feedback);
+    const stored = readStoredFeedback();
+    if (persist) stored[deviceName] = feedback;
+    else delete stored[deviceName];
+    writeStoredFeedback(stored);
+  }
 
   async function recover(device, action = {}) {
     if (runningDevices.has(device.name)) return;
     runningDevices.add(device.name);
-    feedbackByDevice.set(device.name, {
+    setFeedback(device.name, {
       kind: "running",
       text: "正在保存现场并按已确证原因路由，请稍候。",
-    });
+    }, false);
     expandedDevices.add(device.name);
     renderDevices(getLastRenderedDevices());
     try {
@@ -25,12 +54,12 @@ export function createA2dpRecoveryController({
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "恢复失败");
-      feedbackByDevice.set(device.name, {
+      setFeedback(device.name, {
         kind: result.ok ? "success" : result.actionRequired ? "pending" : "error",
         result,
       });
     } catch (error) {
-      feedbackByDevice.set(device.name, { kind: "error", text: `恢复失败：${error.message}` });
+      setFeedback(device.name, { kind: "error", text: `恢复失败：${error.message}` });
     } finally {
       runningDevices.delete(device.name);
       renderDevices(getLastRenderedDevices());
@@ -68,6 +97,13 @@ export function createA2dpRecoveryController({
       steps.append(row);
     }
     section.append(steps, createElement("p", "recovery-summary", result.message));
+    if (result.releasedPrograms?.some((name) => /WeType|微信输入法/i.test(name))) {
+      section.append(createElement(
+        "p",
+        "recovery-input-method-note",
+        "微信输入法进程已经停止读取麦克风，但进程自动重启不代表语音快捷键已恢复。本机实测如无法再次唤起语音，请切换一次输入法，或在微信输入法的语音设置中关闭再开启免提模式。",
+      ));
+    }
     if (result.actionRequired?.kind === "route-choice") {
       const actions = createElement("div", "recovery-actions");
       actions.append(createElement("p", "recovery-action-prompt", result.actionRequired.prompt));
@@ -101,10 +137,10 @@ export function createA2dpRecoveryController({
 
   function handleProgress(deviceName, progress) {
     if (!runningDevices.has(deviceName)) return;
-    feedbackByDevice.set(deviceName, {
+    setFeedback(deviceName, {
       kind: "running",
       text: `${progress.stage}：${progress.message}`,
-    });
+    }, false);
     renderDevices(getLastRenderedDevices());
   }
 

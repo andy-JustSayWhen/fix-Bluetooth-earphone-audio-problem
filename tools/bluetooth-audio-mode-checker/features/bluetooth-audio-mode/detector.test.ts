@@ -7,6 +7,7 @@ import {
   applyActiveOutputSnapshot,
   assessBluetoothDevices,
 } from "./index.ts";
+import { describeBluetoothRouteRisk } from "./web/client.js";
 
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
@@ -236,6 +237,39 @@ test("一键修复请求期间立即显示忙碌状态并阻止重复提交", ()
   assert.ok(busyState >= 0 && busyState < request);
   assert.match(source, /正在修复，请稍候/);
   assert.match(source, /if \(runningDevices\.has\(device\.name\)\) return/);
+});
+
+test("一键修复使用独立原生按钮而不是在卡片按钮内嵌交互文字", () => {
+  const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+
+  assert.match(source, /createElement\("button", "recovery-trigger", "一键修复 HFP"\)/);
+  assert.doesNotMatch(source, /badge\.setAttribute\("role", "button"\)/);
+  assert.match(source, /header\.append\(summary, modeActions\)/);
+});
+
+test("同一标签页刷新后保留已完成修复结果但不恢复运行中状态", () => {
+  const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
+
+  assert.match(source, /window\.sessionStorage\.getItem\(storageKey\)/);
+  assert.match(source, /setFeedback\(device\.name, \{\s+kind: "running"[\s\S]*?\}, false\)/);
+  assert.match(source, /setFeedback\(device\.name, \{\s+kind: result\.ok/);
+});
+
+test("不同经典蓝牙输入输出在语音前显示风险提示", () => {
+  const routes = {
+    input: [{ name: "蓝牙麦克风 A", transport: "bluetooth", isDefault: true }],
+    output: [{ name: "蓝牙耳机 B", transport: "bluetooth", isDefault: true }],
+  };
+
+  assert.match(describeBluetoothRouteRisk(routes), /两台不同的蓝牙设备/);
+  assert.equal(describeBluetoothRouteRisk({
+    input: [{ name: "同一耳机", transport: "bluetooth", isDefault: true }],
+    output: [{ name: "同一耳机", transport: "bluetooth", isDefault: true }],
+  }), null);
+  assert.equal(describeBluetoothRouteRisk({
+    input: [{ name: "内建麦克风", transport: "built-in", isDefault: true }],
+    output: [{ name: "蓝牙耳机 B", transport: "bluetooth", isDefault: true }],
+  }), null);
 });
 
 test("一键修复结果不会因麦克风仍在使用而被页面删除", () => {

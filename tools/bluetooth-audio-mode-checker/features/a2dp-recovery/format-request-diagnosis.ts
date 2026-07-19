@@ -167,10 +167,23 @@ export function readRecentSystemAudioEvidence(windowMinutes = 10): FormatRequest
   return readSystemAudioEvidence(["--last", `${windowMinutes}m`], windowMinutes);
 }
 
+export function formatSystemLogStart(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    "-", pad(date.getMonth() + 1),
+    "-", pad(date.getDate()),
+    " ", pad(date.getHours()),
+    ":", pad(date.getMinutes()),
+    ":", pad(date.getSeconds()),
+  ].join("");
+}
+
 export function readSystemAudioEvidenceSince(startedAtMs: number): FormatRequestEvidence {
   const boundedStart = Math.max(startedAtMs, Date.now() - 10 * 60_000);
   const windowMinutes = Math.max(1, Math.ceil((Date.now() - boundedStart) / 60_000));
-  return readSystemAudioEvidence(["--start", new Date(boundedStart).toISOString()], windowMinutes);
+  return readSystemAudioEvidence(["--start", formatSystemLogStart(boundedStart)], windowMinutes);
 }
 
 function normalizedBluetoothIdentity(value: string): string {

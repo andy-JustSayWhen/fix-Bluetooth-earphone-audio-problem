@@ -88,6 +88,7 @@ button { font: inherit; }
 .route-control select:disabled { color: #8c96a7; cursor: wait; }
 .route-message { grid-column: 1 / -1; margin: -2px 2px 0; color: #8a95a7; font-size: 11px; }
 .route-message.is-success { color: #25825a; }
+.route-message.is-warning { padding: 9px 11px; color: #855d16; background: #fff8df; border: 1px solid #efdc9d; border-radius: 9px; line-height: 1.55; }
 .route-message.is-error { color: #b34053; }
 
 .status-bar {
@@ -120,13 +121,22 @@ button { font: inherit; }
 .device-card:hover { border-color: #c6d4e9; transform: translateY(-1px); box-shadow: 0 12px 32px rgba(30, 49, 80, 0.085); }
 .device-card.is-expanded { border-color: #aac2ef; box-shadow: 0 14px 36px rgba(38, 85, 172, 0.11); }
 
+.device-card__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 17px 18px 17px 0;
+}
+
 .device-card__summary {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
   width: 100%;
-  padding: 21px 22px;
+  min-width: 0;
+  padding: 4px 0 4px 22px;
   color: inherit;
   text-align: left;
   background: transparent;
@@ -147,6 +157,7 @@ button { font: inherit; }
 .mode-badge--le_audio { color: #6944ad; background: #f0eaff; }
 .mode-badge--inactive { color: #657086; background: #eef1f5; }
 .mode-badge--unknown { color: #a34051; background: #fdecef; }
+.device-card__mode-actions { display: grid; justify-items: stretch; gap: 7px; min-width: 172px; }
 .chevron { width: 10px; height: 10px; border-right: 2px solid #8d98aa; border-bottom: 2px solid #8d98aa; transform: rotate(45deg); transition: transform 180ms ease; }
 .device-card.is-expanded .chevron { transform: rotate(225deg) translate(-2px, -2px); }
 
@@ -213,9 +224,9 @@ button { font: inherit; }
   .status-bar { margin-top: 25px; }
   .route-panel { grid-template-columns: 1fr; margin-top: 24px; padding: 14px; }
   .route-message { grid-column: auto; }
-  .device-card__summary { grid-template-columns: auto 1fr auto; gap: 12px; padding: 18px 16px; }
-  .mode-badge { grid-column: 2; justify-self: start; }
-  .chevron { grid-column: 3; grid-row: 1 / span 2; }
+  .device-card__header { grid-template-columns: 1fr; gap: 8px; padding: 14px 16px 16px; }
+  .device-card__summary { grid-template-columns: auto 1fr auto; gap: 12px; padding: 4px 0; }
+  .device-card__mode-actions { grid-template-columns: repeat(2, minmax(0, max-content)); justify-content: start; min-width: 0; padding-left: 62px; }
   .device-card__details { padding: 0 16px 18px; }
   .metric-groups { grid-template-columns: 1fr; }
 }

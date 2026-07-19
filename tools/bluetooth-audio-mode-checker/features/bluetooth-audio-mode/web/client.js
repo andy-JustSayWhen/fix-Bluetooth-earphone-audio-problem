@@ -1,3 +1,16 @@
+export function describeBluetoothRouteRisk(routes) {
+  const input = routes.input.find((route) => route.isDefault);
+  const output = routes.output.find((route) => route.isDefault);
+  if (
+    input?.transport === "bluetooth" &&
+    output?.transport === "bluetooth" &&
+    input.name !== output.name
+  ) {
+    return `当前输入“${input.name}”和输出“${output.name}”来自两台不同的蓝牙设备。部分语音应用会拒绝这种组合；开始语音前建议先确认是否必须保留这组路由。`;
+  }
+  return null;
+}
+
 export function startBluetoothAudioModePage(createA2dpRecoveryController) {
 const listElement = document.querySelector("#device-list");
 const refreshButton = document.querySelector("#refresh-button");
@@ -75,9 +88,12 @@ async function releaseOccupancy(deviceName, pids, label) {
         text: `解除未成功：仍有 ${result.remainingPids.length} 个程序正在读取麦克风。程序可能拒绝了正常退出请求。`,
       });
     } else if (result.releasedPids?.length) {
+      const inputMethodHint = /WeType|微信输入法/i.test(label)
+        ? " 微信输入法会自动重新启动，但本机实测发现语音快捷键可能不会同时恢复；如无法再次唤起语音，请切换一次输入法，或在微信输入法的语音设置中关闭再开启免提模式。"
+        : "";
       occupancyFeedback.set(deviceName, {
         kind: "success",
-        text: "系统已确认：相关程序不再读取此麦克风。程序自己的语音图标可能需要片刻才会复位。",
+        text: `系统已确认：相关程序不再读取此麦克风。程序自己的语音图标可能需要片刻才会复位。${inputMethodHint}`,
       });
     } else {
       occupancyFeedback.set(deviceName, {
@@ -142,6 +158,7 @@ function microphoneOccupancySection(device) {
 
 function createDeviceCard(device) {
   const card = createElement("article", "device-card");
+  const header = createElement("div", "device-card__header");
   const summary = createElement("button", "device-card__summary");
   summary.type = "button";
   summary.setAttribute("aria-expanded", "false");
@@ -154,28 +171,24 @@ function createDeviceCard(device) {
     ? device.isInputActive ? "HFP/HSP模式（麦克风使用中）" : device.label
     : device.label;
   const badge = createElement("span", `mode-badge mode-badge--${device.mode.toLowerCase()}`, badgeText);
+  const modeActions = createElement("div", "device-card__mode-actions");
+  modeActions.append(badge);
   if (recoveryController.runningDevices.has(device.name)) {
-    badge.classList.add("is-recovering");
-    badge.textContent = "正在修复，请稍候…";
+    const runningButton = createElement("button", "recovery-trigger is-running", "正在修复，请稍候…");
+    runningButton.type = "button";
+    runningButton.disabled = true;
+    modeActions.append(runningButton);
   } else if (device.mode === "HFP_HSP") {
-    badge.classList.add("is-recoverable");
-    badge.dataset.modeLabel = device.label;
-    badge.dataset.recoveryLabel = "一键修复 HFP";
-    badge.setAttribute("role", "button");
-    badge.setAttribute("tabindex", "0");
-    const activateRecovery = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      recoveryController.recover(device);
-    };
-    badge.addEventListener("click", activateRecovery);
-    badge.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") activateRecovery(event);
-    });
+    const recoveryButton = createElement("button", "recovery-trigger", "一键修复 HFP");
+    recoveryButton.type = "button";
+    recoveryButton.setAttribute("aria-label", `一键修复 ${device.name} 的 HFP 模式`);
+    recoveryButton.addEventListener("click", () => recoveryController.recover(device));
+    modeActions.append(recoveryButton);
   }
   const chevron = createElement("span", "chevron");
   chevron.setAttribute("aria-hidden", "true");
-  summary.append(icon, title, badge, chevron);
+  summary.append(icon, title, chevron);
+  header.append(summary, modeActions);
 
   const details = createElement("div", "device-card__details");
   const recovery = recoveryController.feedbackByDevice.get(device.name);
@@ -191,7 +204,7 @@ function createDeviceCard(device) {
       ),
     );
     details.append(inactiveState, microphoneOccupancySection(device));
-    card.append(summary, details);
+    card.append(header, details);
   } else {
   const metrics = createElement("div", "metric-groups");
   metrics.append(
@@ -208,7 +221,7 @@ function createDeviceCard(device) {
     ),
   );
   details.append(metrics, microphoneOccupancySection(device));
-  card.append(summary, details);
+  card.append(header, details);
   }
 
   if (expandedDevices.has(device.name)) {
@@ -246,6 +259,12 @@ function renderRoutes(routes) {
   renderRouteSelect(inputSelect, routes.input);
 }
 
+function showRouteGuidance(routes) {
+  const risk = describeBluetoothRouteRisk(routes);
+  routeMessage.className = risk ? "route-message is-warning" : "route-message";
+  routeMessage.textContent = risk || "选择其他设备后会立即写入系统。";
+}
+
 function updatePendingRouteMessage(routes) {
   if (!pendingRouteChange) return false;
   const activeRoute = routes[pendingRouteChange.direction].find((route) => route.isDefault);
@@ -253,7 +272,10 @@ function updatePendingRouteMessage(routes) {
   if (pendingRouteTimer) window.clearTimeout(pendingRouteTimer);
   pendingRouteTimer = 0;
   routeMessage.className = "route-message is-success";
-  routeMessage.textContent = `已切换到“${pendingRouteChange.name}”，系统状态已确认。`;
+  const risk = describeBluetoothRouteRisk(routes);
+  routeMessage.textContent = risk
+    ? `已切换到“${pendingRouteChange.name}”，系统状态已确认。${risk}`
+    : `已切换到“${pendingRouteChange.name}”，系统状态已确认。`;
   pendingRouteChange = null;
   return true;
 }
@@ -312,8 +334,7 @@ function renderState(result, options = {}) {
   statusDot.className = "status-dot is-ready";
   const routeWasConfirmed = updatePendingRouteMessage(result.routes);
   if (!options.preserveRouteMessage && !pendingRouteChange && !routeWasConfirmed) {
-    routeMessage.className = "route-message";
-    routeMessage.textContent = "选择其他设备后会立即写入系统。";
+    showRouteGuidance(result.routes);
   }
 }
 

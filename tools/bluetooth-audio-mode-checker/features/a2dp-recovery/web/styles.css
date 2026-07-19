@@ -1,8 +1,7 @@
-.mode-badge.is-recoverable { position: relative; min-width: 172px; text-align: center; cursor: pointer; transition: color 140ms ease, background 140ms ease; }
-.mode-badge.is-recoverable:hover, .mode-badge.is-recoverable:focus-visible { color: white; background: #2870e8; outline: 3px solid rgba(40, 112, 232, 0.22); outline-offset: 2px; }
-.mode-badge.is-recoverable:hover, .mode-badge.is-recoverable:focus-visible { font-size: 0; }
-.mode-badge.is-recoverable:hover::after, .mode-badge.is-recoverable:focus-visible::after { content: attr(data-recovery-label); font-size: 12px; }
-.mode-badge.is-recovering { min-width: 172px; color: white; background: #667895; text-align: center; pointer-events: none; }
+.recovery-trigger { min-width: 172px; padding: 7px 11px; color: white; background: #2870e8; border: 0; border-radius: 999px; font-size: 12px; font-weight: 750; cursor: pointer; }
+.recovery-trigger:hover, .recovery-trigger:focus-visible { background: #1f5fc9; outline: 3px solid rgba(40, 112, 232, 0.22); outline-offset: 2px; }
+.recovery-trigger.is-running { color: white; background: #667895; cursor: wait; }
+.recovery-trigger:disabled { opacity: 1; }
 .recovery-feedback { margin: 13px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 11px; line-height: 1.55; }
 .recovery-feedback.is-success { color: #20704f; background: #e7f7ef; }
 .recovery-feedback.is-running { color: #435673; background: #edf3fb; }
@@ -21,3 +20,4 @@
 .recovery-action { width: 100%; padding: 8px 10px; border: 1px solid #b8c7dc; border-radius: 8px; color: #29445f; background: #fff; text-align: left; cursor: pointer; }
 .recovery-action:hover, .recovery-action:focus-visible { border-color: #6685ac; background: #f5f8fc; }
 .recovery-action.is-danger { color: #8a293b; border-color: #ddb0b9; }
+.recovery-input-method-note { margin: 9px 0 0; padding: 8px 10px; color: #75561d; background: #fff8df; border-radius: 8px; line-height: 1.55; }
