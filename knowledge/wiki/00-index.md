@@ -29,7 +29,7 @@
 14. [2026-07-17 MAC-home02-MacMini SoundSource 服务运维实测](soundsource服务运维/cases/2026-07-17-MAC-home02-SoundSource服务运维实测.md)
 15. [蓝牙音频设备进入HFP模式的原因](蓝牙音频设备进入HFP模式的原因.md)
 16. [HFP 一键修复前端实测方法](HFP一键修复前端实测/00-HFP一键修复前端实测方法.md)
-17. [进程与 App 触发原因映射表](进程与App触发原因映射表.md)
+17. [进程映射表](进程映射表.md)
 
 ## 原文目录
 
