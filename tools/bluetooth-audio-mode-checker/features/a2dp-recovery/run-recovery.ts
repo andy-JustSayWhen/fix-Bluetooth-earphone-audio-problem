@@ -74,9 +74,14 @@ type CauseMatch = {
 };
 
 type ProcessActionResult = {
-  stableRate: number | null;
+  stableRecovery: StableRecovery | null;
   released: RunningProcess[];
   remaining: RunningProcess[];
+};
+
+type StableRecovery = {
+  rate: number | null;
+  mode: AudioModeAssessment["mode"];
 };
 
 function isBluetooth(device: RawAudioDevice): boolean {
@@ -84,16 +89,19 @@ function isBluetooth(device: RawAudioDevice): boolean {
 }
 
 function targetOutput(devices: RawAudioDevice[], name: string): RawAudioDevice | undefined {
-  return devices.find((device) => device.name === name && device.outputChannels > 0);
+  return devices
+    .filter((device) => device.name === name && device.outputChannels > 0)
+    .sort((left, right) =>
+      Number(right.isDefaultOutput) - Number(left.isDefaultOutput) ||
+      Number(right.isDefaultSystemOutput) - Number(left.isDefaultSystemOutput) ||
+      right.outputChannels - left.outputChannels ||
+      (right.actualSampleRateOutput ?? 0) - (left.actualSampleRateOutput ?? 0)
+    )[0];
 }
 
 function actualOutputRate(device: RawAudioDevice | undefined): number | null {
   const rate = device?.actualSampleRateOutput;
   return rate !== null && rate !== undefined && rate > 0 ? rate : null;
-}
-
-function supportsHighOutputRate(device: RawAudioDevice | undefined): boolean {
-  return maxAvailableOutputRate(device) > 16_000;
 }
 
 function maxAvailableOutputRate(device: RawAudioDevice | undefined): number {
@@ -102,7 +110,7 @@ function maxAvailableOutputRate(device: RawAudioDevice | undefined): number {
 
 function currentOutputRate(runtime: RecoveryRuntime, name: string): number | null {
   const target = targetOutput(runtime.readDevices(), name);
-  return target?.isDefaultOutput ? actualOutputRate(target) : null;
+  return actualOutputRate(target);
 }
 
 function currentModeAssessment(
@@ -274,28 +282,37 @@ function diagnoseCause(
   };
 }
 
-async function verifyStableHighRate(
+async function verifyStableRecovery(
   name: string,
   runtime: RecoveryRuntime,
   reportProgress: (progress: RecoveryProgress) => void,
   attempts = 10,
-): Promise<number | null> {
+): Promise<StableRecovery | null> {
   let consecutive = 0;
   let lastRate: number | null = null;
+  let lastMode: AudioModeAssessment["mode"] | null = null;
   let progressReported = false;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     lastRate = currentOutputRate(runtime, name);
-    const mode = runtime.readModeAssessment(name)?.mode ?? null;
-    if (lastRate !== null && lastRate > 16_000 && mode === "A2DP") {
+    const assessment = runtime.readModeAssessment(name);
+    lastMode = assessment?.mode ?? null;
+    const target = targetOutput(runtime.readDevices(), name);
+    const isDefaultOutput = assessment?.isDefaultOutput === true || target?.isDefaultOutput === true;
+    const recovered = isDefaultOutput
+      ? lastRate !== null && lastRate > 16_000 && lastMode === "A2DP"
+      : lastMode !== null && lastMode !== "HFP_HSP";
+    if (recovered) {
       consecutive += 1;
       if (!progressReported) {
         progressReported = true;
         reportProgress({
           stage: "正在确认稳定",
-          message: `已观察到 ${lastRate / 1_000} kHz 且模式为高音质播放，正在连续确认不会再次进入通话模式。`,
+          message: isDefaultOutput
+            ? `已观察到 ${(lastRate ?? 0) / 1_000} kHz 且模式为高音质播放，正在连续确认不会再次进入通话模式。`
+            : "已观察到设备退出 HFP/HSP，正在连续确认不会再次进入通话模式。",
         });
       }
-      if (consecutive >= 3) return lastRate;
+      if (consecutive >= 3 && lastMode !== null) return { rate: lastRate, mode: lastMode };
     } else {
       consecutive = 0;
     }
@@ -331,11 +348,11 @@ async function executeProcessAction(
   const unsafe = processes.filter((processInfo) => protectedProcessNames.has(processInfo.name));
   if (unsafe.length > 0) {
     addStep(name, steps, "解除已确证原因", "失败", `命中受保护系统进程：${unsafe.map(processDescription).join("、")}`);
-    return { stableRate: null, released: [], remaining: unsafe };
+    return { stableRecovery: null, released: [], remaining: unsafe };
   }
   if (runtime.readModeAssessment(name)?.mode !== "HFP_HSP") {
     addStep(name, steps, "解除已确证原因", "跳过", "动作前目标已经恢复");
-    return { stableRate: await verifyStableHighRate(name, runtime, reportProgress), released: [], remaining: [] };
+    return { stableRecovery: await verifyStableRecovery(name, runtime, reportProgress), released: [], remaining: [] };
   }
 
   reportProgress({ stage: "正在执行处理", message: "正在请求已确证原因进程正常退出。" });
@@ -350,10 +367,10 @@ async function executeProcessAction(
     remaining.length === 0 ? "成功" : "失败",
     remaining.length === 0 ? "已确认原因进程退出" : `仍存在：${remaining.map(processDescription).join("、")}`,
   );
-  const stableRate = remaining.length === 0
-    ? await verifyStableHighRate(name, runtime, reportProgress)
+  const stableRecovery = remaining.length === 0
+    ? await verifyStableRecovery(name, runtime, reportProgress)
     : null;
-  return { stableRate, released, remaining };
+  return { stableRecovery, released, remaining };
 }
 
 async function waitForRoute(
@@ -449,7 +466,11 @@ async function currentMicrophoneUsers(
 
 function baseMessage(outcome: A2dpRecoveryResult["outcome"], name: string, rate: number | null): string {
   if (outcome === "无需修复") return `${name} 在动作前已经恢复，无需继续处理。`;
-  if (outcome === "完全恢复") return `${name} 已稳定恢复到 ${(rate ?? 0) / 1_000} kHz，且已恢复点击前输入输出。`;
+  if (outcome === "完全恢复") {
+    return rate !== null && rate > 16_000
+      ? `${name} 已稳定恢复到 ${rate / 1_000} kHz，且已恢复点击前输入输出。`
+      : `${name} 已稳定退出 HFP/HSP，且已恢复点击前输入输出。`;
+  }
   if (outcome === "绕过成功") return "替代输入输出组合已经稳定；这是绕过成功，不代表原组合已完全修复。";
   if (outcome === "原组合复发") return "恢复点击前输入输出组合后再次进入通话模式，原组合仍会复发。";
   if (outcome === "等待选择") return "已确认多端点会话问题，请选择希望保留输入还是输出。";
@@ -473,33 +494,19 @@ export async function runRecovery(
   const initialRate = actualOutputRate(target) ?? request.context?.targetSampleRate ?? null;
   addStep(name, steps, "保存现场", "成功", `点击时间：${request.context?.clickedAt ?? new Date(runtime.now()).toISOString()}；输入：${originalInput ?? "未知"}；输出：${originalOutput ?? "未知"}；目标采样率：${initialRate ?? "未知"}`);
 
-  const isNormalInputOnlyTarget = target?.isDefaultOutput === false &&
-    devices.some((device) => device.name === name && device.isDefaultInput && device.inputChannels > 0);
-  const isInactiveOutputTarget = target?.isDefaultOutput === false;
-  const cannotProveOutputDegradation = target?.isDefaultOutput === true &&
-    !supportsHighOutputRate(target);
   const targetRate = actualOutputRate(target);
-  if (!target || !target.isDefaultOutput || targetAssessment?.mode !== "HFP_HSP" ||
-      !targetAssessment.isDefaultOutput || targetRate === null ||
-      cannotProveOutputDegradation ||
-      targetRate > 16_000) {
+  if (targetAssessment?.mode !== "HFP_HSP") {
     const rate = targetRate;
-    const alreadyRecovered = target?.isDefaultOutput === true && rate !== null && rate > 16_000;
+    const alreadyRecovered = targetAssessment !== null && targetAssessment?.mode !== "HFP_HSP";
     const skippedRouteChoice = alreadyRecovered && request._confirmedRouteChoice !== undefined;
     const summary = skippedRouteChoice
       ? "目标已自行恢复，本次未执行输入输出切换"
       : alreadyRecovered
-        ? "目标现场已经恢复"
-      : isNormalInputOnlyTarget
-        ? "该设备当前只作为麦克风输入使用，无需修复输出"
-      : targetAssessment?.mode !== "HFP_HSP"
-        ? "最新模式判定不是 HFP/HSP，无需执行一键修复"
-        : cannotProveOutputDegradation
-          ? "无法证明该设备的输出从高采样率降级，无需执行输出修复"
-          : "该设备当前不是需要修复的默认输出";
+        ? "目标现场已经退出 HFP/HSP"
+        : "没有可用的最新模式判定，无法确认目标仍处于 HFP/HSP";
     const diagnosis: RecoveryDiagnosis = {
       kind: "证据不足",
-      confidence: alreadyRecovered || isInactiveOutputTarget || cannotProveOutputDegradation ? "已确认" : "无法确认",
+      confidence: alreadyRecovered ? "已确认" : "无法确认",
       summary,
       evidence: [
         `当前默认输入：${originalInput ?? "未知"}`,
@@ -511,19 +518,11 @@ export async function runRecovery(
     };
     addStep(name, steps, "复核目标", "成功", diagnosis.summary, rate);
     const outcome = "无需修复";
-    const message = isNormalInputOnlyTarget
-      ? `${name} 当前只作为麦克风输入使用；16 kHz 输入可以是正常规格，未播放的系统输出端点无需恢复。`
-      : cannotProveOutputDegradation
-        ? `${name} 没有已证明的高采样率输出能力，本次不把 16 kHz 当作输出故障。`
-        : skippedRouteChoice
+    const message = skippedRouteChoice
           ? `${name} 已在执行前自行恢复，本次没有修改系统默认输入输出。`
           : alreadyRecovered
             ? baseMessage(outcome, name, rate)
-          : !target
-            ? `${name} 当前没有可用的系统输出端点，无需执行输出修复。`
-            : !target.isDefaultOutput
-              ? `${name} 当前没有承担声音输出，无需执行输出修复。`
-              : `${name} 当前实际输出采样率无法读取，本次未执行修复动作。`;
+            : `${name} 当前缺少可用的最新模式判定，本次未执行修复动作。`;
     return makeResult({
       outcome,
       recoveryPath: "现场复核",
@@ -637,10 +636,11 @@ export async function runRecovery(
       guardCommand = action.released[0].command;
       guardProcessName = action.released[0].name;
     }
-    if (action.stableRate !== null) {
+    if (action.stableRecovery !== null) {
       const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
-      const restoredRate = routesRestored ? await verifyStableHighRate(name, runtime, reportProgress, 3) : null;
-      const outcome = restoredRate !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
+      const restoredRecovery = routesRestored ? await verifyStableRecovery(name, runtime, reportProgress, 3) : null;
+      const restoredRate = restoredRecovery?.rate ?? null;
+      const outcome = restoredRecovery !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
       return makeResult({
         outcome,
         recoveryPath,
@@ -717,10 +717,11 @@ export async function runRecovery(
       remainingPrograms.push(...repeatedAction.remaining.map((processInfo) => processInfo.name));
       if (repeatedAction.released.length > 0) guardCommand = repeatedAction.released[0].command;
       if (repeatedAction.released.length > 0) guardProcessName = repeatedAction.released[0].name;
-      if (repeatedAction.stableRate !== null) {
+      if (repeatedAction.stableRecovery !== null) {
         const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
-        const restoredRate = routesRestored ? await verifyStableHighRate(name, runtime, reportProgress, 3) : null;
-        const outcome = restoredRate !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
+        const restoredRecovery = routesRestored ? await verifyStableRecovery(name, runtime, reportProgress, 3) : null;
+        const restoredRate = restoredRecovery?.rate ?? null;
+        const outcome = restoredRecovery !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
         return makeResult({
           outcome,
           recoveryPath,
@@ -740,10 +741,11 @@ export async function runRecovery(
       const secondAction = await executeProcessAction(name, cause.processes, steps, runtime, reportProgress);
       releasedPrograms.push(...secondAction.released.map((processInfo) => processInfo.name));
       remainingPrograms.push(...secondAction.remaining.map((processInfo) => processInfo.name));
-      if (secondAction.stableRate !== null) {
+      if (secondAction.stableRecovery !== null) {
         const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
-        const restoredRate = routesRestored ? await verifyStableHighRate(name, runtime, reportProgress, 3) : null;
-        const outcome = restoredRate !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
+        const restoredRecovery = routesRestored ? await verifyStableRecovery(name, runtime, reportProgress, 3) : null;
+        const restoredRate = restoredRecovery?.rate ?? null;
+        const outcome = restoredRecovery !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
         return makeResult({
           outcome,
           recoveryPath,
@@ -774,8 +776,8 @@ export async function runRecovery(
       runtime.setDefaultDevice("input", originalInput);
       const restored = await waitForRoute("input", originalInput, runtime);
       addStep(name, steps, "恢复点击前输入", restored ? "成功" : "失败", originalInput);
-      const rate = restored ? await verifyStableHighRate(name, runtime, reportProgress) : null;
-      if (rate !== null) {
+      const recovery = restored ? await verifyStableRecovery(name, runtime, reportProgress) : null;
+      if (recovery !== null) {
         const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
         if (routesRestored) {
           const outcome = "完全恢复";
@@ -783,13 +785,13 @@ export async function runRecovery(
             outcome,
             recoveryPath,
             handledCause,
-            sampleRate: rate,
+            sampleRate: recovery.rate,
             releasedPrograms,
             remainingPrograms,
             diagnosis: cause.diagnosis,
             steps,
             usedReconnect,
-            message: baseMessage(outcome, name, rate),
+            message: baseMessage(outcome, name, recovery.rate),
             _relaunchGuard: guardCommand && guardProcessName ? { command: guardCommand, processName: guardProcessName } : undefined,
           });
         }
@@ -819,11 +821,12 @@ export async function runRecovery(
       : reconnectFailureDetail(reconnectError),
   );
   const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
-  const finalRate = targetAvailable && routesRestored
-    ? await verifyStableHighRate(name, runtime, reportProgress)
+  const finalRecovery = targetAvailable && routesRestored
+    ? await verifyStableRecovery(name, runtime, reportProgress)
     : null;
-  const outcome = finalRate !== null ? "完全恢复" : "未恢复";
-  const message = finalRate !== null
+  const finalRate = finalRecovery?.rate ?? null;
+  const outcome = finalRecovery !== null ? "完全恢复" : "未恢复";
+  const message = finalRecovery !== null
     ? baseMessage(outcome, name, finalRate)
     : !targetAvailable
       ? `${name} 当前仍断开，需要手动重新连接；已恢复其他仍可用的点击前声音设备。`

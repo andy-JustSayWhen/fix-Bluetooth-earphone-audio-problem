@@ -61,12 +61,7 @@ const contentTypes: Record<string, string> = {
 const manualRefreshMinimumIntervalMs = 2_500;
 
 function isRecoverableHfpOutput(device: AudioModeState["devices"][number]): boolean {
-  return device.isDefaultOutput &&
-    device.mode === "HFP_HSP" &&
-    device.availableSampleRateRangesOutput.some((range) => range.maximum > 16_000) &&
-    device.actualSampleRateOutput !== null &&
-    device.actualSampleRateOutput > 0 &&
-    device.actualSampleRateOutput <= 16_000;
+  return device.mode === "HFP_HSP";
 }
 
 function parseArguments(argumentsList: string[]): Options {

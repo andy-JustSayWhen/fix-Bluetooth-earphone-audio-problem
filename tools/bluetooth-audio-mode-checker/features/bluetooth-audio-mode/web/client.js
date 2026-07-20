@@ -72,15 +72,7 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
 }
 
 export function isRecoverableOutputDevice(device) {
-  const supportsHighRate = device.availableSampleRateRangesOutput?.some((range) =>
-    Number.isFinite(range?.maximum) && range.maximum > 16_000
-  );
-  return device.isDefaultOutput === true &&
-    device.mode === "HFP_HSP" &&
-    supportsHighRate &&
-    Number.isFinite(device.actualSampleRateOutput) &&
-    device.actualSampleRateOutput > 0 &&
-    device.actualSampleRateOutput <= 16_000;
+  return device.mode === "HFP_HSP";
 }
 
 export function deviceModePresentation(device) {
