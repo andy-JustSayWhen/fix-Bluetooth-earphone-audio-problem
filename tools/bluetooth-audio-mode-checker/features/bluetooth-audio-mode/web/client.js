@@ -104,6 +104,16 @@ export function deviceModePresentation(device) {
   };
 }
 
+export function audioLinkTypePresentation(audioLinkType) {
+  if (audioLinkType === "tacl") {
+    return "tacl（异步传输，用于单向音频播放）";
+  }
+  if (audioLinkType === "tsco") {
+    return "tsco（同步传输，常用于语音通话）";
+  }
+  return "无法确认";
+}
+
 export function startBluetoothAudioModePage(createA2dpRecoveryController) {
 const listElement = document.querySelector("#device-list");
 const refreshButton = document.querySelector("#refresh-button");
@@ -178,7 +188,7 @@ function metricGroup(label, metrics) {
 
 function audioLinkGroup(device) {
   const linkGroup = createElement("fieldset", "audio-link-group");
-  linkGroup.append(createElement("legend", "", `声音链路类型：${device.audioLinkType ?? "无法确认"}`));
+  linkGroup.append(createElement("legend", "", `声音链路类型：${audioLinkTypePresentation(device.audioLinkType)}`));
   const directions = createElement("div", "metric-groups");
   if (device.outputChannels > 0) {
     directions.append(metricGroup(
