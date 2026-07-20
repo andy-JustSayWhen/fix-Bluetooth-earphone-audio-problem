@@ -418,13 +418,27 @@ test("一键修复请求期间立即显示忙碌状态并阻止重复提交", ()
   assert.match(source, /if \(runningDevices\.has\(device\.name\)\) return/);
 });
 
-test("一键修复使用独立原生按钮而不是在卡片按钮内嵌交互文字", () => {
-  const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+test("一键修复只在更新时间后显示一个列表级入口", () => {
+  const pageSource = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+  const recoverySource = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
+  const htmlSource = readFileSync(new URL("../../app/web/index.html", import.meta.url), "utf8");
 
-  assert.match(source, /createElement\("button", "recovery-trigger", "一键修复 HFP"\)/);
-  assert.doesNotMatch(source, /badge\.setAttribute\("role", "button"\)/);
-  assert.match(source, /header\.append\(summary, modeActions\)/);
-  assert.match(source, /else if \(isRecoverableOutputDevice\(device\)\)/);
+  assert.match(htmlSource, /id="refresh-time"[\s\S]*?id="a2dp-recovery-trigger"/);
+  assert.match(pageSource, /triggerContainer: recoveryTriggerElement/);
+  assert.doesNotMatch(pageSource, /createElement\("button", "recovery-trigger"/);
+  assert.match(recoverySource, /`识别到 \$\{hfpDevices\.length\} 个设备处于 HFP`/);
+  assert.match(recoverySource, /createElement\("button", `recovery-trigger/);
+  assert.match(recoverySource, /"一键修复全部 HFP 设备"/);
+});
+
+test("列表级一键修复逐台处理并在需要用户选择时暂停", () => {
+  const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
+
+  assert.match(source, /while \(batchQueue\.length > 0\)/);
+  assert.match(source, /await recover\(device\)/);
+  assert.match(source, /feedbackByDevice\.get\(deviceName\)\?\.result\?\.actionRequired/);
+  assert.match(source, /batchPausedDevice = deviceName/);
+  assert.match(source, /recoverAndResumeBatch/);
 });
 
 test("同一标签页刷新后保留已完成修复结果但不恢复运行中状态", () => {

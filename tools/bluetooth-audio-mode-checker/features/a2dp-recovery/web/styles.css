@@ -1,4 +1,6 @@
-.recovery-trigger { min-width: 172px; padding: 7px 11px; color: white; background: #2870e8; border: 0; border-radius: 999px; font-size: 12px; font-weight: 750; cursor: pointer; }
+.recovery-overview { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: 4px; }
+.recovery-overview__count { color: #9a5416; font-weight: 700; white-space: nowrap; }
+.recovery-trigger { min-width: 92px; padding: 7px 14px; color: white; background: #2870e8; border: 0; border-radius: 999px; font-size: 12px; font-weight: 750; cursor: pointer; white-space: nowrap; }
 .recovery-trigger:hover, .recovery-trigger:focus-visible { background: #1f5fc9; outline: 3px solid rgba(40, 112, 232, 0.22); outline-offset: 2px; }
 .recovery-trigger.is-running { color: white; background: #667895; cursor: wait; }
 .recovery-trigger:disabled { opacity: 1; }

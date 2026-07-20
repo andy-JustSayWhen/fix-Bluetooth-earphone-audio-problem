@@ -111,6 +111,7 @@ const listElement = document.querySelector("#device-list");
 const refreshButton = document.querySelector("#refresh-button");
 const countElement = document.querySelector("#device-count");
 const timeElement = document.querySelector("#refresh-time");
+const recoveryTriggerElement = document.querySelector("#a2dp-recovery-trigger");
 const statusDot = document.querySelector("#status-dot");
 const emptyTemplate = document.querySelector("#empty-template");
 const outputSelect = document.querySelector("#output-device");
@@ -386,22 +387,6 @@ function createDeviceCard(device) {
   const badge = createElement("span", `mode-badge mode-badge--${modePresentation.className}`, modePresentation.text);
   const modeActions = createElement("div", "device-card__mode-actions");
   modeActions.append(badge);
-  if (recoveryController.runningDevices.has(device.name)) {
-    const runningButton = createElement(
-      "button",
-      "recovery-trigger is-running",
-      recoveryController.progressByDevice.get(device.name) ?? "正在修复…",
-    );
-    runningButton.type = "button";
-    runningButton.disabled = true;
-    modeActions.append(runningButton);
-  } else if (isRecoverableOutputDevice(device)) {
-    const recoveryButton = createElement("button", "recovery-trigger", "一键修复 HFP");
-    recoveryButton.type = "button";
-    recoveryButton.setAttribute("aria-label", `一键修复 ${device.name} 的 HFP 模式`);
-    recoveryButton.addEventListener("click", () => recoveryController.recover(device));
-    modeActions.append(recoveryButton);
-  }
   const chevron = createElement("span", "chevron");
   chevron.setAttribute("aria-hidden", "true");
   summary.append(icon, title, chevron);
@@ -518,6 +503,7 @@ function renderState(result, options = {}) {
   lastMicrophoneUsers = result.microphoneUsers ?? [];
   lastRenderedRoutes = result.routes;
   recoveryController?.reconcilePendingAuthorizations(result.devices, lastMicrophoneUsers, result.occupancyCapturedAt);
+  recoveryController?.renderAggregateTrigger(result.devices);
   const fingerprint = JSON.stringify({ devices: result.devices, microphoneUsers: lastMicrophoneUsers, routes: result.routes });
   if (fingerprint !== lastRenderedStateFingerprint) {
     renderRoutes(result.routes);
@@ -627,6 +613,7 @@ recoveryController = createA2dpRecoveryController({
   createElement,
   expandedDevices,
   getLastRenderedDevices: () => lastRenderedDevices,
+  triggerContainer: recoveryTriggerElement,
   renderDevices,
   schedulePostActionRefresh,
 });

@@ -63,6 +63,7 @@ export function createA2dpRecoveryController({
   createElement,
   expandedDevices,
   getLastRenderedDevices,
+  triggerContainer,
   renderDevices,
   schedulePostActionRefresh,
 }) {
@@ -105,8 +106,40 @@ export function createA2dpRecoveryController({
   const runningDevices = new Set();
   const progressByDevice = new Map();
   const recentlyReleasedPrograms = new Map();
+  let batchQueue = [];
+  let batchTotal = 0;
+  let batchCompleted = 0;
+  let batchRunning = false;
+  let batchPausedDevice = null;
   for (const [deviceName, feedback] of feedbackByDevice) {
     if (feedback?.result?.actionRequired) expandedDevices.add(deviceName);
+  }
+
+  function renderAggregateTrigger(devices = getLastRenderedDevices()) {
+    const hfpDevices = devices.filter((device) => device.mode === "HFP_HSP");
+    const overview = createElement("div", "recovery-overview");
+    overview.append(createElement(
+      "span",
+      "recovery-overview__count",
+      `识别到 ${hfpDevices.length} 个设备处于 HFP`,
+    ));
+    if (hfpDevices.length > 0) {
+      const hasPendingAction = [...feedbackByDevice.values()]
+        .some((feedback) => Boolean(feedback?.result?.actionRequired));
+      const isBusy = batchRunning || runningDevices.size > 0;
+      const label = batchRunning
+        ? `正在修复 ${Math.min(batchCompleted + 1, batchTotal)}/${batchTotal}`
+        : hasPendingAction ? "请先完成当前选择" : "一键修复";
+      const button = createElement("button", `recovery-trigger${isBusy ? " is-running" : ""}`, label);
+      button.type = "button";
+      button.disabled = isBusy || hasPendingAction;
+      button.setAttribute("aria-label", "一键修复全部 HFP 设备");
+      if (!button.disabled) {
+        button.addEventListener("click", () => recoverAll(getLastRenderedDevices()));
+      }
+      overview.append(button);
+    }
+    triggerContainer.replaceChildren(overview);
   }
 
   function setFeedback(deviceName, feedback, persist = true) {
@@ -145,6 +178,7 @@ export function createA2dpRecoveryController({
             : "正在保存点击现场，然后检查并优先解除麦克风占用。",
     }, false);
     expandedDevices.add(device.name);
+    renderAggregateTrigger();
     renderDevices(getLastRenderedDevices());
     try {
       const response = await fetch("/api/a2dp-recovery", {
@@ -170,9 +204,69 @@ export function createA2dpRecoveryController({
     } finally {
       runningDevices.delete(device.name);
       progressByDevice.delete(device.name);
+      renderAggregateTrigger();
       renderDevices(getLastRenderedDevices());
     }
     schedulePostActionRefresh();
+  }
+
+  async function runBatch() {
+    if (batchRunning) return;
+    batchRunning = true;
+    renderAggregateTrigger();
+    while (batchQueue.length > 0) {
+      const deviceName = batchQueue[0];
+      const device = getLastRenderedDevices().find((item) => item.name === deviceName);
+      if (!device || device.mode !== "HFP_HSP") {
+        batchQueue.shift();
+        batchCompleted += 1;
+        continue;
+      }
+      await recover(device);
+      if (feedbackByDevice.get(deviceName)?.result?.actionRequired) {
+        batchPausedDevice = deviceName;
+        batchRunning = false;
+        renderAggregateTrigger();
+        return;
+      }
+      batchQueue.shift();
+      batchCompleted += 1;
+    }
+    batchRunning = false;
+    batchPausedDevice = null;
+    batchQueue = [];
+    batchTotal = 0;
+    batchCompleted = 0;
+    renderAggregateTrigger();
+  }
+
+  async function recoverAll(devices) {
+    if (batchRunning || batchPausedDevice) return;
+    batchQueue = devices
+      .filter((device) => device.mode === "HFP_HSP")
+      .map((device) => device.name);
+    if (batchQueue.length === 0) {
+      renderAggregateTrigger(devices);
+      return;
+    }
+    batchTotal = batchQueue.length;
+    batchCompleted = 0;
+    await runBatch();
+  }
+
+  async function recoverAndResumeBatch(device, action) {
+    await recover(device, action);
+    if (batchPausedDevice !== device.name) return;
+    if (feedbackByDevice.get(device.name)?.result?.actionRequired) {
+      renderAggregateTrigger();
+      return;
+    }
+    if (batchQueue[0] === device.name) {
+      batchQueue.shift();
+      batchCompleted += 1;
+    }
+    batchPausedDevice = null;
+    await runBatch();
   }
 
   function resultSection(feedback, deviceName) {
@@ -222,7 +316,7 @@ export function createA2dpRecoveryController({
         button.type = "button";
         button.addEventListener("click", () => {
           const device = getLastRenderedDevices().find((item) => item.name === deviceName);
-          if (device) recover(device, {
+          if (device) recoverAndResumeBatch(device, {
             routeChoiceId: choice.id,
           });
         });
@@ -253,7 +347,7 @@ export function createA2dpRecoveryController({
         const device = getLastRenderedDevices().find((item) => item.name === deviceName);
         const confirmation = `涉及进程：${processLabel}\n\n${result.actionRequired.prompt}`;
         if (device && window.confirm(confirmation)) {
-          recover(device, { authorizeRelaunchBlock: true });
+          recoverAndResumeBatch(device, { authorizeRelaunchBlock: true });
         }
       });
       actions.append(authorize);
@@ -276,7 +370,7 @@ export function createA2dpRecoveryController({
     for (const [deviceName, feedback] of feedbackByDevice) {
       if (runningDevices.has(deviceName) || !shouldContinueAfterOccupancyEnded(feedback, microphoneUsers, occupancyCapturedAt)) continue;
       const device = devices.find((item) => item.name === deviceName);
-      if (device) recover(device, { continueAfterOccupancyEnded: true });
+      if (device) recoverAndResumeBatch(device, { continueAfterOccupancyEnded: true });
     }
   }
 
@@ -286,6 +380,8 @@ export function createA2dpRecoveryController({
     progressByDevice,
     recentlyReleasedPrograms,
     recover,
+    recoverAll,
+    renderAggregateTrigger,
     resultSection,
     handleProgress,
     reconcilePendingAuthorizations,
