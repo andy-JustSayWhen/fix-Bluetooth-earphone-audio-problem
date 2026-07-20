@@ -209,15 +209,12 @@ export function createA2dpRecoveryController({
 
   function renderAggregateTrigger(devices = getLastRenderedDevices()) {
     reconcileUnsupportedDevices(devices);
-    const hfpDevices = devices.filter((device) => device.mode === "HFP_HSP");
-    const repairableDevices = hfpDevices.filter(isA2dpRecoveryTarget);
+    const repairableDevices = devices.filter(isA2dpRecoveryTarget);
     const overview = createElement("div", "recovery-overview");
     overview.append(createElement(
       "span",
       "recovery-overview__count",
-      hfpDevices.length === repairableDevices.length
-        ? `识别到有 ${hfpDevices.length} 个设备处于 HFP`
-        : `识别到有 ${hfpDevices.length} 个设备处于 HFP，其中 ${repairableDevices.length} 个需要修复`,
+      `识别到有 ${repairableDevices.length} 个设备处于 HFP`,
     ));
     if (repairableDevices.length > 0) {
       const hasPendingAction = [...feedbackByDevice.values()]
