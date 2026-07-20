@@ -18,16 +18,17 @@
 3. [macOS 与 Windows 的官方处理方式](03-macOS与Windows官方处理方式.md)
 4. [LE Audio 与硬件链路解决方案](04-LE-Audio与硬件解决方案.md)
 5. [A2DP、HFP 与 LE Audio 概念对照](06-A2DP-HFP与LE-Audio概念对照.md)
-6. [为什么 HFP 数据量更小却可能不如 A2DP 稳定](07-为什么HFP数据量更小却可能不如A2DP稳定.md)
-7. [采样率与声道听感对照案例](cases/2026-07-16-采样率与声道听感对照.md)
-8. [跨设备蓝牙 HFP 降级的解决方案边界](07-跨设备蓝牙HFP降级的解决方案边界.md)
-9. [HFP 与 A2DP 链路建立及恢复接口边界](08-HFP与A2DP链路建立及恢复接口边界.md)
-10. [macOS 蓝牙与音频日志能力矩阵](09-macOS蓝牙与音频日志能力矩阵.md)
-11. [2026-07-17 MAC-home02-MacMini 日志能力启用现场](cases/2026-07-17-MAC-home02日志启用现场.md)
-12. [如何快速、完整地停用、恢复和监测 SoundSource](soundsource服务运维/00-SoundSource服务运维.md)
-13. [2026-07-17 MAC-home02-MacMini SoundSource 服务运维实测](soundsource服务运维/cases/2026-07-17-MAC-home02-SoundSource服务运维实测.md)
-14. [蓝牙音频设备进入HFP模式的原因](蓝牙音频设备进入HFP模式的原因.md)
-15. [HFP 一键修复前端实测方法](HFP一键修复前端实测/00-HFP一键修复前端实测方法.md)
+6. [`tacl` 与 `tsco` 的真实含义和定义边界](tacl与tsco的真实含义和定义边界.md)
+7. [为什么 HFP 数据量更小却可能不如 A2DP 稳定](07-为什么HFP数据量更小却可能不如A2DP稳定.md)
+8. [采样率与声道听感对照案例](cases/2026-07-16-采样率与声道听感对照.md)
+9. [跨设备蓝牙 HFP 降级的解决方案边界](07-跨设备蓝牙HFP降级的解决方案边界.md)
+10. [HFP 与 A2DP 链路建立及恢复接口边界](08-HFP与A2DP链路建立及恢复接口边界.md)
+11. [macOS 蓝牙与音频日志能力矩阵](09-macOS蓝牙与音频日志能力矩阵.md)
+12. [2026-07-17 MAC-home02-MacMini 日志能力启用现场](cases/2026-07-17-MAC-home02日志启用现场.md)
+13. [如何快速、完整地停用、恢复和监测 SoundSource](soundsource服务运维/00-SoundSource服务运维.md)
+14. [2026-07-17 MAC-home02-MacMini SoundSource 服务运维实测](soundsource服务运维/cases/2026-07-17-MAC-home02-SoundSource服务运维实测.md)
+15. [蓝牙音频设备进入HFP模式的原因](蓝牙音频设备进入HFP模式的原因.md)
+16. [HFP 一键修复前端实测方法](HFP一键修复前端实测/00-HFP一键修复前端实测方法.md)
 
 ## 原文目录
 
@@ -56,6 +57,10 @@
 - [HIKKIE!：2026 年 7 月各系统 LE Audio 支持状况综述](../raw/community/hikkie-leaudio-ready-2026-07.md)
 - [BlueZ：A2DP 与 HFP 传输分别管理的实现证据](../raw/community/bluez-a2dp-hfp-transport-evidence.md)
 - [Rogue Amoeba：SoundSource 调试日志](../raw/community/rogue-amoeba-soundsource-debug-logs.md)
+
+### 本机系统原始证据
+
+- [macOS BTAudio 中 `tacl` 与 `tsco` 的本机日志证据](../raw/apple/macos-btaudio-tacl-tsco-local-evidence.md)
 
 ## 本机实验案例
 
@@ -111,3 +116,11 @@
 - 新文献与既有知识共同支持“耳机、主机硬件、驱动、系统和启用方式必须同时满足条件”，补充了不同产品的实际开关与配对形态。
 - 文章对 Apple 系统的绝对判断证据强度低于既有官方资料要求，因此只作为 2026 年 7 月社区快照保留，没有覆盖既有谨慎结论。
 - 文章中的具体产品清单、延迟、功耗和品牌推荐变化快或带有作者判断，未提升为官方事实；不存在需要用户裁决后才能继续的真实冲突。
+
+## 2026-07-20 `tacl` 与 `tsco` 术语归属的冲突检查
+
+- Bluetooth SIG 核心规范补充确认了 ACL、SCO 和 eSCO 的正式全称；这与既有传输机制说明一致。
+- 本机苹果组件日志把 `tsco` 与 HFP 声音设备、把 `tacl` 与 A2DP 声音设备直接放在同一切换时序中，补强了既有映射。
+- 苹果没有公开给出 `tacl/tsco` 的正式展开，因此没有把“`t` 等于 transport”提升为官方事实。
+- 新知识明确 `tacl` 不能单独替代 A2DP 的完整模式验收，也不把 `tsco` 当作区分 SCO 与 eSCO 的包级证据。
+- 本轮没有发现需要用户裁决的真实冲突。

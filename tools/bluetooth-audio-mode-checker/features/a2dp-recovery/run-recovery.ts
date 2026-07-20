@@ -8,16 +8,17 @@ import {
   type RunningProcess,
 } from "../../core/macos-running-apps/index.ts";
 import { detailedLog } from "../../core/detailed-logging/index.ts";
-import type { MicrophoneUser, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
+import type {
+  AudioModeAssessment,
+  MicrophoneUser,
+  RawAudioDevice,
+} from "../../shared/audio-device-types/index.ts";
 import {
   diagnoseFormatRequestCause,
-  diagnoseMultiEndpointCause,
   readRecentSystemAudioEvidence,
-  readMultiEndpointEvidenceSince,
   readSystemAudioEvidenceSince,
   type FormatRequestCause,
   type FormatRequestEvidence,
-  type MultiEndpointCause,
 } from "./format-request-diagnosis.ts";
 import { createMultiEndpointRouteChoices, selectCauseRoute } from "./recovery-policy.ts";
 import type {
@@ -47,12 +48,12 @@ export type RecoveryRuntime = {
   terminateProcess: (processInfo: RunningProcess) => void;
   readEvidence: () => FormatRequestEvidence;
   readEvidenceSince: (startedAtMs: number) => FormatRequestEvidence;
-  readMultiEndpointEvidenceSince: (startedAtMs: number) => FormatRequestEvidence;
+  readModeAssessment: (name: string) => AudioModeAssessment | null;
   setDefaultDevice: (direction: "input" | "output", name: string) => void;
   reconnectDevice: (name: string) => void;
 };
 
-const systemRuntime: RecoveryRuntime = {
+export const systemRuntime: RecoveryRuntime = {
   now: Date.now,
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   readDevices: () => readAudioDevices().devices,
@@ -61,7 +62,7 @@ const systemRuntime: RecoveryRuntime = {
   terminateProcess: terminateRunningProcess,
   readEvidence: () => readRecentSystemAudioEvidence(10),
   readEvidenceSince: readSystemAudioEvidenceSince,
-  readMultiEndpointEvidenceSince,
+  readModeAssessment: () => null,
   setDefaultDevice: setDefaultAudioDevice,
   reconnectDevice: reconnectBluetoothDevice,
 };
@@ -78,8 +79,6 @@ type ProcessActionResult = {
   remaining: RunningProcess[];
 };
 
-type ObservedBluetoothConflict = NonNullable<NonNullable<RecoveryRequest["context"]>["observedBluetoothConflict"]>;
-
 function isBluetooth(device: RawAudioDevice): boolean {
   return device.transport === "bluetooth" || device.transport === "bluetooth-le";
 }
@@ -88,9 +87,29 @@ function targetOutput(devices: RawAudioDevice[], name: string): RawAudioDevice |
   return devices.find((device) => device.name === name && device.outputChannels > 0);
 }
 
+function actualOutputRate(device: RawAudioDevice | undefined): number | null {
+  const rate = device?.actualSampleRateOutput;
+  return rate !== null && rate !== undefined && rate > 0 ? rate : null;
+}
+
+function supportsHighOutputRate(device: RawAudioDevice | undefined): boolean {
+  return maxAvailableOutputRate(device) > 16_000;
+}
+
+function maxAvailableOutputRate(device: RawAudioDevice | undefined): number {
+  return Math.max(0, ...(device?.availableSampleRateRangesOutput ?? []).map((range) => range.maximum));
+}
+
 function currentOutputRate(runtime: RecoveryRuntime, name: string): number | null {
   const target = targetOutput(runtime.readDevices(), name);
-  return target?.isDefaultOutput ? target.sampleRateOutput : null;
+  return target?.isDefaultOutput ? actualOutputRate(target) : null;
+}
+
+function currentModeAssessment(
+  runtime: RecoveryRuntime,
+  request: RecoveryRequest,
+): AudioModeAssessment | null {
+  return runtime.readModeAssessment(request.name) ?? request.context?.targetAssessment ?? null;
 }
 
 function currentDefaultName(
@@ -100,38 +119,6 @@ function currentDefaultName(
   return devices.find((device) =>
     direction === "input" ? device.isDefaultInput : device.isDefaultOutput
   )?.name ?? null;
-}
-
-function hasDifferentBluetoothDefaultRoutes(devices: RawAudioDevice[]): boolean {
-  const input = devices.find((device) => device.isDefaultInput && device.inputChannels > 0);
-  const output = devices.find((device) => device.isDefaultOutput && device.outputChannels > 0);
-  return Boolean(input && output && isBluetooth(input) && isBluetooth(output) && input.name !== output.name);
-}
-
-function recentObservedBluetoothConflict(
-  request: RecoveryRequest,
-  devices: RawAudioDevice[],
-  now: number,
-): ObservedBluetoothConflict | null {
-  const observed = request.context?.observedBluetoothConflict;
-  if (!observed || observed.inputName === observed.outputName || observed.outputName !== request.name) return null;
-  const observedAt = Date.parse(observed.observedAt);
-  if (!Number.isFinite(observedAt) || observedAt > now + 1_000 || now - observedAt > 15_000) return null;
-  const input = devices.find((device) => device.name === observed.inputName && device.inputChannels > 0);
-  const output = devices.find((device) => device.name === observed.outputName && device.outputChannels > 0);
-  return input && output && isBluetooth(input) && isBluetooth(output) ? observed : null;
-}
-
-function withObservedDefaultRoutes(
-  devices: RawAudioDevice[],
-  observed: ObservedBluetoothConflict,
-): RawAudioDevice[] {
-  if (!observed) return devices;
-  return devices.map((device) => ({
-    ...device,
-    isDefaultInput: device.inputChannels > 0 && device.name === observed.inputName,
-    isDefaultOutput: device.outputChannels > 0 && device.name === observed.outputName,
-  }));
 }
 
 function processDescription(processInfo: RunningProcess): string {
@@ -180,16 +167,6 @@ function formatCauseEvidence(cause: FormatRequestCause, windowMinutes: number): 
   return evidence;
 }
 
-function multiEndpointEvidence(cause: MultiEndpointCause): string[] {
-  const evidence = cause.bindings.map((binding) =>
-    `${binding.direction === "input" ? "输入" : "输出"}端点：${binding.address}`
-  );
-  if (cause.requester) evidence.push(`声音会话进程：${processDescription(cause.requester)}`);
-  if (cause.rejection) evidence.push(`系统拒绝原文：${cause.rejection}`);
-  evidence.push(...cause.gaps.map((gap) => `证据缺口：${gap}`));
-  return evidence;
-}
-
 function identifyProcesses(
   users: MicrophoneUser[],
   runtime: RecoveryRuntime,
@@ -210,7 +187,6 @@ function diagnoseCause(
   users: MicrophoneUser[],
   evidence: FormatRequestEvidence | null,
   runtime: RecoveryRuntime,
-  options: { allowRecoveredMultiEndpoint?: boolean; onlyMultiEndpoint?: boolean } = {},
 ): CauseMatch {
   if (users.length > 0) {
     const identified = identifyProcesses(users, runtime);
@@ -230,6 +206,28 @@ function diagnoseCause(
   }
 
   const target = targetOutput(devices, name);
+  const targetAssessment = runtime.readModeAssessment(name);
+  const input = devices.find((device) => device.isDefaultInput && device.inputChannels > 0);
+  const output = devices.find((device) => device.isDefaultOutput && device.outputChannels > 0);
+  const targetRate = actualOutputRate(target);
+  if (targetAssessment?.mode === "HFP_HSP" && targetAssessment.isDefaultOutput &&
+      target?.isDefaultOutput && targetRate !== null && targetRate <= 16_000 &&
+      input && output && isBluetooth(input) && isBluetooth(output) && input.name !== output.name) {
+    return {
+      diagnosis: {
+        kind: "多端点会话类",
+        confidence: "已确认",
+        summary: "当前输入和输出来自两台不同的蓝牙设备，目标输出仍处于 HFP",
+        evidence: [
+          `当前输入：${input.name}`,
+          `当前输出：${output.name}`,
+          `目标输出：${targetRate / 1_000} kHz`,
+        ],
+      },
+      processes: [],
+      routeChoices: createMultiEndpointRouteChoices(devices, name),
+    };
+  }
   if (!target || !evidence) {
     return {
       diagnosis: {
@@ -243,47 +241,14 @@ function diagnoseCause(
     };
   }
 
-  const multi = diagnoseMultiEndpointCause(evidence, target, runtime.readProcess, {
-    allowRecoveredTarget: options.allowRecoveredMultiEndpoint,
-  });
   const lowRateBluetoothOutputNames = devices
     .filter((device) =>
       device.isDefaultOutput && device.outputChannels > 0 && isBluetooth(device) &&
-      device.sampleRateOutput !== null && device.sampleRateOutput <= 16_000
+      actualOutputRate(device) !== null && (actualOutputRate(device) ?? 0) <= 16_000
     )
     .map((device) => device.name);
   const format = diagnoseFormatRequestCause(evidence, name, lowRateBluetoothOutputNames, runtime.readProcess);
-  const kind = selectCauseRoute(
-    false,
-    multi.confidence === "已确认",
-    !options.onlyMultiEndpoint && format.confidence === "已确认",
-  );
-
-  if (kind === "多端点会话类") {
-    const requesterName = multi.requester?.name ?? "该应用";
-    return {
-      diagnosis: {
-        kind,
-        confidence: "已确认",
-        summary: `${requesterName} 提交了来自两台蓝牙设备的输入输出组合，该组合被系统拒绝`,
-        evidence: multiEndpointEvidence(multi),
-      },
-      processes: multi.requester ? [multi.requester] : [],
-      routeChoices: createMultiEndpointRouteChoices(devices, name),
-    };
-  }
-  if (options.onlyMultiEndpoint) {
-    return {
-      diagnosis: {
-        kind: "证据不足",
-        confidence: multi.confidence,
-        summary: "尚不能确认具体应用拒绝了当前双蓝牙组合",
-        evidence: multiEndpointEvidence(multi),
-      },
-      processes: [],
-      routeChoices: [],
-    };
-  }
+  const kind = selectCauseRoute(false, false, format.confidence === "已确认");
   if (kind === "格式请求类") {
     return {
       diagnosis: {
@@ -297,13 +262,12 @@ function diagnoseCause(
     };
   }
 
-  const candidate = multi.confidence === "高度疑似" ? multiEndpointEvidence(multi) : formatCauseEvidence(format, evidence.windowMinutes);
   return {
     diagnosis: {
       kind: "证据不足",
-      confidence: multi.confidence === "高度疑似" || format.confidence === "高度疑似" ? "高度疑似" : "无法确认",
+      confidence: format.confidence === "高度疑似" ? "高度疑似" : "无法确认",
       summary: "没有完整命中已确证原因特征，不结束任何候选进程",
-      evidence: candidate,
+      evidence: formatCauseEvidence(format, evidence.windowMinutes),
     },
     processes: [],
     routeChoices: [],
@@ -321,13 +285,14 @@ async function verifyStableHighRate(
   let progressReported = false;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     lastRate = currentOutputRate(runtime, name);
-    if (lastRate !== null && lastRate > 16_000) {
+    const mode = runtime.readModeAssessment(name)?.mode ?? null;
+    if (lastRate !== null && lastRate > 16_000 && mode === "A2DP") {
       consecutive += 1;
       if (!progressReported) {
         progressReported = true;
         reportProgress({
           stage: "正在确认稳定",
-          message: `已观察到 ${lastRate / 1_000} kHz，正在连续确认不会再次进入通话模式。`,
+          message: `已观察到 ${lastRate / 1_000} kHz 且模式为高音质播放，正在连续确认不会再次进入通话模式。`,
         });
       }
       if (consecutive >= 3) return lastRate;
@@ -368,8 +333,8 @@ async function executeProcessAction(
     addStep(name, steps, "解除已确证原因", "失败", `命中受保护系统进程：${unsafe.map(processDescription).join("、")}`);
     return { stableRate: null, released: [], remaining: unsafe };
   }
-  if (currentOutputRate(runtime, name) === null || (currentOutputRate(runtime, name) ?? 0) > 16_000) {
-    addStep(name, steps, "解除已确证原因", "跳过", "动作前目标已经不再是低采样率默认输出");
+  if (runtime.readModeAssessment(name)?.mode !== "HFP_HSP") {
+    addStep(name, steps, "解除已确证原因", "跳过", "动作前目标已经恢复");
     return { stableRate: await verifyStableHighRate(name, runtime, reportProgress), released: [], remaining: [] };
   }
 
@@ -403,6 +368,22 @@ async function waitForRoute(
   return false;
 }
 
+async function waitForDevice(
+  name: string,
+  direction: "input" | "output",
+  runtime: RecoveryRuntime,
+  attempts = 30,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const available = runtime.readDevices().some((device) =>
+      device.name === name && (direction === "input" ? device.inputChannels > 0 : device.outputChannels > 0)
+    );
+    if (available) return true;
+    if (attempt < attempts - 1) await runtime.wait(100);
+  }
+  return false;
+}
+
 async function restoreOriginalRoutes(
   name: string,
   originalInput: string | null,
@@ -411,8 +392,8 @@ async function restoreOriginalRoutes(
   runtime: RecoveryRuntime,
 ): Promise<boolean> {
   let restored = true;
-  const devices = runtime.readDevices();
   for (const [direction, expected] of [["input", originalInput], ["output", originalOutput]] as const) {
+    const devices = runtime.readDevices();
     if (!expected || currentDefaultName(devices, direction) === expected) continue;
     const available = devices.some((device) =>
       device.name === expected && (direction === "input" ? device.inputChannels > 0 : device.outputChannels > 0)
@@ -428,6 +409,14 @@ async function restoreOriginalRoutes(
     addStep(name, steps, "恢复点击前声音设备", confirmed ? "成功" : "失败", `${direction === "input" ? "输入" : "输出"}：${expected}`);
   }
   return restored;
+}
+
+function reconnectFailureDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("ETIMEDOUT") || message.toLowerCase().includes("timed out")) {
+    return "设备连接未在限定时间内完成，已继续按系统实时状态复核";
+  }
+  return "设备连接操作未正常完成，已继续按系统实时状态复核";
 }
 
 async function verifyStableRouteChoice(
@@ -460,12 +449,12 @@ async function currentMicrophoneUsers(
 
 function baseMessage(outcome: A2dpRecoveryResult["outcome"], name: string, rate: number | null): string {
   if (outcome === "无需修复") return `${name} 在动作前已经恢复，无需继续处理。`;
-  if (outcome === "完全恢复") return `${name} 已稳定恢复到 ${(rate ?? 0) / 1_000} kHz，并尽量恢复了点击前输入输出。`;
+  if (outcome === "完全恢复") return `${name} 已稳定恢复到 ${(rate ?? 0) / 1_000} kHz，且已恢复点击前输入输出。`;
   if (outcome === "绕过成功") return "替代输入输出组合已经稳定；这是绕过成功，不代表原组合已完全修复。";
   if (outcome === "原组合复发") return "恢复点击前输入输出组合后再次进入通话模式，原组合仍会复发。";
   if (outcome === "等待选择") return "已确认多端点会话问题，请选择希望保留输入还是输出。";
   if (outcome === "等待授权") return "同一进程自动重启并再次触发问题，需要授权后才能在本次开机期间阻止它继续拉起。";
-  return `${name} 仍未稳定恢复到高于 16 kHz，本轮已停止，不再猜测或继续结束进程。`;
+  return `${name} 仍未稳定恢复到高于 16 kHz，本轮自动处理已停止。`;
 }
 
 export async function runRecovery(
@@ -478,29 +467,33 @@ export async function runRecovery(
   reportProgress({ stage: "正在保存现场", message: "正在保存点击时的输入、输出、采样率和麦克风占用。" });
   const devices = runtime.readDevices();
   const target = targetOutput(devices, name);
-  const observedConflict = recentObservedBluetoothConflict(request, devices, runtime.now());
-  const originalInput = observedConflict?.inputName ?? request.context?.defaultInput ?? currentDefaultName(devices, "input");
-  const originalOutput = observedConflict?.outputName ?? request.context?.defaultOutput ?? currentDefaultName(devices, "output");
-  const initialRate = target?.sampleRateOutput ?? request.context?.targetSampleRate ?? null;
+  const targetAssessment = currentModeAssessment(runtime, request);
+  const originalInput = request.context?.defaultInput ?? currentDefaultName(devices, "input");
+  const originalOutput = request.context?.defaultOutput ?? currentDefaultName(devices, "output");
+  const initialRate = actualOutputRate(target) ?? request.context?.targetSampleRate ?? null;
   addStep(name, steps, "保存现场", "成功", `点击时间：${request.context?.clickedAt ?? new Date(runtime.now()).toISOString()}；输入：${originalInput ?? "未知"}；输出：${originalOutput ?? "未知"}；目标采样率：${initialRate ?? "未知"}`);
 
-  const canInspectMultiEndpoint = request.inspectMultiEndpoint === true &&
-    target?.isDefaultOutput === true && (hasDifferentBluetoothDefaultRoutes(devices) || observedConflict !== null);
   const isNormalInputOnlyTarget = target?.isDefaultOutput === false &&
     devices.some((device) => device.name === name && device.isDefaultInput && device.inputChannels > 0);
   const isInactiveOutputTarget = target?.isDefaultOutput === false;
   const cannotProveOutputDegradation = target?.isDefaultOutput === true &&
-    (target.maxSupportedOutputRate ?? 0) <= 16_000;
-  if (!target || !target.isDefaultOutput || target.sampleRateOutput === null ||
+    !supportsHighOutputRate(target);
+  const targetRate = actualOutputRate(target);
+  if (!target || !target.isDefaultOutput || targetAssessment?.mode !== "HFP_HSP" ||
+      !targetAssessment.isDefaultOutput || targetRate === null ||
       cannotProveOutputDegradation ||
-      (target.sampleRateOutput > 16_000 && !canInspectMultiEndpoint) ||
-      (request.inspectMultiEndpoint === true && !canInspectMultiEndpoint)) {
-    const rate = target?.sampleRateOutput ?? null;
+      targetRate > 16_000) {
+    const rate = targetRate;
     const alreadyRecovered = target?.isDefaultOutput === true && rate !== null && rate > 16_000;
-    const summary = alreadyRecovered
-      ? "目标现场已经恢复"
+    const skippedRouteChoice = alreadyRecovered && request._confirmedRouteChoice !== undefined;
+    const summary = skippedRouteChoice
+      ? "目标已自行恢复，本次未执行输入输出切换"
+      : alreadyRecovered
+        ? "目标现场已经恢复"
       : isNormalInputOnlyTarget
         ? "该设备当前只作为麦克风输入使用，无需修复输出"
+      : targetAssessment?.mode !== "HFP_HSP"
+        ? "最新模式判定不是 HFP/HSP，无需执行一键修复"
         : cannotProveOutputDegradation
           ? "无法证明该设备的输出从高采样率降级，无需执行输出修复"
           : "该设备当前不是需要修复的默认输出";
@@ -511,8 +504,9 @@ export async function runRecovery(
       evidence: [
         `当前默认输入：${originalInput ?? "未知"}`,
         `当前默认输出：${originalOutput ?? "未知"}`,
+        `最新模式判定：${targetAssessment?.mode ?? "UNKNOWN"}`,
         `该设备系统输出端点：${rate === null ? "未知" : `${rate / 1_000} kHz`}${target?.isDefaultOutput ? "（当前输出）" : "（当前未播放）"}`,
-        `该设备已知最高输出采样率：${target?.maxSupportedOutputRate === null || target?.maxSupportedOutputRate === undefined ? "未知" : `${target.maxSupportedOutputRate / 1_000} kHz`}`,
+        `该设备可用最高输出采样率：${maxAvailableOutputRate(target) > 0 ? `${maxAvailableOutputRate(target) / 1_000} kHz` : "未知"}`,
       ],
     };
     addStep(name, steps, "复核目标", "成功", diagnosis.summary, rate);
@@ -521,13 +515,15 @@ export async function runRecovery(
       ? `${name} 当前只作为麦克风输入使用；16 kHz 输入可以是正常规格，未播放的系统输出端点无需恢复。`
       : cannotProveOutputDegradation
         ? `${name} 没有已证明的高采样率输出能力，本次不把 16 kHz 当作输出故障。`
-        : alreadyRecovered
-          ? baseMessage(outcome, name, rate)
+        : skippedRouteChoice
+          ? `${name} 已在执行前自行恢复，本次没有修改系统默认输入输出。`
+          : alreadyRecovered
+            ? baseMessage(outcome, name, rate)
           : !target
             ? `${name} 当前没有可用的系统输出端点，无需执行输出修复。`
             : !target.isDefaultOutput
               ? `${name} 当前没有承担声音输出，无需执行输出修复。`
-              : `${name} 当前输出采样率无法读取，本次未执行修复动作。`;
+              : `${name} 当前实际输出采样率无法读取，本次未执行修复动作。`;
     return makeResult({
       outcome,
       recoveryPath: "现场复核",
@@ -542,50 +538,44 @@ export async function runRecovery(
     });
   }
 
+  if (request._confirmedRouteChoice) {
+    const { choice, diagnosis } = request._confirmedRouteChoice;
+    reportProgress({ stage: "正在执行处理", message: `正在应用已确认组合：${choice.label}` });
+    runtime.setDefaultDevice(choice.direction, choice.deviceName);
+    const changed = await waitForRoute(choice.direction, choice.deviceName, runtime);
+    const stable = changed && await verifyStableRouteChoice(choice, runtime);
+    addStep(name, steps, "应用多端点替代组合", stable ? "成功" : "失败", choice.label);
+    const outcome = stable ? "绕过成功" : "未恢复";
+    return makeResult({
+      outcome,
+      recoveryPath: "多端点路由组合",
+      handledCause: stable,
+      sampleRate: currentOutputRate(runtime, name),
+      releasedPrograms: [],
+      remainingPrograms: [],
+      diagnosis,
+      steps,
+      usedReconnect: false,
+      message: baseMessage(outcome, name, currentOutputRate(runtime, name)),
+    });
+  }
+
   reportProgress({
     stage: "正在定位原因",
-    message: request.inspectMultiEndpoint
-      ? "正在只读复核最近的双蓝牙会话拒绝证据。"
-      : "正在按麦克风占用、多端点会话、格式请求的顺序定位原因。",
+    message: "正在先检查并尝试解除麦克风占用，再检查当前多端点组合和格式请求。",
   });
   let users: MicrophoneUser[];
-  if (request.inspectMultiEndpoint) {
-    users = [];
-  } else try {
+  try {
     users = await currentMicrophoneUsers(request, runtime);
   } catch (error) {
     users = [];
     addStep(name, steps, "补充麦克风占用检查", "失败", error instanceof Error ? error.message : String(error));
   }
-  let evidence: FormatRequestEvidence | null = null;
-  if (users.length === 0) {
-    evidence = request.inspectMultiEndpoint && observedConflict
-      ? runtime.readMultiEndpointEvidenceSince(
-          Date.parse(observedConflict.observedAt) - (observedConflict.lookbackSeconds ?? 2) * 1_000,
-        )
-      : runtime.readEvidence();
+  let cause = diagnoseCause(name, devices, users, null, runtime);
+  if (users.length === 0 && cause.diagnosis.kind !== "多端点会话类") {
+    cause = diagnoseCause(name, devices, users, runtime.readEvidence(), runtime);
   }
-  const diagnosisDevices = observedConflict ? withObservedDefaultRoutes(devices, observedConflict) : devices;
-  let cause = diagnoseCause(name, diagnosisDevices, users, evidence, runtime, {
-    allowRecoveredMultiEndpoint: request.inspectMultiEndpoint,
-    onlyMultiEndpoint: request.inspectMultiEndpoint,
-  });
   addStep(name, steps, "原因定位", cause.diagnosis.confidence === "已确认" ? "成功" : "失败", `${cause.diagnosis.kind}：${cause.diagnosis.summary}`);
-
-  if (request.inspectMultiEndpoint && cause.diagnosis.kind !== "多端点会话类") {
-    return makeResult({
-      outcome: "未恢复",
-      recoveryPath: "现场复核",
-      handledCause: false,
-      sampleRate: currentOutputRate(runtime, name),
-      releasedPrograms: [],
-      remainingPrograms: [],
-      diagnosis: cause.diagnosis,
-      steps,
-      usedReconnect: false,
-      message: "检测到双蓝牙组合波动，但系统证据尚不足以点名具体应用；本次没有结束进程或切换设备。",
-    });
-  }
 
   if (cause.diagnosis.kind === "多端点会话类") {
     const choice = cause.routeChoices.find((item) => item.id === request.routeChoiceId);
@@ -648,9 +638,9 @@ export async function runRecovery(
       guardProcessName = action.released[0].name;
     }
     if (action.stableRate !== null) {
-      await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
-      const restoredRate = await verifyStableHighRate(name, runtime, reportProgress, 3);
-      const outcome = restoredRate !== null ? "完全恢复" : "原组合复发";
+      const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
+      const restoredRate = routesRestored ? await verifyStableHighRate(name, runtime, reportProgress, 3) : null;
+      const outcome = restoredRate !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
       return makeResult({
         outcome,
         recoveryPath,
@@ -673,8 +663,31 @@ export async function runRecovery(
       addStep(name, steps, "重新判定现场", "失败", error instanceof Error ? error.message : String(error));
     }
     const freshDevices = runtime.readDevices();
-    const freshEvidence = freshUsers.length === 0 ? runtime.readEvidenceSince(actionStartedAt) : null;
-    const freshCause = diagnoseCause(name, freshDevices, freshUsers, freshEvidence, runtime);
+    let freshCause = diagnoseCause(name, freshDevices, freshUsers, null, runtime);
+    if (freshUsers.length === 0 && freshCause.diagnosis.kind !== "多端点会话类") {
+      freshCause = diagnoseCause(name, freshDevices, freshUsers, runtime.readEvidenceSince(actionStartedAt), runtime);
+    }
+    if (freshCause.diagnosis.kind === "多端点会话类") {
+      addStep(name, steps, "重新判定现场", "成功", `${freshCause.diagnosis.kind}：${freshCause.diagnosis.summary}`);
+      const outcome = freshCause.routeChoices.length > 0 ? "等待选择" : "未恢复";
+      return makeResult({
+        outcome,
+        recoveryPath: "多端点路由组合",
+        handledCause,
+        sampleRate: currentOutputRate(runtime, name),
+        releasedPrograms,
+        remainingPrograms,
+        diagnosis: freshCause.diagnosis,
+        steps,
+        usedReconnect,
+        actionRequired: freshCause.routeChoices.length > 0 ? {
+          kind: "route-choice",
+          prompt: `${freshCause.diagnosis.summary}。是否授权工具保留输入或保留输出？`,
+          choices: freshCause.routeChoices,
+        } : undefined,
+        message: baseMessage(outcome, name, currentOutputRate(runtime, name)),
+      });
+    }
     const originalCommands = new Set(cause.processes.map((processInfo) => processInfo.command));
     const repeatedProcesses = freshCause.processes.filter((processInfo) => originalCommands.has(processInfo.command));
     if (freshCause.diagnosis.confidence === "已确认" && repeatedProcesses.length > 0) {
@@ -705,9 +718,9 @@ export async function runRecovery(
       if (repeatedAction.released.length > 0) guardCommand = repeatedAction.released[0].command;
       if (repeatedAction.released.length > 0) guardProcessName = repeatedAction.released[0].name;
       if (repeatedAction.stableRate !== null) {
-        await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
-        const restoredRate = await verifyStableHighRate(name, runtime, reportProgress, 3);
-        const outcome = restoredRate !== null ? "完全恢复" : "原组合复发";
+        const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
+        const restoredRate = routesRestored ? await verifyStableHighRate(name, runtime, reportProgress, 3) : null;
+        const outcome = restoredRate !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
         return makeResult({
           outcome,
           recoveryPath,
@@ -728,9 +741,9 @@ export async function runRecovery(
       releasedPrograms.push(...secondAction.released.map((processInfo) => processInfo.name));
       remainingPrograms.push(...secondAction.remaining.map((processInfo) => processInfo.name));
       if (secondAction.stableRate !== null) {
-        await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
-        const restoredRate = await verifyStableHighRate(name, runtime, reportProgress, 3);
-        const outcome = restoredRate !== null ? "完全恢复" : "原组合复发";
+        const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
+        const restoredRate = routesRestored ? await verifyStableHighRate(name, runtime, reportProgress, 3) : null;
+        const outcome = restoredRate !== null ? "完全恢复" : routesRestored ? "原组合复发" : "未恢复";
         return makeResult({
           outcome,
           recoveryPath,
@@ -763,35 +776,62 @@ export async function runRecovery(
       addStep(name, steps, "恢复点击前输入", restored ? "成功" : "失败", originalInput);
       const rate = restored ? await verifyStableHighRate(name, runtime, reportProgress) : null;
       if (rate !== null) {
-        const outcome = "完全恢复";
-        return makeResult({
-          outcome,
-          recoveryPath,
-          handledCause,
-          sampleRate: rate,
-          releasedPrograms,
-          remainingPrograms,
-          diagnosis: cause.diagnosis,
-          steps,
-          usedReconnect,
-          message: baseMessage(outcome, name, rate),
-          _relaunchGuard: guardCommand && guardProcessName ? { command: guardCommand, processName: guardProcessName } : undefined,
-        });
+        const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
+        if (routesRestored) {
+          const outcome = "完全恢复";
+          return makeResult({
+            outcome,
+            recoveryPath,
+            handledCause,
+            sampleRate: rate,
+            releasedPrograms,
+            remainingPrograms,
+            diagnosis: cause.diagnosis,
+            steps,
+            usedReconnect,
+            message: baseMessage(outcome, name, rate),
+            _relaunchGuard: guardCommand && guardProcessName ? { command: guardCommand, processName: guardProcessName } : undefined,
+          });
+        }
       }
     }
   } else {
     addStep(name, steps, "临时切换到非蓝牙输入", "跳过", "没有可用的非蓝牙中转输入，或点击前输入未知");
   }
 
+  let reconnectError: unknown = null;
+  usedReconnect = true;
   try {
     runtime.reconnectDevice(name);
-    usedReconnect = true;
-    addStep(name, steps, "断开并重连目标设备", "成功", "只重建本次蓝牙声音链路，不把该动作记录为根因修复");
   } catch (error) {
-    addStep(name, steps, "断开并重连目标设备", "失败", error instanceof Error ? error.message : String(error));
+    reconnectError = error;
   }
-  const finalRate = usedReconnect ? await verifyStableHighRate(name, runtime, reportProgress) : null;
+  const targetAvailable = await waitForDevice(name, "output", runtime);
+  addStep(
+    name,
+    steps,
+    "断开并重连目标设备",
+    targetAvailable ? "成功" : "失败",
+    targetAvailable
+      ? reconnectError
+        ? "连接命令未正常返回，但系统已确认目标设备重新出现"
+        : "只重建本次蓝牙声音链路，不把该动作记录为根因修复"
+      : reconnectFailureDetail(reconnectError),
+  );
+  const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
+  const finalRate = targetAvailable && routesRestored
+    ? await verifyStableHighRate(name, runtime, reportProgress)
+    : null;
   const outcome = finalRate !== null ? "完全恢复" : "未恢复";
+  const message = finalRate !== null
+    ? baseMessage(outcome, name, finalRate)
+    : !targetAvailable
+      ? `${name} 当前仍断开，需要手动重新连接；已恢复其他仍可用的点击前声音设备。`
+      : !routesRestored
+        ? `${name} 已重新出现，但点击前输入输出没有全部恢复，本轮不报告完全恢复。`
+        : reconnectError
+          ? `${name} 的连接操作未正常返回，且目标输出仍未稳定恢复到高于 16 kHz。`
+          : baseMessage(outcome, name, finalRate);
   return makeResult({
     outcome,
     recoveryPath,
@@ -802,7 +842,7 @@ export async function runRecovery(
     diagnosis: cause.diagnosis,
     steps,
     usedReconnect,
-    message: baseMessage(outcome, name, finalRate),
+    message,
     _relaunchGuard: guardCommand && guardProcessName ? { command: guardCommand, processName: guardProcessName } : undefined,
   });
 }

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detailedLog } from "../../core/detailed-logging/index.ts";
+import type { AudioModeAssessment } from "../../shared/audio-device-types/index.ts";
 import type {
   A2dpRecoveryResult,
   RecoveryProgress,
@@ -46,16 +47,32 @@ function startThisBootRelaunchGuard(command: string, processName: string): void 
 export function recoverA2dp(
   request: RecoveryRequest,
   onProgress: (progress: RecoveryProgress) => void = () => {},
+  readModeAssessment: (name: string) => AudioModeAssessment | null = () =>
+    request.context?.targetAssessment ?? null,
 ): Promise<A2dpRecoveryResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [runnerPath, JSON.stringify(request)], {
       cwd: join(moduleDirectory, "..", ".."),
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     detailedLog("info", "a2dp-recovery.worker-started", { deviceName: request.name, pid: child.pid });
     let bufferedOutput = "";
     let stderr = "";
     let result: A2dpRecoveryResult | null = null;
+    let lastModeMessage = "";
+    const syncModeAssessment = () => {
+      if (child.stdin.destroyed) return;
+      const assessment = readModeAssessment(request.name);
+      const message = JSON.stringify({ type: "mode-assessment", assessment });
+      if (message === lastModeMessage) return;
+      lastModeMessage = message;
+      child.stdin.write(`${message}\n`);
+    };
+    syncModeAssessment();
+    const modeSyncTimer = setInterval(syncModeAssessment, 100);
+    child.stdin.on("error", () => {
+      // The worker may close stdin immediately after returning its final result.
+    });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -76,10 +93,12 @@ export function recoverA2dp(
     });
     child.stderr.on("data", (chunk: string) => { stderr += chunk; });
     child.once("error", (error) => {
+      clearInterval(modeSyncTimer);
       detailedLog("error", "a2dp-recovery.worker-failed", { deviceName: request.name, error });
       reject(error);
     });
     child.once("close", (code) => {
+      clearInterval(modeSyncTimer);
       detailedLog(code === 0 ? "info" : "error", "a2dp-recovery.worker-stopped", {
         deviceName: request.name,
         pid: child.pid,

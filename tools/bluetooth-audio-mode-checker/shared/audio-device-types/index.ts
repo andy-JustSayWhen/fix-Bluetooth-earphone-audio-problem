@@ -1,3 +1,8 @@
+export type SampleRateRange = {
+  minimum: number;
+  maximum: number;
+};
+
 export type RawAudioDevice = {
   id: number;
   name: string;
@@ -6,6 +11,12 @@ export type RawAudioDevice = {
   transport: string;
   sampleRateInput: number | null;
   sampleRateOutput: number | null;
+  availableSampleRateRangesInput?: SampleRateRange[];
+  nominalSampleRateInput?: number | null;
+  actualSampleRateInput?: number | null;
+  availableSampleRateRangesOutput?: SampleRateRange[];
+  nominalSampleRateOutput?: number | null;
+  actualSampleRateOutput?: number | null;
   maxSupportedOutputRate?: number | null;
   inputChannels: number;
   outputChannels: number;
@@ -22,7 +33,15 @@ export type AudioProbeSnapshot = {
   devices: RawAudioDevice[];
 };
 
-export type AudioModeCode = "A2DP" | "HFP_HSP" | "LE_AUDIO" | "INACTIVE" | "UNKNOWN";
+export type AudioModeCode = "A2DP" | "HFP_HSP" | "UNKNOWN";
+
+export type BluetoothLinkType = "tacl" | "tsco";
+
+export type BluetoothLinkSnapshot = {
+  address: string;
+  profile: BluetoothLinkType;
+  timestamp: string;
+};
 
 export type AudioModeAssessment = {
   name: string;
@@ -32,10 +51,19 @@ export type AudioModeAssessment = {
   isActive: boolean;
   isInputActive: boolean;
   inputTransport: string | null;
+  bluetoothAddress: string | null;
+  audioLinkType: BluetoothLinkType | null;
+  audioLinkTypeObservedAt: string | null;
   sampleRateOutput: number | null;
+  availableSampleRateRangesOutput: SampleRateRange[];
+  nominalSampleRateOutput: number | null;
+  actualSampleRateOutput: number | null;
   maxSupportedOutputRate: number | null;
   outputChannels: number;
   sampleRateInput: number | null;
+  availableSampleRateRangesInput: SampleRateRange[];
+  nominalSampleRateInput: number | null;
+  actualSampleRateInput: number | null;
   inputChannels: number;
   isDefaultInput: boolean;
   isDefaultOutput: boolean;
@@ -82,6 +110,7 @@ export type ActiveOutputSnapshot = {
   name: string | null;
   nominalSampleRate: number | null;
   actualSampleRate: number | null;
+  outputChannels?: number;
   isRunning: boolean;
   defaultInput?: ActiveInputSnapshot;
   timestamp: string;

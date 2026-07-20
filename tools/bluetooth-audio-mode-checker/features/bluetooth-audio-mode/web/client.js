@@ -72,34 +72,35 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
 }
 
 export function isRecoverableOutputDevice(device) {
+  const supportsHighRate = device.availableSampleRateRangesOutput?.some((range) =>
+    Number.isFinite(range?.maximum) && range.maximum > 16_000
+  );
   return device.isDefaultOutput === true &&
-    device.maxSupportedOutputRate > 16_000 &&
-    device.sampleRateOutput !== null &&
-    device.sampleRateOutput <= 16_000;
+    device.mode === "HFP_HSP" &&
+    supportsHighRate &&
+    Number.isFinite(device.actualSampleRateOutput) &&
+    device.actualSampleRateOutput > 0 &&
+    device.actualSampleRateOutput <= 16_000;
 }
 
 export function deviceModePresentation(device) {
-  if (device.isInputActive && !isRecoverableOutputDevice(device)) {
-    const inputValue = device.sampleRateInput / 1_000;
-    const inputRate = device.sampleRateInput === null
-      ? "采样率未知"
-      : `${Number.isInteger(inputValue) ? inputValue.toFixed(0) : inputValue.toFixed(1)} kHz 输入`;
+  if (device.mode === "HFP_HSP") {
     return {
-      className: "microphone",
-      text: `蓝牙麦克风使用中（${inputRate}）`,
+      className: "hfp_hsp",
+      text: device.isInputActive
+        ? "HFP等模式（低音质语音模式 · 麦克风使用中）"
+        : "HFP等模式（低音质语音模式）",
     };
   }
-  if (device.mode === "INACTIVE") {
+  if (device.mode === "A2DP") {
     return {
-      className: "inactive",
-      text: "未活动（当前未承担声音输出）",
+      className: "a2dp",
+      text: "A2DP等模式（高音质播放模式）",
     };
   }
   return {
-    className: device.mode.toLowerCase(),
-    text: device.mode === "HFP_HSP" && device.isInputActive
-      ? "HFP/HSP模式（麦克风使用中）"
-      : device.label,
+    className: "unknown",
+    text: device.isInputActive ? "模式无法确认（麦克风使用中）" : "模式无法确认",
   };
 }
 
@@ -126,8 +127,6 @@ let refreshRequestRunning = false;
 let pendingRouteChange = null;
 let pendingRouteTimer = 0;
 let routeInstabilityState = null;
-let multiEndpointInspectionTimer = 0;
-let lastMultiEndpointInspectionKey = "";
 
 function createElement(tag, className, text) {
   const element = document.createElement(tag);
@@ -137,9 +136,20 @@ function createElement(tag, className, text) {
 }
 
 function formatRate(rate) {
-  if (!rate) return "无";
+  if (!rate) return "无法读取";
   const value = rate / 1000;
   return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)} kHz`;
+}
+
+function formatRateRanges(ranges) {
+  if (!Array.isArray(ranges) || ranges.length === 0) return "无法读取";
+  return ranges
+    .filter((range) => range?.minimum > 0 && range?.maximum > 0)
+    .sort((left, right) => left.minimum - right.minimum || left.maximum - right.maximum)
+    .map((range) => range.minimum === range.maximum
+      ? formatRate(range.minimum)
+      : `${formatRate(range.minimum).replace(" kHz", "")}–${formatRate(range.maximum)}`)
+    .join("、") || "无法读取";
 }
 
 function routeText(device) {
@@ -157,14 +167,46 @@ function metric(label, value) {
   return item;
 }
 
-function metricGroup(label, firstMetric, secondMetric, note = "") {
+function metricGroup(label, metrics) {
   const group = createElement("fieldset", "metric-group");
   group.append(createElement("legend", "", label));
   const items = createElement("div", "metric-group__items");
-  items.append(firstMetric, secondMetric);
+  items.append(...metrics);
   group.append(items);
-  if (note) group.append(createElement("p", "metric-group__note", note));
   return group;
+}
+
+function audioLinkGroup(device) {
+  const linkGroup = createElement("fieldset", "audio-link-group");
+  linkGroup.append(createElement("legend", "", `声音链路类型：${device.audioLinkType ?? "无法确认"}`));
+  const directions = createElement("div", "metric-groups");
+  if (device.outputChannels > 0) {
+    directions.append(metricGroup(
+      device.isDefaultOutput ? "输出（当前输出）" : "输出",
+      [
+        metric("可用采样率", formatRateRanges(device.availableSampleRateRangesOutput)),
+        metric("标称采样率", formatRate(device.nominalSampleRateOutput)),
+        metric("实际采样率", formatRate(device.actualSampleRateOutput)),
+        metric("声道", `${device.outputChannels} 声道`),
+      ],
+    ));
+  }
+  if (device.inputChannels > 0) {
+    directions.append(metricGroup(
+      device.isInputActive ? "输入（正在使用）" : "输入",
+      [
+        metric("可用采样率", formatRateRanges(device.availableSampleRateRangesInput)),
+        metric("标称采样率", formatRate(device.nominalSampleRateInput)),
+        metric("实际采样率", formatRate(device.actualSampleRateInput)),
+        metric("声道", `${device.inputChannels} 声道`),
+      ],
+    ));
+  }
+  if (!directions.childElementCount) {
+    directions.append(createElement("p", "audio-link-group__empty", "系统未返回可展示的输入或输出端点。"));
+  }
+  linkGroup.append(directions);
+  return linkGroup;
 }
 
 function schedulePostActionRefresh() {
@@ -334,47 +376,9 @@ function createDeviceCard(device) {
   const details = createElement("div", "device-card__details");
   const recovery = recoveryController.feedbackByDevice.get(device.name);
   if (recovery) details.append(recoveryController.resultSection(recovery, device.name));
-  if (!device.isDefaultOutput && !device.isInputActive) {
-    const inactiveState = createElement("div", "inactive-state");
-    const inputOnlyIdle = device.isDefaultInput;
-    inactiveState.append(
-      createElement("strong", "", inputOnlyIdle ? "默认蓝牙麦克风当前未采集" : "当前未刷新输入输出参数"),
-      createElement(
-        "p",
-        "",
-        inputOnlyIdle
-          ? "当前没有本机应用实际读取此麦克风。系统声明但未播放的同名输出端点不参与修复判断，也不证明设备具有物理扬声器。"
-          : "此设备当前未承担声音输出，因此不显示采样率和声道。将它切换为默认输出后，页面会自动显示实际参数。",
-      ),
-    );
-    details.append(inactiveState, microphoneOccupancySection(device));
-    card.append(header, details);
-  } else {
-  const metrics = createElement("div", "metric-groups");
-  if (device.isDefaultOutput) {
-    metrics.append(metricGroup(
-      device.isDefaultOutput ? "系统输出端点（当前输出）" : "系统输出端点（当前未播放）",
-      metric("采样率", formatRate(device.sampleRateOutput)),
-      metric("声道", device.outputChannels ? `${device.outputChannels} 声道` : "无"),
-      "这是系统暴露的输出端点，不代表设备具有物理扬声器。",
-    ));
-  }
-  metrics.append(metricGroup(
-      device.isInputActive ? "输入（正在使用）" : "输入",
-      metric("采样率", formatRate(device.sampleRateInput)),
-      metric("声道", device.inputChannels ? `${device.inputChannels} 声道` : "无"),
-  ));
-  details.append(metrics);
-  if (device.isInputActive && !device.isDefaultOutput) {
-    details.append(createElement(
-      "p",
-      "input-only-note",
-      "当前只使用此设备的麦克风。16 kHz 可以是蓝牙输入的正常规格；系统声明但未播放的同名输出端点不参与修复判断，也不代表设备具有物理扬声器。",
-    ));
-  }
+  details.append(audioLinkGroup(device));
   details.append(microphoneOccupancySection(device));
   card.append(header, details);
-  }
 
   if (expandedDevices.has(device.name)) {
     card.classList.add("is-expanded");
@@ -415,6 +419,11 @@ function showRouteGuidance(routes) {
   const risk = describeBluetoothRouteRisk(routes);
   routeMessage.className = risk ? "route-message is-warning" : "route-message";
   routeMessage.textContent = risk || "选择其他设备后会立即写入系统。";
+}
+
+function showConfirmedRouteConflict(result) {
+  routeMessage.className = "route-message is-warning";
+  routeMessage.textContent = `已确认：${result.diagnosis.summary}。请在目标输出设备卡片中选择保留输入或保留输出。`;
 }
 
 function updatePendingRouteMessage(routes) {
@@ -491,47 +500,8 @@ function renderState(result, options = {}) {
   }
 }
 
-function clearMultiEndpointInspectionTimer() {
-  if (multiEndpointInspectionTimer) window.clearTimeout(multiEndpointInspectionTimer);
-  multiEndpointInspectionTimer = 0;
-  lastMultiEndpointInspectionKey = "";
-}
-
-function scheduleRouteConflictInspection(result, { force = false, lookbackSeconds = 2 } = {}) {
-  const routeConflict = getBluetoothRouteConflict(result.routes);
-  if (!routeConflict) {
-    lastMultiEndpointInspectionKey = "";
-    return;
-  }
-  const inputActive = Boolean(result.devices.find((device) =>
-    device.name === routeConflict.input.name
-  )?.isInputActive);
-  if (!inputActive && !force) {
-    if (lastMultiEndpointInspectionKey.endsWith("\n输入采集中")) {
-      lastMultiEndpointInspectionKey = "";
-    }
-    return;
-  }
-  const inspectionKey = `${routeConflict.key}\n${inputActive ? "输入采集中" : "路由抖动"}`;
-  if (inspectionKey === lastMultiEndpointInspectionKey || multiEndpointInspectionTimer) return;
-  const device = result.devices.find((item) => item.name === routeConflict.output.name) ??
-    lastRenderedDevices.find((item) => item.name === routeConflict.output.name);
-  if (!device) return;
-  lastMultiEndpointInspectionKey = inspectionKey;
-  multiEndpointInspectionTimer = window.setTimeout(() => {
-    multiEndpointInspectionTimer = 0;
-    recoveryController.inspectRouteConflict(device, {
-      inputName: routeConflict.input.name,
-      outputName: routeConflict.output.name,
-      observedAt: new Date().toISOString(),
-      lookbackSeconds,
-    });
-  }, 500);
-}
-
 function renderRealtimeState(result) {
   if (pendingRouteChange) {
-    clearMultiEndpointInspectionTimer();
     routeInstabilityState = null;
     renderState(result, { preserveRouteMessage: true });
     return;
@@ -541,19 +511,20 @@ function renderRealtimeState(result) {
   routeInstabilityState = observation.state;
   const routeConflict = getBluetoothRouteConflict(result.routes) ?? getBluetoothRouteConflict(lastRenderedRoutes ?? { input: [], output: [] });
   if (!routeConflict && !observation.unstable) {
-    clearMultiEndpointInspectionTimer();
     renderState(result, { preserveRouteMessage: true });
     showRouteGuidance(result.routes);
     return;
   }
 
-  scheduleRouteConflictInspection(result, {
-    force: observation.triggered && observation.unstable,
-  });
   renderState(result, { preserveRouteMessage: true });
+  const pendingRouteChoice = recoveryController.getPendingRouteChoice();
+  if (pendingRouteChoice) {
+    showConfirmedRouteConflict(pendingRouteChoice);
+    return;
+  }
   if (observation.unstable) {
     routeMessage.className = "route-message is-warning is-unstable";
-    routeMessage.textContent = "检测到当前双蓝牙组合正在反复断连或切换模式。页面会继续实时显示每次变化，正在确认是否有具体应用拒绝该组合。";
+    routeMessage.textContent = "检测到当前双蓝牙组合正在反复断连或切换模式。页面会继续实时显示每次变化；目标进入 HFP 时可点击一键修复。";
     return;
   }
 
@@ -562,8 +533,13 @@ function renderRealtimeState(result) {
 
 function renderDevices(devices) {
   lastRenderedDevices = devices;
+  const pendingActionDevice = devices.find((device) =>
+    recoveryController?.feedbackByDevice.get(device.name)?.result?.actionRequired
+  );
   const occupiedDevice = devices.find((device) => device.microphoneOccupancy?.isInUse);
-  if (occupiedDevice) {
+  if (pendingActionDevice) {
+    expandedDevices.add(pendingActionDevice.name);
+  } else if (occupiedDevice) {
     expandedDevices.clear();
     expandedDevices.add(occupiedDevice.name);
   }
@@ -596,7 +572,6 @@ async function refreshDevices(options = {}) {
     }
     if (!response.ok) throw new Error(result.error || "设备读取失败");
     renderState(result, options);
-    scheduleRouteConflictInspection(result, { lookbackSeconds: 300 });
   } catch (error) {
     if (options.silent) return;
     listElement.replaceChildren(createElement("div", "error-state", `读取失败：${error.message}`));

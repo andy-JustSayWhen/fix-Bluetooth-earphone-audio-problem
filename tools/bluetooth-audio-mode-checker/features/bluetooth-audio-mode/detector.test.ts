@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   applyActiveInputSnapshot,
   applyActiveOutputSnapshot,
+  applyBluetoothLinkSnapshot,
   assessBluetoothDevices,
 } from "./index.ts";
 import {
@@ -13,6 +14,7 @@ import {
   isRecoverableOutputDevice,
   observeBluetoothRouteInstability,
 } from "./web/client.js";
+import { successfulRecoverySummary } from "../a2dp-recovery/web/client.js";
 
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
@@ -23,8 +25,15 @@ function device(overrides: Partial<RawAudioDevice>): RawAudioDevice {
     uid: "test-device",
     manufacturer: "测试厂商",
     transport: "bluetooth",
+    bluetoothAddress: "50-C0-F0-F3-6A-66",
     sampleRateInput: null,
     sampleRateOutput: null,
+    availableSampleRateRangesInput: [],
+    availableSampleRateRangesOutput: [],
+    nominalSampleRateInput: null,
+    nominalSampleRateOutput: null,
+    actualSampleRateInput: null,
+    actualSampleRateOutput: null,
     maxSupportedOutputRate: null,
     inputChannels: 0,
     outputChannels: 0,
@@ -37,94 +46,139 @@ function device(overrides: Partial<RawAudioDevice>): RawAudioDevice {
   };
 }
 
-test("最高支持高于 16 kHz 且当前不高于 16 kHz 时判定为非 A2DP", () => {
+test("输出可用采样率含高规格且标称采样率不高于 16 kHz 时判定为 HFP 等模式", () => {
   const [result] = assessBluetoothDevices([
     device({
-      maxSupportedOutputRate: 48_000,
+      availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 48_000 }],
+      nominalSampleRateOutput: 16_000,
+      actualSampleRateOutput: 44_100,
       sampleRateOutput: 16_000,
       outputChannels: 2,
       isDefaultOutput: true,
     }),
   ]);
   assert.equal(result.mode, "HFP_HSP");
-  assert.equal(result.maxSupportedOutputRate, 48_000);
-  assert.match(result.explanation, /支持高于 16 kHz、实际不高于 16 kHz/);
+  assert.equal(result.audioLinkType, null);
+  assert.match(result.explanation, /标称或实际采样率不高于 16 kHz/);
 });
 
-test("当前输出高于 16 kHz 时判定为 A2DP", () => {
+test("输出可用采样率含高规格且实际采样率不高于 16 kHz 时判定为 HFP 等模式", () => {
   const [result] = assessBluetoothDevices([
     device({
-      maxSupportedOutputRate: 48_000,
-      sampleRateOutput: 44_100,
-      outputChannels: 1,
-      isDefaultOutput: true,
-    }),
-  ]);
-  assert.equal(result.mode, "A2DP");
-  assert.equal(result.confidence, "高");
-});
-
-test("声道和默认麦克风不改变低采样率判定", () => {
-  const [result] = assessBluetoothDevices([
-    device({
-      maxSupportedOutputRate: 44_100,
+      availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 48_000 }],
+      nominalSampleRateOutput: 44_100,
+      actualSampleRateOutput: 16_000,
       sampleRateOutput: 16_000,
       outputChannels: 2,
-      inputChannels: 1,
-      sampleRateInput: 48_000,
-      isDefaultInput: true,
       isDefaultOutput: true,
     }),
   ]);
   assert.equal(result.mode, "HFP_HSP");
 });
 
-test("无法证明设备支持高于 16 kHz 时不强行判定", () => {
-  const [result] = assessBluetoothDevices([
+test("设备最新链路为 tsco 时单独足以判定 HFP 等模式", () => {
+  const [assessment] = assessBluetoothDevices([
     device({
-      maxSupportedOutputRate: 16_000,
-      sampleRateOutput: 16_000,
-      outputChannels: 1,
+      actualSampleRateOutput: 44_100,
+      nominalSampleRateOutput: 44_100,
+      sampleRateOutput: 44_100,
+      outputChannels: 2,
       isDefaultOutput: true,
     }),
   ]);
-  assert.equal(result.mode, "UNKNOWN");
+  assert.equal(assessment.mode, "A2DP");
+  const state = applyBluetoothLinkSnapshot({ devices: [assessment], routes: { input: [], output: [] } }, {
+    address: "50C0F0F36A66",
+    profile: "tsco",
+    timestamp: "2026-07-20T12:00:00.000Z",
+  });
+  assert.equal(state.devices[0].mode, "HFP_HSP");
+  assert.equal(state.devices[0].audioLinkType, "tsco");
 });
 
-test("无法读取当前输出采样率时不强行判定", () => {
-  const [result] = assessBluetoothDevices([
-    device({ maxSupportedOutputRate: 48_000, isDefaultOutput: true }),
-  ]);
-  assert.equal(result.mode, "UNKNOWN");
-});
-
-test("当前实际采样率本身可以证明设备支持高于 16 kHz", () => {
-  const [result] = assessBluetoothDevices([
-    device({ sampleRateOutput: 44_100, outputChannels: 2, isDefaultOutput: true }),
-  ]);
-  assert.equal(result.mode, "A2DP");
-  assert.equal(result.maxSupportedOutputRate, 44_100);
-});
-
-test("非默认输出设备的待机采样率不用于模式判定", () => {
-  const [result] = assessBluetoothDevices([
+test("链路事件只更新同一蓝牙地址且旧事件不能覆盖新事件", () => {
+  const devices = assessBluetoothDevices([
+    device({ name: "设备 A", actualSampleRateOutput: 44_100, outputChannels: 2 }),
     device({
-      sampleRateOutput: 44_100,
-      maxSupportedOutputRate: 44_100,
+      id: 2,
+      name: "设备 B",
+      bluetoothAddress: "AA-BB-CC-DD-EE-FF",
+      actualSampleRateOutput: 44_100,
       outputChannels: 2,
-      isDefaultInput: true,
     }),
   ]);
-  assert.equal(result.mode, "INACTIVE");
-  assert.equal(result.label, "未活动（当前未承担声音输出）");
-  assert.match(result.explanation, /不展示输入、输出采样率或声道/);
+  const initial = { devices, routes: { input: [], output: [] } };
+  const withLatest = applyBluetoothLinkSnapshot(initial, {
+    address: "AABBCCDDEEFF",
+    profile: "tacl",
+    timestamp: "2026-07-20T12:01:00.000Z",
+  });
+  const withOlder = applyBluetoothLinkSnapshot(withLatest, {
+    address: "AA:BB:CC:DD:EE:FF",
+    profile: "tsco",
+    timestamp: "2026-07-20T12:00:00.000Z",
+  });
+
+  assert.equal(withOlder.devices.find((item) => item.name === "设备 A")?.audioLinkType, null);
+  assert.equal(withOlder.devices.find((item) => item.name === "设备 B")?.audioLinkType, "tacl");
+  assert.equal(withOlder.devices.find((item) => item.name === "设备 B")?.mode, "A2DP");
 });
 
-test("实时输出事件会切换活动设备并立即重新判定", () => {
+test("输出实际采样率高于 16 kHz 且至少双声道才判定为 A2DP 等模式", () => {
+  const [result] = assessBluetoothDevices([
+    device({
+      nominalSampleRateOutput: 44_100,
+      actualSampleRateOutput: 44_100,
+      sampleRateOutput: 44_100,
+      outputChannels: 2,
+      isDefaultOutput: true,
+    }),
+  ]);
+  assert.equal(result.mode, "A2DP");
+  assert.equal(result.audioLinkType, null);
+});
+
+test("仅有高实际采样率但输出为单声道时不判定为 A2DP", () => {
+  const [result] = assessBluetoothDevices([
+    device({ actualSampleRateOutput: 44_100, sampleRateOutput: 44_100, outputChannels: 1 }),
+  ]);
+  assert.equal(result.mode, "UNKNOWN");
+});
+
+test("只有标称采样率高于 16 kHz 而无法读取实际采样率时不判定为 A2DP", () => {
+  const [result] = assessBluetoothDevices([
+    device({ nominalSampleRateOutput: 44_100, sampleRateOutput: 44_100, outputChannels: 2 }),
+  ]);
+  assert.equal(result.mode, "UNKNOWN");
+});
+
+test("可用采样率最高只有 16 kHz 且没有 tsco 时不强行判定为 HFP", () => {
+  const [result] = assessBluetoothDevices([
+    device({
+      availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 16_000 }],
+      nominalSampleRateOutput: 16_000,
+      actualSampleRateOutput: 16_000,
+      sampleRateOutput: 16_000,
+      outputChannels: 1,
+    }),
+  ]);
+  assert.equal(result.mode, "UNKNOWN");
+});
+
+test("非默认设备也直接依据自身最新输出事实判定模式", () => {
+  const [result] = assessBluetoothDevices([
+    device({ actualSampleRateOutput: 44_100, sampleRateOutput: 44_100, outputChannels: 2 }),
+  ]);
+  assert.equal(result.mode, "A2DP");
+});
+
+test("实时输出事件会切换活动设备并按最新输出数据重新判定", () => {
   const devices = assessBluetoothDevices([
     device({
       name: "耳机",
       sampleRateOutput: 44_100,
+      nominalSampleRateOutput: 44_100,
+      actualSampleRateOutput: 44_100,
       maxSupportedOutputRate: 44_100,
       outputChannels: 2,
       isDefaultOutput: true,
@@ -132,7 +186,11 @@ test("实时输出事件会切换活动设备并立即重新判定", () => {
     device({
       id: 2,
       name: "音箱",
+      bluetoothAddress: "AA-BB-CC-DD-EE-FF",
       sampleRateOutput: 44_100,
+      availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 44_100 }],
+      nominalSampleRateOutput: 44_100,
+      actualSampleRateOutput: 44_100,
       maxSupportedOutputRate: 44_100,
       outputChannels: 2,
     }),
@@ -144,21 +202,60 @@ test("实时输出事件会切换活动设备并立即重新判定", () => {
     name: "音箱",
     nominalSampleRate: 16_000,
     actualSampleRate: 16_000,
+    outputChannels: 1,
     isRunning: true,
     timestamp: "2026-07-17T00:00:00.000Z",
   });
-  assert.equal(next.devices.find((item) => item.name === "耳机")?.mode, "INACTIVE");
+  assert.equal(next.devices.find((item) => item.name === "耳机")?.mode, "A2DP");
   assert.equal(next.devices.find((item) => item.name === "音箱")?.mode, "HFP_HSP");
+  assert.equal(next.devices.find((item) => item.name === "音箱")?.nominalSampleRateOutput, 16_000);
+  assert.equal(next.devices.find((item) => item.name === "音箱")?.actualSampleRateOutput, 16_000);
 });
 
-test("经典蓝牙默认输入开始运行时立即显示 HFP 和活动参数", () => {
+test("实时事件中的零采样率按未知处理而不是误判为 HFP", () => {
+  const [assessment] = assessBluetoothDevices([
+    device({
+      sampleRateOutput: 44_100,
+      availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 44_100 }],
+      nominalSampleRateOutput: 44_100,
+      actualSampleRateOutput: 44_100,
+      outputChannels: 2,
+      isDefaultOutput: true,
+    }),
+  ]);
+  const next = applyActiveOutputSnapshot({
+    devices: [assessment],
+    routes: { input: [], output: [] },
+  }, {
+    name: "测试耳机",
+    nominalSampleRate: 0,
+    actualSampleRate: 0,
+    outputChannels: 2,
+    isRunning: true,
+    timestamp: "2026-07-20T12:00:00.000Z",
+  });
+
+  assert.equal(next.devices[0].nominalSampleRateOutput, null);
+  assert.equal(next.devices[0].actualSampleRateOutput, null);
+  assert.equal(next.devices[0].mode, "UNKNOWN");
+});
+
+test("设备卡为输入输出展示三类采样率并使用设备级声音链路框", () => {
+  const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+
+  assert.match(source, /createElement\("fieldset", "audio-link-group"\)/);
+  assert.match(source, /声音链路类型：/);
+  assert.match(source, /metric\("可用采样率"/);
+  assert.match(source, /metric\("标称采样率"/);
+  assert.match(source, /metric\("实际采样率"/);
+  assert.doesNotMatch(source, /当前未刷新输入输出参数/);
+});
+
+test("输入开始或停止采集只更新活动状态，不直接改变模式", () => {
   const [assessment] = assessBluetoothDevices([
     device({
       sampleRateInput: 16_000,
-      sampleRateOutput: 16_000,
-      maxSupportedOutputRate: 16_000,
       inputChannels: 1,
-      outputChannels: 1,
       isDefaultInput: true,
     }),
   ]);
@@ -177,9 +274,15 @@ test("经典蓝牙默认输入开始运行时立即显示 HFP 和活动参数", 
 
   assert.equal(next.devices[0].isActive, true);
   assert.equal(next.devices[0].isInputActive, true);
-  assert.equal(next.devices[0].mode, "HFP_HSP");
+  assert.equal(next.devices[0].mode, "UNKNOWN");
   assert.equal(next.devices[0].sampleRateInput, 16_000);
-  assert.match(next.devices[0].explanation, /正常录音/);
+  const stopped = applyActiveInputSnapshot(next, {
+    name: "测试耳机",
+    isRunning: false,
+    actualSampleRate: 16_000,
+  });
+  assert.equal(stopped.devices[0].mode, "UNKNOWN");
+  assert.equal(stopped.devices[0].isInputActive, false);
 });
 
 test("仅作为输入使用的 16 kHz 蓝牙麦克风不显示输出修复入口", () => {
@@ -190,26 +293,48 @@ test("仅作为输入使用的 16 kHz 蓝牙麦克风不显示输出修复入口
     isDefaultOutput: false,
     sampleRateInput: 16_000,
     sampleRateOutput: 16_000,
+    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 16_000 }],
+    actualSampleRateOutput: 16_000,
     maxSupportedOutputRate: 16_000,
   };
 
   assert.equal(isRecoverableOutputDevice(microphone), false);
   assert.deepEqual(deviceModePresentation(microphone), {
-    className: "microphone",
-    text: "蓝牙麦克风使用中（16 kHz 输入）",
+    className: "hfp_hsp",
+    text: "HFP等模式（低音质语音模式 · 麦克风使用中）",
   });
 });
 
 test("只有已证明发生低采样率降级的当前默认输出才允许修复", () => {
   assert.equal(isRecoverableOutputDevice({
     isDefaultOutput: true,
+    mode: "HFP_HSP",
+    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 44_100 }],
+    actualSampleRateOutput: 16_000,
     maxSupportedOutputRate: 44_100,
     sampleRateOutput: 16_000,
   }), true);
   assert.equal(isRecoverableOutputDevice({
     isDefaultOutput: true,
+    mode: "UNKNOWN",
+    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 16_000 }],
+    actualSampleRateOutput: 16_000,
     maxSupportedOutputRate: 16_000,
     sampleRateOutput: 16_000,
+  }), false);
+  assert.equal(isRecoverableOutputDevice({
+    isDefaultOutput: true,
+    mode: "HFP_HSP",
+    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 44_100 }],
+    nominalSampleRateOutput: 16_000,
+    actualSampleRateOutput: null,
+  }), false);
+  assert.equal(isRecoverableOutputDevice({
+    isDefaultOutput: true,
+    mode: "HFP_HSP",
+    availableSampleRateRangesOutput: [],
+    actualSampleRateOutput: 16_000,
+    maxSupportedOutputRate: 44_100,
   }), false);
   assert.equal(deviceModePresentation({
     mode: "HFP_HSP",
@@ -220,48 +345,23 @@ test("只有已证明发生低采样率降级的当前默认输出才允许修�
     sampleRateInput: 16_000,
     sampleRateOutput: 16_000,
     maxSupportedOutputRate: 16_000,
-  }).text, "蓝牙麦克风使用中（16 kHz 输入）");
+  }).text, "HFP等模式（低音质语音模式 · 麦克风使用中）");
 });
 
-test("空闲的默认蓝牙麦克风在胶囊显示未活动而不是设备角色", () => {
+test("无法确认的默认蓝牙麦克风在胶囊只显示判定和采集状态", () => {
   assert.deepEqual(deviceModePresentation({
-    mode: "INACTIVE",
-    label: "未活动（当前未承担声音输出）",
+    mode: "UNKNOWN",
+    label: "模式无法确认",
     isDefaultInput: true,
     isInputActive: false,
     isDefaultOutput: false,
   }), {
-    className: "inactive",
-    text: "未活动（当前未承担声音输出）",
+    className: "unknown",
+    text: "模式无法确认",
   });
 
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
-  assert.match(source, /系统声明但未播放的同名输出端点不参与修复判断/);
-});
-
-test("默认输入停止运行后非默认输出设备恢复为未活动", () => {
-  const [assessment] = assessBluetoothDevices([
-    device({
-      sampleRateInput: 16_000,
-      sampleRateOutput: 16_000,
-      inputChannels: 1,
-      outputChannels: 1,
-      isDefaultInput: true,
-    }),
-  ]);
-  const active = applyActiveInputSnapshot({ devices: [assessment], routes: { input: [], output: [] } }, {
-    name: "测试耳机",
-    isRunning: true,
-    actualSampleRate: 16_000,
-  });
-  const stopped = applyActiveInputSnapshot(active, {
-    name: "测试耳机",
-    isRunning: false,
-    actualSampleRate: 16_000,
-  });
-
-  assert.equal(stopped.devices[0].isInputActive, false);
-  assert.equal(stopped.devices[0].mode, "INACTIVE");
+  assert.doesNotMatch(source, /当前只使用此设备的麦克风|input-only-note/);
 });
 
 test("低功耗蓝牙输入运行时展示活动参数但不冒充已识别模式", () => {
@@ -281,7 +381,7 @@ test("低功耗蓝牙输入运行时展示活动参数但不冒充已识别模�
 
   assert.equal(next.devices[0].isInputActive, true);
   assert.equal(next.devices[0].mode, "UNKNOWN");
-  assert.equal(next.devices[0].label, "蓝牙麦克风活动中");
+  assert.equal(next.devices[0].label, "模式无法确认");
 });
 
 test("忽略非蓝牙设备", () => {
@@ -315,9 +415,47 @@ test("同一标签页刷新后保留已完成修复结果但不恢复运行中�
 
   assert.match(source, /window\.sessionStorage\.getItem\(storageKey\)/);
   assert.match(source, /setFeedback\(device\.name, \{\s+kind: "running"[\s\S]*?\}, false\)/);
-  assert.match(source, /setFeedback\(device\.name, \{\s+kind: result\.ok/);
+  assert.match(source, /setFeedback\(device\.name, \{\s+kind: result\.actionRequired/);
   assert.match(source, /if \(feedback\?\.result\?\.actionRequired\) expandedDevices\.add/);
   assert.doesNotMatch(source, /for \(const deviceName of feedbackByDevice\.keys\(\)\) expandedDevices\.add/);
+});
+
+test("多端点确诊后路由选择不会被持续麦克风占用折叠", () => {
+  const pageSource = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+  const recoverySource = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
+
+  assert.match(pageSource, /const pendingActionDevice = devices\.find/);
+  assert.match(pageSource, /if \(pendingActionDevice\) \{\s+expandedDevices\.add\(pendingActionDevice\.name\)/);
+  assert.match(pageSource, /const pendingRouteChoice = recoveryController\.getPendingRouteChoice\(\)/);
+  assert.match(pageSource, /showConfirmedRouteConflict\(pendingRouteChoice\)/);
+  assert.match(recoverySource, /result\.outcome === "无需修复"[\s\S]*?"neutral"/);
+  assert.match(recoverySource, /routeChoiceId: choice\.id/);
+  assert.match(recoverySource, /createElement\("div", "recovery-result-header"\)/);
+  assert.match(recoverySource, /successfulRecoverySummary\(result, deviceName\)/);
+  assert.doesNotMatch(recoverySource, /查看处理详情|recovery-details|工作流：/);
+});
+
+test("完成结果只根据实际成功动作生成原因", () => {
+  const baseResult = {
+    releasedPrograms: [],
+    diagnosis: { kind: "麦克风占用类" },
+    steps: [],
+    usedReconnect: false,
+    recoveryPath: "原因对应处理",
+  };
+  assert.equal(successfulRecoverySummary({
+    ...baseResult,
+    releasedPrograms: ["语音程序"],
+  }, "测试耳机"), "已解除「语音程序」的麦克风占用");
+  assert.equal(successfulRecoverySummary({
+    ...baseResult,
+    steps: [{ stage: "应用多端点替代组合", status: "成功", detail: "保留当前扬声器，麦克风改为“内置麦克风”" }],
+  }, "测试耳机"), "已将输入切换为「内置麦克风」");
+  assert.equal(successfulRecoverySummary({
+    ...baseResult,
+    diagnosis: { kind: "格式请求类" },
+    releasedPrograms: ["声音程序"],
+  }, "测试耳机"), "已结束「声音程序」发起的声音格式请求");
 });
 
 test("不同经典蓝牙输入输出在语音前显示风险提示", () => {
@@ -343,7 +481,7 @@ test("不同经典蓝牙输入输出在语音前显示风险提示", () => {
 function routeConflictState(mode: "A2DP" | "HFP_HSP", connected = true, inputActive = false) {
   return {
     devices: [
-      { name: "蓝牙麦克风 A", mode: "INACTIVE", isInputActive: inputActive },
+      { name: "蓝牙麦克风 A", mode: "UNKNOWN", isInputActive: inputActive },
       { name: "蓝牙耳机 B", mode },
     ],
     routes: connected ? {
@@ -372,7 +510,7 @@ test("双蓝牙组合断开后又重连也视为路由抖动", () => {
   assert.equal(observation.unstable, true);
 });
 
-test("双蓝牙输入开始实际采集时即使输出不抖动也触发只读复核", () => {
+test("双蓝牙输入开始实际采集时记录一次状态变化", () => {
   let observation = observeBluetoothRouteInstability(null, routeConflictState("A2DP"), 1_000);
   assert.equal(observation.triggered, false);
   observation = observeBluetoothRouteInstability(
@@ -384,7 +522,7 @@ test("双蓝牙输入开始实际采集时即使输出不抖动也触发只读�
   assert.equal(observation.triggered, true);
 });
 
-test("页面首次扫描时双蓝牙输入已经采集也触发只读复核", () => {
+test("页面首次扫描只展示双蓝牙实时状态而不自动发起修复", () => {
   const observation = observeBluetoothRouteInstability(
     null,
     routeConflictState("A2DP", true, true),
@@ -394,39 +532,36 @@ test("页面首次扫描时双蓝牙输入已经采集也触发只读复核", ()
   assert.equal(observation.triggered, true);
 
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
-  assert.match(source, /renderState\(result, options\);\s+scheduleRouteConflictInspection\(result, \{ lookbackSeconds: 300 \}\);/);
-  assert.match(source, /function scheduleRouteConflictInspection\(result, \{ force = false, lookbackSeconds = 2 \} = \{\}\)/);
-  assert.match(source, /lastMultiEndpointInspectionKey/);
+  assert.doesNotMatch(source, /scheduleRouteConflictInspection|inspectRouteConflict|inspectMultiEndpoint/);
+  assert.match(source, /renderState\(result, options\)/);
 });
 
 test("一键修复结果不会因麦克风仍在使用而被页面删除", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.doesNotMatch(source, /microphoneOccupancy\?\.isInUse\) feedbackByDevice\.delete/);
-  assert.match(source, /kind: result\.ok \? "success" : result\.actionRequired \? "pending" : "error"/);
+  assert.match(source, /kind: result\.actionRequired[\s\S]*?result\.ok \? "success" : "error"/);
   assert.match(source, /finally \{\s+runningDevices\.delete\(device\.name\);\s+progressByDevice\.delete/s);
 });
 
-test("双蓝牙抖动时立即刷新并继续只读复核", () => {
+test("双蓝牙抖动时立即刷新但不自动发起修复", () => {
   const modeClient = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
   const recoveryClient = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.doesNotMatch(modeClient, /scheduleSettledRealtimeRender|pendingRealtimeState|realtimeRenderTimer/);
-  assert.match(modeClient, /scheduleRouteConflictInspection\(result,[\s\S]*?renderState\(result, \{ preserveRouteMessage: true \}\);/);
+  assert.match(modeClient, /renderState\(result, \{ preserveRouteMessage: true \}\)/);
   assert.match(modeClient, /页面会继续实时显示每次变化/);
-  assert.match(modeClient, /inspectRouteConflict\(device, \{\s+inputName: routeConflict\.input\.name,\s+outputName: routeConflict\.output\.name,\s+observedAt:/s);
-  assert.match(recoveryClient, /inspectMultiEndpoint: true,\s+routeChoiceId: choice\.id,\s+observedConflict: feedback\.observedConflict/s);
+  assert.doesNotMatch(modeClient, /inspectRouteConflict|inspectMultiEndpoint/);
+  assert.doesNotMatch(recoveryClient, /inspectRouteConflict|inspectMultiEndpoint|observedConflict/);
+  assert.match(recoveryClient, /routeChoiceId: choice\.id/);
 });
 
-test("自动只读复核不占用一键修复按钮的忙碌状态", () => {
+test("多端点处理只能由用户点击一键修复发起", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
-  const inspection = source.slice(source.indexOf("async function inspectRouteConflict"));
 
-  assert.match(inspection, /inspectingDevices\.add\(device\.name\)/);
-  assert.doesNotMatch(inspection, /runningDevices\.add\(device\.name\)/);
   assert.match(source, /"正在检查麦克风占用…"/);
-  assert.match(inspection, /if \(!result\.actionRequired\) return;/);
-  assert.match(source, /feedback\?\.source === "inspection" && !feedback\.result\?\.actionRequired/);
+  assert.doesNotMatch(source, /async function inspectRouteConflict|inspectingDevices/);
+  assert.match(source, /feedback\?\.source === "inspection"/);
   assert.match(source, /obsoleteUnmarkedInspection/);
 });
 

@@ -5,7 +5,9 @@
 - 原始网址：
   - https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core_v6.3/out/en/br-edr-controller/baseband-specification.html
   - https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core_v6.3/out/en/host/logical-link-control-and-adaptation-protocol-specification.html
+  - https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core_v6.3/out/en/architecture%2C-change-history%2C-and-conventions/acronyms---abbreviations.html
 - 获取日期：2026-07-17
+- 补充核对日期：2026-07-20
 - 原文语言：English（英文）
 - 清洗说明：核心规范全文超过本项目当前问题的范围，本文件只保存本次实际核对的章节位置和少量关键原句；没有用模型记忆补齐未归档部分。
 - 缺失范围：未本地复制两份规范页面的其余章节；完整上下文、图表、术语定义和后续勘误应以上述官方页面为准。
@@ -13,6 +15,24 @@
 ---
 
 # Bluetooth Classic logical transports（传统蓝牙逻辑传输）
+
+## Acronyms and Abbreviations（缩写与全称）
+
+Bluetooth Core Specification 6.3（蓝牙核心规范 6.3）的缩写表给出：
+
+> ACL — Asynchronous Connection-oriented [logical transport]
+
+> SCO — Synchronous Connection-Oriented [logical transport]
+
+> eSCO — Extended Synchronous Connection-Oriented [logical transport]
+
+本文采用的技术直译分别是：
+
+- ACL：异步面向连接逻辑传输。
+- SCO：同步面向连接逻辑传输。
+- eSCO：扩展同步面向连接逻辑传输。
+
+这些术语及全称由 Bluetooth SIG（蓝牙技术联盟）定义。中文是本项目为便于理解采用的技术直译，不宣称是 Bluetooth SIG 发布的官方中文定名。旧资料有时把 ACL 展开为 `Asynchronous Connection-Less`，但本项目以当前核心规范的 `Connection-oriented` 为准。
 
 ## Baseband Specification（基带规范）
 

@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <IOBluetooth/IOBluetooth.h>
+#import <dispatch/dispatch.h>
 
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
@@ -11,15 +12,19 @@ int main(int argc, const char *argv[]) {
     }
     if (target == nil) return 3;
     if ([target isConnected]) {
-      if ([target closeConnection] != kIOReturnSuccess) return 4;
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool { [target closeConnection]; }
+      });
       for (NSInteger attempt = 0; attempt < 40 && [target isConnected]; attempt += 1) {
         [NSThread sleepForTimeInterval:0.1];
       }
+      if ([target isConnected]) return 4;
     }
     [NSThread sleepForTimeInterval:0.8];
-    IOReturn result = [target openConnection];
-    if (result != kIOReturnSuccess && result != kIOReturnExclusiveAccess) return 5;
-    for (NSInteger attempt = 0; attempt < 80 && ![target isConnected]; attempt += 1) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      @autoreleasepool { [target openConnection]; }
+    });
+    for (NSInteger attempt = 0; attempt < 120 && ![target isConnected]; attempt += 1) {
       [NSThread sleepForTimeInterval:0.1];
     }
     if (![target isConnected]) return 6;

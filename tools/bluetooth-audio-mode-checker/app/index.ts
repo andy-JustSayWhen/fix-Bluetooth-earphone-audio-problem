@@ -7,9 +7,11 @@ import { execFile } from "node:child_process";
 import {
   applyActiveInputSnapshot,
   applyActiveOutputSnapshot,
+  applyBluetoothLinkSnapshot,
   readAudioModeState,
   readAudioModeStateAsync,
   startAudioModeRealtimeMonitor,
+  startAudioModeLinkMonitor,
   webAssetsDirectory,
 } from "../features/bluetooth-audio-mode/index.ts";
 import {
@@ -23,7 +25,9 @@ import {
 import {
   recoverA2dp,
   recoveryWebAssetsDirectory,
+  type RecoveryDiagnosis,
   type RecoveryProgress,
+  type RecoveryRouteChoice,
 } from "../features/a2dp-recovery/index.ts";
 import { setDefaultAudioDevice } from "../core/macos-audio-route/index.ts";
 import { detailedLog, getDetailedLogStatus } from "../core/detailed-logging/index.ts";
@@ -32,6 +36,7 @@ import type {
   ActiveInputSnapshot,
   ActiveOutputSnapshot,
   AudioModeState,
+  BluetoothLinkSnapshot,
 } from "../shared/audio-device-types/index.ts";
 
 type Options = {
@@ -54,6 +59,15 @@ const contentTypes: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
 };
 const manualRefreshMinimumIntervalMs = 2_500;
+
+function isRecoverableHfpOutput(device: AudioModeState["devices"][number]): boolean {
+  return device.isDefaultOutput &&
+    device.mode === "HFP_HSP" &&
+    device.availableSampleRateRangesOutput.some((range) => range.maximum > 16_000) &&
+    device.actualSampleRateOutput !== null &&
+    device.actualSampleRateOutput > 0 &&
+    device.actualSampleRateOutput <= 16_000;
+}
 
 function parseArguments(argumentsList: string[]): Options {
   const options: Options = { port: 4173, openBrowser: true };
@@ -155,10 +169,18 @@ function main(): void {
   let realtimeFingerprint = "";
   let inputActivityFingerprint = "";
   let latestInputSnapshot: ActiveInputSnapshot | null = null;
+  const latestLinkSnapshots = new Map<string, BluetoothLinkSnapshot>();
   let latestOccupancyCapturedAt: string | null = null;
   let inputActivityScanPending = false;
   let initialOccupancyScanScheduled = false;
   const pendingRelaunchAuthorizations = new Set<string>();
+  const pendingRouteChoices = new Map<string, {
+    inputName: string;
+    outputName: string;
+    choices: RecoveryRouteChoice[];
+    diagnosis: RecoveryDiagnosis;
+    expiresAt: number;
+  }>();
 
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
@@ -198,6 +220,9 @@ function main(): void {
     if (latestInputSnapshot !== null) {
       nextState = applyActiveInputSnapshot(nextState, latestInputSnapshot);
     }
+    for (const linkSnapshot of latestLinkSnapshots.values()) {
+      nextState = applyBluetoothLinkSnapshot(nextState, linkSnapshot);
+    }
     cachedState = nextState;
     cachedStateUpdatedAt = new Date().toISOString();
     const nextFingerprint = JSON.stringify({ devices: nextState.devices, routes: nextState.routes });
@@ -225,14 +250,14 @@ function main(): void {
           });
           broadcastState();
         }
-        if (cachedState?.devices.some((device) =>
-          device.isDefaultOutput && device.sampleRateOutput !== null && device.sampleRateOutput <= 16_000
-        )) scheduleOccupancyScan(0, "low-output-state");
+        if (cachedState?.devices.some(isRecoverableHfpOutput)) {
+          scheduleOccupancyScan(0, "low-output-state");
+        }
         if (!initialOccupancyScanScheduled && cachedState !== null) {
           initialOccupancyScanScheduled = true;
-          if (cachedState.devices.some((device) =>
-            device.isDefaultOutput && device.sampleRateOutput !== null && device.sampleRateOutput <= 16_000
-          )) scheduleOccupancyScan(0, "initial-low-output-state");
+          if (cachedState.devices.some(isRecoverableHfpOutput)) {
+            scheduleOccupancyScan(0, "initial-low-output-state");
+          }
         }
         if (inputActivityScanPending) scheduleOccupancyScan(0, "default-input-started");
       } catch (error) {
@@ -299,22 +324,35 @@ function main(): void {
       name: snapshot.name,
       nominalSampleRate: snapshot.nominalSampleRate,
       actualSampleRate: snapshot.actualSampleRate,
+      outputChannels: snapshot.outputChannels,
       isRunning: snapshot.isRunning,
     });
     if (nextFingerprint === realtimeFingerprint) return;
     realtimeFingerprint = nextFingerprint;
     detailedLog("info", "active-output.changed", { snapshot });
-    const activeRate = snapshot.actualSampleRate ?? snapshot.nominalSampleRate;
-    if (activeRate !== null && activeRate > 0 && activeRate <= 16_000) {
-      scheduleOccupancyScan(0, "low-output-realtime");
-    }
     latestSnapshot = snapshot;
     if (cachedState !== null) {
       cachedState = applyActiveOutputSnapshot(cachedState, snapshot);
       cachedStateUpdatedAt = snapshot.timestamp;
       broadcastState();
+      if (cachedState.devices.some(isRecoverableHfpOutput)) {
+        scheduleOccupancyScan(0, "low-output-realtime");
+      }
       scheduleStateRefresh();
     }
+  });
+  const stopLinkMonitor = startAudioModeLinkMonitor((snapshot) => {
+    const previous = latestLinkSnapshots.get(snapshot.address);
+    if (previous && Date.parse(previous.timestamp) > Date.parse(snapshot.timestamp)) return;
+    latestLinkSnapshots.set(snapshot.address, snapshot);
+    detailedLog("info", "bluetooth-link.changed", { snapshot });
+    if (cachedState === null) return;
+    const previousFingerprint = JSON.stringify(cachedState.devices);
+    cachedState = applyBluetoothLinkSnapshot(cachedState, snapshot);
+    const nextFingerprint = JSON.stringify(cachedState.devices);
+    if (nextFingerprint === previousFingerprint) return;
+    cachedStateUpdatedAt = snapshot.timestamp;
+    broadcastState();
   });
   let occupancyFingerprint = "";
   let occupancyTimer: NodeJS.Timeout | null = null;
@@ -488,31 +526,10 @@ function main(): void {
         if (request.headers.origin && request.headers.origin !== expectedOrigin) throw new Error("请求来源不正确");
         const body = await readJsonBody(request) as {
           name?: unknown;
-          inspectMultiEndpoint?: unknown;
-          observedConflict?: unknown;
           routeChoiceId?: unknown;
           authorizeRelaunchBlock?: unknown;
         };
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
-        if (body.inspectMultiEndpoint !== undefined && typeof body.inspectMultiEndpoint !== "boolean") {
-          throw new Error("多端点复核请求无效");
-        }
-        const observedConflict = body.observedConflict as Record<string, unknown> | undefined;
-        if (observedConflict !== undefined && (
-          observedConflict === null ||
-          typeof observedConflict !== "object" ||
-          typeof observedConflict.inputName !== "string" || observedConflict.inputName.length === 0 ||
-          typeof observedConflict.outputName !== "string" || observedConflict.outputName.length === 0 ||
-          observedConflict.inputName === observedConflict.outputName ||
-          typeof observedConflict.observedAt !== "string" || !Number.isFinite(Date.parse(observedConflict.observedAt)) ||
-          (observedConflict.lookbackSeconds !== undefined && (
-            !Number.isInteger(observedConflict.lookbackSeconds) ||
-            (observedConflict.lookbackSeconds as number) < 2 ||
-            (observedConflict.lookbackSeconds as number) > 300
-          ))
-        )) {
-          throw new Error("多端点现场快照无效");
-        }
         if (body.routeChoiceId !== undefined && (typeof body.routeChoiceId !== "string" || body.routeChoiceId.length > 512)) {
           throw new Error("输入输出组合无效");
         }
@@ -525,41 +542,64 @@ function main(): void {
         if (body.authorizeRelaunchBlock === true) pendingRelaunchAuthorizations.delete(body.name);
         detailedLog("info", "a2dp-recovery.requested", {
           deviceName: body.name,
-          inspectMultiEndpoint: body.inspectMultiEndpoint === true,
-          observedConflict,
         });
         const clickedAt = new Date().toISOString();
         const currentState = cachedState ?? readAudioModeState();
         const currentDevice = currentState.devices.find((device) => device.name === body.name);
+        const currentInputName = currentState.routes.input.find((route) => route.isDefault)?.name ?? null;
+        const currentOutputName = currentState.routes.output.find((route) => route.isDefault)?.name ?? null;
+        let confirmedRouteChoice: { choice: RecoveryRouteChoice; diagnosis: RecoveryDiagnosis } | undefined;
+        if (typeof body.routeChoiceId === "string") {
+          const pending = pendingRouteChoices.get(body.name);
+          if (!pending || pending.expiresAt < Date.now()) {
+            pendingRouteChoices.delete(body.name);
+            throw new Error("当前没有仍然有效的多端点组合选择，请重新点击一键修复");
+          }
+          if (currentInputName !== pending.inputName || currentOutputName !== pending.outputName) {
+            pendingRouteChoices.delete(body.name);
+            throw new Error("当前输入输出已变化，请重新点击一键修复后再选择");
+          }
+          const choice = pending.choices.find((item) => item.id === body.routeChoiceId);
+          if (!choice) throw new Error("所选输入输出组合不在已确认范围内");
+          confirmedRouteChoice = { choice, diagnosis: pending.diagnosis };
+        }
         const allOccupancyUsers = [...new Map(currentState.devices
           .flatMap((device) => device.microphoneOccupancy?.users ?? [])
           .map((user) => [user.pid, user] as const)).values()];
         const result = await recoverA2dp({
           name: body.name,
-          inspectMultiEndpoint: body.inspectMultiEndpoint as boolean | undefined,
           routeChoiceId: body.routeChoiceId as string | undefined,
           authorizeRelaunchBlock: body.authorizeRelaunchBlock as boolean | undefined,
+          _confirmedRouteChoice: confirmedRouteChoice,
           context: {
             clickedAt,
-            defaultInput: currentState.routes.input.find((route) => route.isDefault)?.name ?? null,
-            defaultOutput: currentState.routes.output.find((route) => route.isDefault)?.name ?? null,
-            targetSampleRate: currentDevice?.sampleRateOutput ?? null,
-            observedBluetoothConflict: observedConflict ? {
-              inputName: observedConflict.inputName as string,
-              outputName: observedConflict.outputName as string,
-              observedAt: observedConflict.observedAt as string,
-              lookbackSeconds: observedConflict.lookbackSeconds as number | undefined,
-            } : undefined,
+            defaultInput: currentInputName,
+            defaultOutput: currentOutputName,
+            targetSampleRate: currentDevice?.actualSampleRateOutput ?? null,
+            targetAssessment: currentDevice ?? null,
             occupancySnapshot: latestOccupancyCapturedAt ? {
               capturedAt: latestOccupancyCapturedAt,
               users: allOccupancyUsers,
             } : undefined,
           },
-        }, (progress) => broadcastRecoveryProgress(body.name as string, progress));
+        }, (progress) => broadcastRecoveryProgress(body.name as string, progress), () =>
+          cachedState?.devices.find((device) => device.name === body.name) ?? null
+        );
         scheduleOccupancyScan(0, "a2dp-recovery-completed");
         scheduleStateRefresh();
         if (result.actionRequired?.kind === "relaunch-authorization") {
           pendingRelaunchAuthorizations.add(body.name);
+        }
+        if (result.actionRequired?.kind === "route-choice") {
+          pendingRouteChoices.set(body.name, {
+            inputName: currentInputName ?? "",
+            outputName: currentOutputName ?? "",
+            choices: result.actionRequired.choices,
+            diagnosis: result.diagnosis,
+            expiresAt: Date.now() + 30 * 60 * 1_000,
+          });
+        } else if (confirmedRouteChoice) {
+          pendingRouteChoices.delete(body.name);
         }
         detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.returned", { deviceName: body.name, result });
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -627,6 +667,7 @@ function main(): void {
   server.on("error", (error: NodeJS.ErrnoException) => {
     detailedLog("error", "service.server-error", { error, port: options.port });
     stopRealtimeMonitor();
+    stopLinkMonitor();
     if (error.code === "EADDRINUSE") {
       console.error(`端口 ${options.port} 已被占用，请运行 ./run.command --port 4174 重试。`);
     } else {
@@ -638,6 +679,7 @@ function main(): void {
   const shutdown = () => {
     detailedLog("info", "service.stopping", { eventClients: eventClients.size });
     stopRealtimeMonitor();
+    stopLinkMonitor();
     if (occupancyTimer !== null) clearTimeout(occupancyTimer);
     for (const client of eventClients) client.end();
     server.close(() => {

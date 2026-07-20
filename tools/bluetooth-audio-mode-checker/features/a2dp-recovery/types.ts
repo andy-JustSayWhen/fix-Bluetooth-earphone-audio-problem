@@ -1,4 +1,7 @@
-import type { MicrophoneUser } from "../../shared/audio-device-types/index.ts";
+import type {
+  AudioModeAssessment,
+  MicrophoneUser,
+} from "../../shared/audio-device-types/index.ts";
 
 export type RecoveryOutcome =
   | "无需修复"
@@ -59,12 +62,7 @@ export type RecoveryRequestContext = {
   defaultInput: string | null;
   defaultOutput: string | null;
   targetSampleRate: number | null;
-  observedBluetoothConflict?: {
-    inputName: string;
-    outputName: string;
-    observedAt: string;
-    lookbackSeconds?: number;
-  };
+  targetAssessment: AudioModeAssessment | null;
   occupancySnapshot?: {
     capturedAt: string;
     users: MicrophoneUser[];
@@ -74,9 +72,12 @@ export type RecoveryRequestContext = {
 export type RecoveryRequest = {
   name: string;
   context?: RecoveryRequestContext;
-  inspectMultiEndpoint?: boolean;
   routeChoiceId?: string;
   authorizeRelaunchBlock?: boolean;
+  _confirmedRouteChoice?: {
+    choice: RecoveryRouteChoice;
+    diagnosis: RecoveryDiagnosis;
+  };
 };
 
 export type RelaunchGuardRequest = {

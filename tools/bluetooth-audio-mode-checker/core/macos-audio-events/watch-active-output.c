@@ -15,6 +15,28 @@ static int read_property(AudioObjectID object, AudioObjectPropertySelector selec
     return AudioObjectGetPropertyData(object, &address, 0, NULL, &size, value) == noErr;
 }
 
+static int read_output_channels(AudioDeviceID device) {
+    AudioObjectPropertyAddress address = {
+        kAudioDevicePropertyStreamConfiguration,
+        kAudioObjectPropertyScopeOutput,
+        kAudioObjectPropertyElementMain
+    };
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize(device, &address, 0, NULL, &size) != noErr || size == 0) return 0;
+    AudioBufferList *list = malloc(size);
+    if (list == NULL) return 0;
+    if (AudioObjectGetPropertyData(device, &address, 0, NULL, &size, list) != noErr) {
+        free(list);
+        return 0;
+    }
+    int channels = 0;
+    for (UInt32 index = 0; index < list->mNumberBuffers; index++) {
+        channels += (int)list->mBuffers[index].mNumberChannels;
+    }
+    free(list);
+    return channels;
+}
+
 static AudioDeviceID read_default_output(void) {
     AudioDeviceID device = kAudioObjectUnknown;
     read_property(kAudioObjectSystemObject, kAudioHardwarePropertyDefaultOutputDevice, &device, sizeof(device));
@@ -71,11 +93,13 @@ static void emit_snapshot(void) {
     Float64 input_actual = 0;
     UInt32 output_running = 0;
     UInt32 input_running = 0;
+    int output_channels = 0;
     if (output_device != kAudioObjectUnknown) {
         read_property(output_device, kAudioObjectPropertyName, &output_name, sizeof(output_name));
         read_property(output_device, kAudioDevicePropertyNominalSampleRate, &nominal, sizeof(nominal));
         read_property(output_device, kAudioDevicePropertyActualSampleRate, &actual, sizeof(actual));
         read_property(output_device, kAudioDevicePropertyDeviceIsRunning, &output_running, sizeof(output_running));
+        output_channels = read_output_channels(output_device);
     }
     if (input_device != kAudioObjectUnknown) {
         read_property(input_device, kAudioObjectPropertyName, &input_name, sizeof(input_name));
@@ -88,9 +112,10 @@ static void emit_snapshot(void) {
     print_json_string(output_name);
     fprintf(
         stdout,
-        ",\"nominalSampleRate\":%.0f,\"actualSampleRate\":%.0f,\"isRunning\":%s,\"defaultInput\":{\"name\":",
+        ",\"nominalSampleRate\":%.0f,\"actualSampleRate\":%.0f,\"outputChannels\":%d,\"isRunning\":%s,\"defaultInput\":{\"name\":",
         nominal,
         actual,
+        output_channels,
         output_running ? "true" : "false"
     );
     print_json_string(input_name);

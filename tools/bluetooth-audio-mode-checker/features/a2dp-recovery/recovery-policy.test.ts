@@ -67,3 +67,28 @@ test("本次开机阻止授权必须先由服务端进入等待状态", () => {
   assert.match(source, /pendingRelaunchAuthorizations\.has\(body\.name\)/);
   assert.match(source, /result\.actionRequired\?\.kind === "relaunch-authorization"/);
 });
+
+test("多端点组合选择由服务端保存并复核当前路由后执行", () => {
+  const source = readFileSync(join(moduleDirectory, "..", "..", "app", "index.ts"), "utf8");
+  assert.match(source, /const pendingRouteChoices = new Map/);
+  assert.match(source, /currentInputName !== pending\.inputName \|\| currentOutputName !== pending\.outputName/);
+  assert.match(source, /_confirmedRouteChoice: confirmedRouteChoice/);
+  assert.match(source, /pendingRouteChoices\.set\(body\.name/);
+});
+
+test("服务端修复请求只使用当前占用快照和已保存的路由选择", () => {
+  const source = readFileSync(join(moduleDirectory, "..", "..", "app", "index.ts"), "utf8");
+  assert.doesNotMatch(source, /inspectMultiEndpoint|observedConflict|observedRequester|observedProcess/);
+  assert.match(source, /occupancySnapshot: latestOccupancyCapturedAt/);
+});
+
+test("一键修复后台持续使用模式判定功能的最新结论", () => {
+  const appSource = readFileSync(join(moduleDirectory, "..", "..", "app", "index.ts"), "utf8");
+  const featureSource = readFileSync(join(moduleDirectory, "index.ts"), "utf8");
+  const runnerSource = readFileSync(join(moduleDirectory, "runner.ts"), "utf8");
+
+  assert.match(appSource, /targetAssessment: currentDevice \?\? null/);
+  assert.match(appSource, /cachedState\?\.devices\.find\(\(device\) => device\.name === body\.name\)/);
+  assert.match(featureSource, /type: "mode-assessment", assessment/);
+  assert.match(runnerSource, /readModeAssessment: \(name\) => latestAssessment\?\.name === name/);
+});

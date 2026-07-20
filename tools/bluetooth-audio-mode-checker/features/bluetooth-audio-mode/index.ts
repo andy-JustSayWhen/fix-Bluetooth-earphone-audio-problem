@@ -1,11 +1,13 @@
 import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { startActiveOutputMonitor } from "../../core/macos-audio-events/index.ts";
+import { startBluetoothLinkMonitor } from "../../core/macos-bluetooth-link/index.ts";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
   ActiveInputSnapshot,
+  BluetoothLinkSnapshot,
   AudioModeState,
   AudioModeAssessment,
   AudioRouteOption,
@@ -63,74 +65,51 @@ function groupBluetoothDevices(devices: RawAudioDevice[]): DeviceGroup[] {
 }
 
 function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
-  const outputRate = base.sampleRateOutput;
-  const maxSupportedOutputRate = base.maxSupportedOutputRate;
-
-  if (base.isInputActive && base.inputTransport === "bluetooth") {
-    return {
-      ...base,
-      evidence: [
-        "当前经典蓝牙默认输入正在被系统实际运行。",
-        `当前输入采样率：${base.sampleRateInput === null ? "无法读取" : formatRate(base.sampleRateInput)}`,
-        `同名输出端点格式：${outputRate === null ? "无法读取" : formatRate(outputRate)}`,
-      ],
-      mode: "HFP_HSP",
-      label: "HFP/HSP 模式",
-      confidence: "高",
-      explanation: "系统已经实际启动经典蓝牙麦克风；A2DP 不承载麦克风上行声音，因此当前使用的是 HFP/HSP 输入链路。该状态属于正常录音，不自动视为需要恢复的异常。",
-    };
-  }
-
-  if (base.isInputActive) {
-    return {
-      ...base,
-      evidence: [
-        "当前默认蓝牙输入正在被系统实际运行。",
-        `当前输入采样率：${base.sampleRateInput === null ? "无法读取" : formatRate(base.sampleRateInput)}`,
-      ],
-      mode: "UNKNOWN",
-      label: "蓝牙麦克风活动中",
-      confidence: "低",
-      explanation: "系统正在使用此蓝牙麦克风，但当前传输类型不足以可靠区分 HFP/HSP 与低功耗蓝牙音频，因此只展示活动参数，不强行归类。",
-    };
-  }
-
-  if (!base.isDefaultOutput) {
-    return {
-      ...base,
-      evidence: ["活动参数未刷新：该设备当前未承担声音输出。"],
-      mode: "INACTIVE",
-      label: "未活动（当前未承担声音输出）",
-      confidence: "高",
-      explanation: "该设备不是当前默认输出，因此不展示输入、输出采样率或声道。切换为默认输出后，系统监听会立即刷新实际参数。",
-    };
-  }
-
+  const maxAvailableOutputRate = Math.max(
+    0,
+    ...base.availableSampleRateRangesOutput.map((range) => range.maximum),
+  ) || null;
+  const supportsHighRate = maxAvailableOutputRate !== null && maxAvailableOutputRate > 16_000;
+  const nominalIsLow = base.nominalSampleRateOutput !== null && base.nominalSampleRateOutput <= 16_000;
+  const actualIsLow = base.actualSampleRateOutput !== null && base.actualSampleRateOutput <= 16_000;
   const evidence = [
-    `设备支持的最高输出采样率：${maxSupportedOutputRate === null ? "无法读取" : formatRate(maxSupportedOutputRate)}`,
-    `当前活动输出采样率：${outputRate === null ? "无法读取" : formatRate(outputRate)}`,
-    "判定规则：仅比较以上两个采样率；声道、麦克风、蓝牙服务和链路日志均不参与结论。",
+    `输出可用最高采样率：${maxAvailableOutputRate === null ? "无法读取" : formatRate(maxAvailableOutputRate)}`,
+    `输出标称采样率：${base.nominalSampleRateOutput === null ? "无法读取" : formatRate(base.nominalSampleRateOutput)}`,
+    `输出实际采样率：${base.actualSampleRateOutput === null ? "无法读取" : formatRate(base.actualSampleRateOutput)}`,
+    `输出声道：${base.outputChannels > 0 ? `${base.outputChannels} 声道` : "无法读取"}`,
+    `设备最新声音链路：${base.audioLinkType ?? "无法确认"}`,
   ];
 
-  if (maxSupportedOutputRate !== null && maxSupportedOutputRate > 16_000 && outputRate !== null && outputRate <= 16_000) {
+  if (base.audioLinkType === "tsco") {
     return {
       ...base,
       evidence,
       mode: "HFP_HSP",
-      label: "HFP/其他非 A2DP 模式",
+      label: "HFP等模式（低音质语音模式）",
       confidence: "高",
-      explanation: `该设备最高支持 ${formatRate(maxSupportedOutputRate)}，但当前实际输出仅为 ${formatRate(outputRate)}，符合“支持高于 16 kHz、实际不高于 16 kHz”的规则，因此判定已进入 HFP 等非 A2DP 模式。`,
+      explanation: "该设备最新的独立链路事实仍为 tsco，因此直接判定为 HFP/HSP 等低音质语音模式。",
     };
   }
 
-  if (outputRate !== null && outputRate > 16_000) {
+  if (supportsHighRate && (nominalIsLow || actualIsLow)) {
+    return {
+      ...base,
+      evidence,
+      mode: "HFP_HSP",
+      label: "HFP等模式（低音质语音模式）",
+      confidence: "高",
+      explanation: "该输出端点可用采样率包含高于 16 kHz 的值，但标称或实际采样率不高于 16 kHz，因此判定为 HFP/HSP 等低音质语音模式。",
+    };
+  }
+
+  if (base.actualSampleRateOutput !== null && base.actualSampleRateOutput > 16_000 && base.outputChannels >= 2) {
     return {
       ...base,
       evidence,
       mode: "A2DP",
-      label: "A2DP（高音质播放模式）",
+      label: "A2DP等模式（高音质播放模式）",
       confidence: "高",
-      explanation: `当前实际输出为 ${formatRate(outputRate)}，高于 16 kHz，因此按指定规则判定为 A2DP 模式。`,
+      explanation: "输出实际采样率高于 16 kHz，且输出端点不少于 2 声道，因此判定为 A2DP 等高音质播放模式。",
     };
   }
 
@@ -138,12 +117,14 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     ...base,
     evidence,
     mode: "UNKNOWN",
-    label: "暂时无法判定",
+    label: "模式无法确认",
     confidence: "低",
-    explanation: outputRate === null
-      ? "无法读取当前实际输出采样率，因此不能按指定规则判定。"
-      : "当前实际输出不高于 16 kHz，但无法证明该设备支持高于 16 kHz 的输出采样率，因此不强行判定。",
+    explanation: "最新输出端点事实没有组成 HFP/HSP 或 A2DP 的完整条件，因此不强行归类。",
   };
+}
+
+function positiveRate(rate: number | null | undefined): number | null {
+  return rate !== null && rate !== undefined && rate > 0 ? rate : null;
 }
 
 function assessGroup(group: DeviceGroup): AudioModeAssessment {
@@ -156,15 +137,26 @@ function assessGroup(group: DeviceGroup): AudioModeAssessment {
   );
   const maxSupportedOutputRate = Math.max(reportedMaximumRate, outputRate ?? 0) || null;
   const isDefaultOutput = group.devices.some((device) => device.isDefaultOutput);
+  const bluetoothAddress = output?.bluetoothAddress ?? input?.bluetoothAddress ??
+    group.devices.find((device) => device.bluetoothAddress)?.bluetoothAddress ?? null;
   return classifyFacts({
     name: group.name,
     isActive: isDefaultOutput,
     isInputActive: false,
     inputTransport: input?.transport ?? null,
+    bluetoothAddress,
+    audioLinkType: null,
+    audioLinkTypeObservedAt: null,
     sampleRateOutput: outputRate,
+    availableSampleRateRangesOutput: output?.availableSampleRateRangesOutput ?? [],
+    nominalSampleRateOutput: output?.nominalSampleRateOutput ?? outputRate,
+    actualSampleRateOutput: output?.actualSampleRateOutput ?? null,
     maxSupportedOutputRate,
     outputChannels: output?.outputChannels ?? 0,
     sampleRateInput: input?.sampleRateInput ?? null,
+    availableSampleRateRangesInput: input?.availableSampleRateRangesInput ?? [],
+    nominalSampleRateInput: input?.nominalSampleRateInput ?? input?.sampleRateInput ?? null,
+    actualSampleRateInput: input?.actualSampleRateInput ?? null,
     inputChannels: input?.inputChannels ?? 0,
     isDefaultInput: group.devices.some((device) => device.isDefaultInput),
     isDefaultOutput,
@@ -248,11 +240,9 @@ export function applyActiveOutputSnapshot(
   state: AudioModeState,
   snapshot: ActiveOutputSnapshot,
 ): AudioModeState {
-  const sampleRate = snapshot.actualSampleRate && snapshot.actualSampleRate > 0
-    ? snapshot.actualSampleRate
-    : snapshot.nominalSampleRate && snapshot.nominalSampleRate > 0
-      ? snapshot.nominalSampleRate
-      : null;
+  const nominalSampleRate = positiveRate(snapshot.nominalSampleRate);
+  const actualSampleRate = positiveRate(snapshot.actualSampleRate);
+  const sampleRate = actualSampleRate ?? nominalSampleRate;
   return {
     devices: state.devices.map((device) => {
       const isDefaultOutput = snapshot.name !== null && device.name === snapshot.name;
@@ -261,10 +251,25 @@ export function applyActiveOutputSnapshot(
         isActive: isDefaultOutput || device.isInputActive,
         isInputActive: device.isInputActive,
         inputTransport: device.inputTransport,
+        bluetoothAddress: device.bluetoothAddress,
+        audioLinkType: device.audioLinkType,
+        audioLinkTypeObservedAt: device.audioLinkTypeObservedAt,
         sampleRateOutput: isDefaultOutput ? sampleRate : device.sampleRateOutput,
+        availableSampleRateRangesOutput: device.availableSampleRateRangesOutput,
+        nominalSampleRateOutput: isDefaultOutput
+          ? nominalSampleRate
+          : device.nominalSampleRateOutput,
+        actualSampleRateOutput: isDefaultOutput
+          ? actualSampleRate
+          : device.actualSampleRateOutput,
         maxSupportedOutputRate: device.maxSupportedOutputRate,
-        outputChannels: device.outputChannels,
+        outputChannels: isDefaultOutput && snapshot.outputChannels !== undefined
+          ? snapshot.outputChannels
+          : device.outputChannels,
         sampleRateInput: device.sampleRateInput,
+        availableSampleRateRangesInput: device.availableSampleRateRangesInput,
+        nominalSampleRateInput: device.nominalSampleRateInput,
+        actualSampleRateInput: device.actualSampleRateInput,
         inputChannels: device.inputChannels,
         isDefaultInput: device.isDefaultInput,
         isDefaultOutput,
@@ -287,11 +292,9 @@ export function applyActiveInputSnapshot(
   state: AudioModeState,
   snapshot: ActiveInputSnapshot,
 ): AudioModeState {
-  const sampleRate = snapshot.actualSampleRate && snapshot.actualSampleRate > 0
-    ? snapshot.actualSampleRate
-    : snapshot.nominalSampleRate && snapshot.nominalSampleRate > 0
-      ? snapshot.nominalSampleRate
-      : null;
+  const nominalSampleRate = positiveRate(snapshot.nominalSampleRate);
+  const actualSampleRate = positiveRate(snapshot.actualSampleRate);
+  const sampleRate = actualSampleRate ?? nominalSampleRate;
   return {
     devices: state.devices.map((device) => {
       const isInputActive = snapshot.isRunning && snapshot.name !== null && device.name === snapshot.name;
@@ -300,10 +303,23 @@ export function applyActiveInputSnapshot(
         isActive: device.isDefaultOutput || isInputActive,
         isInputActive,
         inputTransport: device.inputTransport,
+        bluetoothAddress: device.bluetoothAddress,
+        audioLinkType: device.audioLinkType,
+        audioLinkTypeObservedAt: device.audioLinkTypeObservedAt,
         sampleRateOutput: device.sampleRateOutput,
+        availableSampleRateRangesOutput: device.availableSampleRateRangesOutput,
+        nominalSampleRateOutput: device.nominalSampleRateOutput,
+        actualSampleRateOutput: device.actualSampleRateOutput,
         maxSupportedOutputRate: device.maxSupportedOutputRate,
         outputChannels: device.outputChannels,
         sampleRateInput: isInputActive && sampleRate !== null ? sampleRate : device.sampleRateInput,
+        availableSampleRateRangesInput: device.availableSampleRateRangesInput,
+        nominalSampleRateInput: snapshot.name !== null && device.name === snapshot.name
+          ? nominalSampleRate
+          : device.nominalSampleRateInput,
+        actualSampleRateInput: snapshot.name !== null && device.name === snapshot.name
+          ? actualSampleRate
+          : device.actualSampleRateInput,
         inputChannels: device.inputChannels,
         isDefaultInput: snapshot.name !== null && device.name === snapshot.name,
         isDefaultOutput: device.isDefaultOutput,
@@ -322,10 +338,59 @@ export function applyActiveInputSnapshot(
   };
 }
 
+function normalizeBluetoothAddress(address: string | null): string {
+  return (address ?? "").replace(/[^0-9a-f]/gi, "").toUpperCase();
+}
+
+export function applyBluetoothLinkSnapshot(
+  state: AudioModeState,
+  snapshot: BluetoothLinkSnapshot,
+): AudioModeState {
+  const address = normalizeBluetoothAddress(snapshot.address);
+  return {
+    ...state,
+    devices: state.devices.map((device) => {
+      if (!address || normalizeBluetoothAddress(device.bluetoothAddress) !== address) return device;
+      if (device.audioLinkTypeObservedAt &&
+          Date.parse(device.audioLinkTypeObservedAt) > Date.parse(snapshot.timestamp)) return device;
+      return classifyFacts({
+        name: device.name,
+        isActive: device.isActive,
+        isInputActive: device.isInputActive,
+        inputTransport: device.inputTransport,
+        bluetoothAddress: device.bluetoothAddress,
+        audioLinkType: snapshot.profile,
+        audioLinkTypeObservedAt: snapshot.timestamp,
+        sampleRateOutput: device.sampleRateOutput,
+        availableSampleRateRangesOutput: device.availableSampleRateRangesOutput,
+        nominalSampleRateOutput: device.nominalSampleRateOutput,
+        actualSampleRateOutput: device.actualSampleRateOutput,
+        maxSupportedOutputRate: device.maxSupportedOutputRate,
+        outputChannels: device.outputChannels,
+        sampleRateInput: device.sampleRateInput,
+        availableSampleRateRangesInput: device.availableSampleRateRangesInput,
+        nominalSampleRateInput: device.nominalSampleRateInput,
+        actualSampleRateInput: device.actualSampleRateInput,
+        inputChannels: device.inputChannels,
+        isDefaultInput: device.isDefaultInput,
+        isDefaultOutput: device.isDefaultOutput,
+        isDefaultSystemOutput: device.isDefaultSystemOutput,
+        microphoneOccupancy: device.microphoneOccupancy,
+      });
+    }),
+  };
+}
+
 export function startAudioModeRealtimeMonitor(
   onSnapshot: (snapshot: ActiveOutputSnapshot) => void,
 ): () => void {
   return startActiveOutputMonitor(onSnapshot);
+}
+
+export function startAudioModeLinkMonitor(
+  onSnapshot: (snapshot: BluetoothLinkSnapshot) => void,
+): () => void {
+  return startBluetoothLinkMonitor(onSnapshot);
 }
 
 export function selectAssessments(

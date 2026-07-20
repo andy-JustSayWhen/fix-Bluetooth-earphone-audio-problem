@@ -1,3 +1,43 @@
+function quotedNames(names) {
+  return names.map((name) => `「${name}」`).join("、");
+}
+
+function routeActionSummary(result) {
+  const detail = result.steps?.find((item) =>
+    item.stage === "应用多端点替代组合" && item.status === "成功"
+  )?.detail;
+  if (!detail) return null;
+  const input = detail.match(/麦克风改为“([^”]+)”$/)?.[1] ?? detail.match(/麦克风改为(.+)$/)?.[1];
+  if (input) return `已将输入切换为「${input}」`;
+  const output = detail.match(/扬声器改为“([^”]+)”$/)?.[1] ?? detail.match(/扬声器改为(.+)$/)?.[1];
+  if (output) return `已将输出切换为「${output}」`;
+  const both = detail.match(/输入输出都改用“([^”]+)”$/)?.[1] ?? detail.match(/输入输出都改用(.+)$/)?.[1];
+  return both ? `已将输入和输出切换为「${both}」` : null;
+}
+
+export function successfulRecoverySummary(result, deviceName) {
+  const actions = [];
+  const programs = result.releasedPrograms ?? [];
+  if (programs.length > 0) {
+    if (result.diagnosis.kind === "麦克风占用类") {
+      actions.push(`已解除${quotedNames(programs)}的麦克风占用`);
+    } else if (result.diagnosis.kind === "格式请求类") {
+      actions.push(`已结束${quotedNames(programs)}发起的声音格式请求`);
+    } else {
+      actions.push(`已结束${quotedNames(programs)}的相关声音会话`);
+    }
+  }
+  const routeAction = routeActionSummary(result);
+  if (routeAction) actions.push(routeAction);
+  if (actions.length === 0 && result.usedReconnect) {
+    actions.push(`已重建「${deviceName}」的蓝牙连接`);
+  }
+  if (actions.length === 0 && result.recoveryPath === "声音链路重建兜底") {
+    actions.push("已重建声音链路并恢复点击前输入输出");
+  }
+  return actions.join("，并");
+}
+
 export function createA2dpRecoveryController({
   createElement,
   expandedDevices,
@@ -27,7 +67,7 @@ export function createA2dpRecoveryController({
   const storedFeedback = readStoredFeedback();
   let removedLegacyInspection = false;
   for (const [deviceName, feedback] of Object.entries(storedFeedback)) {
-    const obsoleteInspection = feedback?.source === "inspection" && !feedback.result?.actionRequired;
+    const obsoleteInspection = feedback?.source === "inspection";
     const obsoleteIneligibleTarget = feedback?.result?.diagnosis?.summary === "目标当前不是可处理的低采样率默认输出";
     const obsoleteUnmarkedInspection = feedback?.result?.recoveryPath === "现场复核" &&
       !feedback.result?.actionRequired &&
@@ -40,7 +80,6 @@ export function createA2dpRecoveryController({
   if (removedLegacyInspection) writeStoredFeedback(storedFeedback);
   const feedbackByDevice = new Map(Object.entries(storedFeedback));
   const runningDevices = new Set();
-  const inspectingDevices = new Set();
   const progressByDevice = new Map();
   const recentlyReleasedPrograms = new Map();
   for (const [deviceName, feedback] of feedbackByDevice) {
@@ -81,7 +120,11 @@ export function createA2dpRecoveryController({
         recentlyReleasedPrograms.set(program, Date.now());
       }
       setFeedback(device.name, {
-        kind: result.ok ? "success" : result.actionRequired ? "pending" : "error",
+        kind: result.actionRequired
+          ? "pending"
+          : result.outcome === "无需修复"
+            ? "neutral"
+            : result.ok ? "success" : "error",
         result,
       });
     } catch (error) {
@@ -95,7 +138,8 @@ export function createA2dpRecoveryController({
   }
 
   function resultSection(feedback, deviceName) {
-    const section = createElement("section", `recovery-feedback is-${feedback.kind}`);
+    const displayKind = feedback.result?.outcome === "无需修复" ? "neutral" : feedback.kind;
+    const section = createElement("section", `recovery-feedback is-${displayKind}`);
     section.setAttribute("role", "status");
     section.setAttribute("aria-live", "polite");
     if (!feedback.result) {
@@ -104,41 +148,34 @@ export function createA2dpRecoveryController({
       return section;
     }
     const result = feedback.result;
-    const resultPrefix = feedback.source === "inspection"
-      ? "自动只读复核"
-      : result.actionRequired ? "需要你选择" : "最近一次修复";
-    section.append(
-      createElement("strong", "recovery-title", `${resultPrefix}：${result.outcome}`),
-      ...(feedback.recordedAt ? [createElement(
-        "p",
-        "recovery-time",
-        new Date(feedback.recordedAt).toLocaleString("zh-CN", { hour12: false }),
-      )] : []),
-      createElement("p", "recovery-path", `工作流：${result.recoveryPath}`),
-      createElement("p", "recovery-diagnosis", `${result.diagnosis.confidence}：${result.diagnosis.summary}`),
-    );
-    if (result.diagnosis.evidence?.length) {
-      const evidence = createElement("ul", "recovery-evidence");
-      for (const item of result.diagnosis.evidence) evidence.append(createElement("li", "", item));
-      section.append(evidence);
-    }
-    const steps = createElement("ol", "recovery-steps");
-    for (const item of result.steps ?? []) {
-      const row = createElement("li", `is-${item.status}`);
-      row.append(
-        createElement("strong", "", `${item.stage}：${item.status}`),
-        createElement("span", "", item.detail),
+    if (!result.actionRequired) {
+      const succeeded = result.outcome === "完全恢复" || result.outcome === "绕过成功";
+      const status = succeeded
+        ? "修复成功"
+        : result.outcome === "无需修复" ? "未执行修复" : "修复失败";
+      const header = createElement("div", "recovery-result-header");
+      header.append(
+        createElement("strong", "recovery-title", status),
+        createElement(
+          "time",
+          "recovery-time",
+          feedback.recordedAt
+            ? new Date(feedback.recordedAt).toLocaleString("zh-CN", { hour12: false })
+            : "时间未知",
+        ),
       );
-      steps.append(row);
+      section.append(header);
+      if (succeeded) {
+        section.append(createElement(
+          "p",
+          "recovery-summary",
+          successfulRecoverySummary(result, deviceName) || "已恢复目标设备的高音质播放",
+        ));
+      }
+      return section;
     }
-    section.append(steps, createElement("p", "recovery-summary", result.message));
-    if (result.releasedPrograms?.some((name) => /WeType|微信输入法/i.test(name))) {
-      section.append(createElement(
-        "p",
-        "recovery-input-method-note",
-        "微信输入法进程已经停止读取麦克风，但进程自动重启不代表语音快捷键已恢复。本机实测如无法再次唤起语音，请切换一次输入法，或在微信输入法的语音设置中关闭再开启免提模式。",
-      ));
-    }
+
+    section.append(createElement("strong", "recovery-title", "需要你选择"));
     if (result.actionRequired?.kind === "route-choice") {
       const actions = createElement("div", "recovery-actions");
       actions.append(createElement("p", "recovery-action-prompt", result.actionRequired.prompt));
@@ -148,9 +185,7 @@ export function createA2dpRecoveryController({
         button.addEventListener("click", () => {
           const device = getLastRenderedDevices().find((item) => item.name === deviceName);
           if (device) recover(device, {
-            inspectMultiEndpoint: true,
             routeChoiceId: choice.id,
-            observedConflict: feedback.observedConflict,
           });
         });
         actions.append(button);
@@ -184,44 +219,16 @@ export function createA2dpRecoveryController({
     renderDevices(getLastRenderedDevices());
   }
 
-  async function inspectRouteConflict(device, observedConflict) {
-    if (inspectingDevices.has(device.name) || runningDevices.has(device.name)) return;
-    const existing = feedbackByDevice.get(device.name)?.result;
-    if (existing?.actionRequired?.kind === "route-choice") return;
-    inspectingDevices.add(device.name);
-    try {
-      const response = await fetch("/api/a2dp-recovery", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: device.name, inspectMultiEndpoint: true, observedConflict }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "复核失败");
-      if (runningDevices.has(device.name)) return;
-      if (!result.actionRequired) return;
-      setFeedback(device.name, {
-        kind: "pending",
-        source: "inspection",
-        observedConflict,
-        result,
-      });
-      expandedDevices.add(device.name);
-      renderDevices(getLastRenderedDevices());
-    } catch {
-      // 自动只读复核失败不得阻止用户主动修复。
-    } finally {
-      inspectingDevices.delete(device.name);
-    }
-  }
-
   return {
     feedbackByDevice,
     runningDevices,
     progressByDevice,
     recentlyReleasedPrograms,
     recover,
-    inspectRouteConflict,
     resultSection,
     handleProgress,
+    getPendingRouteChoice: () => [...feedbackByDevice.values()]
+      .map((feedback) => feedback?.result)
+      .find((result) => result?.actionRequired?.kind === "route-choice") ?? null,
   };
 }

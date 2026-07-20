@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AudioProbeSnapshot,
   RawAudioDevice,
+  SampleRateRange,
 } from "../../shared/audio-device-types/index.ts";
 
 type SystemProfilerDevice = Record<string, string | number | undefined> & {
@@ -17,12 +18,20 @@ type ConnectedBluetoothDevice = {
   services: string[];
 };
 
+type DeviceFormatFacts = {
+  name: string;
+  inputChannels: number;
+  outputChannels: number;
+  nominalSampleRate: number;
+  actualSampleRate: number;
+  availableSampleRateRanges: SampleRateRange[];
+};
+
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const toolRoot = join(moduleDirectory, "..", "..");
-const rateSourcePath = join(moduleDirectory, "read-max-output-rate.c");
+const rateSourcePath = join(moduleDirectory, "read-device-formats.c");
 const rateBuildDirectory = join(toolRoot, ".build", "audio-probe");
-const rateExecutablePath = join(rateBuildDirectory, "read-max-output-rate");
-const maximumRateCache = new Map<string, number | null>();
+const rateExecutablePath = join(rateBuildDirectory, "read-device-formats");
 
 function modificationTime(path: string): number {
   try {
@@ -43,18 +52,43 @@ function ensureRateHelperBuilt(): void {
   ], { stdio: ["ignore", "inherit", "inherit"] });
 }
 
-function readMaxSupportedOutputRate(name: string): number | null {
-  if (maximumRateCache.has(name)) return maximumRateCache.get(name) ?? null;
+function readDeviceFormatFacts(): DeviceFormatFacts[] {
   try {
     ensureRateHelperBuilt();
-    const output = execFileSync(rateExecutablePath, [name], { encoding: "utf8" }).trim();
-    const rate = Number(output) || null;
-    maximumRateCache.set(name, rate);
-    return rate;
+    const output = execFileSync(rateExecutablePath, { encoding: "utf8" }).trim();
+    const parsed = JSON.parse(output) as DeviceFormatFacts[];
+    return parsed.map((facts) => ({
+      ...facts,
+      nominalSampleRate: Number(facts.nominalSampleRate) || 0,
+      actualSampleRate: Number(facts.actualSampleRate) || 0,
+      availableSampleRateRanges: (facts.availableSampleRateRanges ?? [])
+        .map((range) => ({
+          minimum: Number(range.minimum) || 0,
+          maximum: Number(range.maximum) || 0,
+        }))
+        .filter((range) => range.minimum > 0 && range.maximum > 0),
+    }));
   } catch {
-    maximumRateCache.set(name, null);
-    return null;
+    return [];
   }
+}
+
+function chooseFormatFacts(
+  facts: DeviceFormatFacts[],
+  name: string,
+  direction: "input" | "output",
+  reportedChannels: number,
+): DeviceFormatFacts | undefined {
+  const channelKey = direction === "input" ? "inputChannels" : "outputChannels";
+  return facts
+    .filter((entry) => entry.name === name && entry[channelKey] > 0)
+    .sort((left, right) =>
+      Math.abs(left[channelKey] - reportedChannels) - Math.abs(right[channelKey] - reportedChannels)
+    )[0];
+}
+
+function validRate(rate: number | undefined): number | null {
+  return rate && rate > 0 ? rate : null;
 }
 
 function runSystemProfiler(dataTypes: string[]): unknown {
@@ -119,33 +153,50 @@ export function readAudioDevices(): AudioProbeSnapshot {
   };
   const bluetoothDevices = connectedBluetoothDevices(parsed);
   const records = parsed.SPAudioDataType?.flatMap((group) => group._items ?? []) ?? [];
-  const maxOutputRates = new Map<string, number | null>();
-  for (const record of records) {
-    if (Number(record.coreaudio_device_output ?? 0) <= 0 || !record._name) continue;
-    if (!maxOutputRates.has(record._name)) {
-      maxOutputRates.set(record._name, readMaxSupportedOutputRate(record._name));
-    }
-  }
+  const formatFacts = readDeviceFormatFacts();
   const devices: RawAudioDevice[] = records.map((record, index) => {
-    const inputChannels = Number(record.coreaudio_device_input ?? 0);
-    const outputChannels = Number(record.coreaudio_device_output ?? 0);
-    const sampleRate = Number(record.coreaudio_device_srate ?? 0) || null;
+    const name = record._name ?? "未命名音频设备";
+    const reportedInputChannels = Number(record.coreaudio_device_input ?? 0);
+    const reportedOutputChannels = Number(record.coreaudio_device_output ?? 0);
+    const inputFacts = chooseFormatFacts(formatFacts, name, "input", reportedInputChannels);
+    const outputFacts = chooseFormatFacts(formatFacts, name, "output", reportedOutputChannels);
+    const inputChannels = inputFacts?.inputChannels ?? reportedInputChannels;
+    const outputChannels = outputFacts?.outputChannels ?? reportedOutputChannels;
+    const profilerSampleRate = Number(record.coreaudio_device_srate ?? 0) || null;
+    const nominalSampleRateInput = validRate(inputFacts?.nominalSampleRate) ?? (inputChannels > 0 ? profilerSampleRate : null);
+    const actualSampleRateInput = validRate(inputFacts?.actualSampleRate);
+    const nominalSampleRateOutput = validRate(outputFacts?.nominalSampleRate) ?? (outputChannels > 0 ? profilerSampleRate : null);
+    const actualSampleRateOutput = validRate(outputFacts?.actualSampleRate);
+    const availableSampleRateRangesInput = inputFacts?.availableSampleRateRanges ?? [];
+    const availableSampleRateRangesOutput = outputFacts?.availableSampleRateRanges ?? [];
+    const maxSupportedOutputRate = Math.max(
+      0,
+      ...availableSampleRateRangesOutput.map((range) => range.maximum),
+      nominalSampleRateOutput ?? 0,
+      actualSampleRateOutput ?? 0,
+    ) || null;
     const isDefaultInput = record.coreaudio_default_audio_input_device === "spaudio_yes";
     const isDefaultOutput = record.coreaudio_default_audio_output_device === "spaudio_yes";
     const isDefaultSystemOutput =
       record.coreaudio_default_audio_system_device === "spaudio_yes" ||
       record._properties === "coreaudio_default_audio_system_device";
-    const bluetooth = bluetoothDevices.get((record._name ?? "").toLocaleLowerCase());
+    const bluetooth = bluetoothDevices.get(name.toLocaleLowerCase());
 
     return {
       id: index + 1,
-      name: record._name ?? "未命名音频设备",
-      uid: `${record._name ?? "device"}-${index + 1}`,
+      name,
+      uid: `${name}-${index + 1}`,
       manufacturer: String(record.coreaudio_device_manufacturer ?? ""),
       transport: transportName(record.coreaudio_device_transport as string | undefined),
-      sampleRateInput: inputChannels > 0 ? sampleRate : null,
-      sampleRateOutput: outputChannels > 0 ? sampleRate : null,
-      maxSupportedOutputRate: outputChannels > 0 ? maxOutputRates.get(record._name ?? "") ?? null : null,
+      sampleRateInput: inputChannels > 0 ? actualSampleRateInput ?? nominalSampleRateInput : null,
+      sampleRateOutput: outputChannels > 0 ? actualSampleRateOutput ?? nominalSampleRateOutput : null,
+      availableSampleRateRangesInput,
+      nominalSampleRateInput,
+      actualSampleRateInput,
+      availableSampleRateRangesOutput,
+      nominalSampleRateOutput,
+      actualSampleRateOutput,
+      maxSupportedOutputRate: outputChannels > 0 ? maxSupportedOutputRate : null,
       inputChannels,
       outputChannels,
       isRunning: isDefaultInput || isDefaultOutput || isDefaultSystemOutput,

@@ -190,25 +190,6 @@ export function readSystemAudioEvidenceSince(startedAtMs: number): FormatRequest
   return readSystemAudioEvidence(["--start", formatSystemLogStart(boundedStart)], windowMinutes);
 }
 
-export function readMultiEndpointEvidenceSince(startedAtMs: number): FormatRequestEvidence {
-  const boundedStart = Math.max(startedAtMs, Date.now() - 10 * 60_000);
-  const windowMinutes = Math.max(1, Math.ceil((Date.now() - boundedStart) / 60_000));
-  const predicate = [
-    'process == "audiomxd"',
-    "AND",
-    "(",
-    'eventMessage CONTAINS[c] "deviceUIDs"',
-    "OR",
-    'eventMessage CONTAINS[c] "more than one BT device connected"',
-    ")",
-  ].join(" ");
-  return readSystemAudioEvidence(
-    ["--start", formatSystemLogStart(boundedStart)],
-    windowMinutes,
-    predicate,
-  );
-}
-
 function normalizedBluetoothIdentity(value: string): string {
   return value.replace(/[^0-9a-f]/gi, "").toUpperCase();
 }

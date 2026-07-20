@@ -156,15 +156,16 @@ button { font: inherit; }
 .mode-badge--hfp_hsp { color: #9a5416; background: #fff1dd; }
 .mode-badge--microphone { color: #1f6398; background: #e7f4ff; }
 .mode-badge--le_audio { color: #6944ad; background: #f0eaff; }
-.mode-badge--inactive { color: #657086; background: #eef1f5; }
 .mode-badge--unknown { color: #a34051; background: #fdecef; }
-.input-only-note { margin: -2px 2px 14px; padding: 10px 12px; color: #49657d; background: #eef7ff; border: 1px solid #cfe5f5; border-radius: 10px; font-size: 12px; line-height: 1.6; }
 .device-card__mode-actions { display: grid; justify-items: stretch; gap: 7px; min-width: 172px; }
 .chevron { width: 10px; height: 10px; border-right: 2px solid #8d98aa; border-bottom: 2px solid #8d98aa; transform: rotate(45deg); transition: transform 180ms ease; }
 .device-card.is-expanded .chevron { transform: rotate(225deg) translate(-2px, -2px); }
 
 .device-card__details { display: none; padding: 0 22px 23px 84px; }
 .device-card.is-expanded .device-card__details { display: block; animation: reveal 180ms ease-out; }
+.audio-link-group { min-width: 0; margin: 0; padding: 10px 12px 13px; border: 1px dashed #88a5cf; border-radius: 15px; }
+.audio-link-group > legend { padding: 0 8px; color: #466189; font-size: 12px; font-weight: 750; letter-spacing: 0.035em; }
+.audio-link-group__empty { margin: 4px; color: #7d889b; font-size: 11px; }
 .metric-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .metric-group { min-width: 0; margin: 0; padding: 7px 9px 10px; border: 1px dashed #aebdd3; border-radius: 13px; }
 .metric-group legend { padding: 0 7px; color: #5d6f8c; font-size: 11px; font-weight: 750; letter-spacing: 0.08em; }
@@ -172,10 +173,7 @@ button { font: inherit; }
 .metric-group__note { margin: 8px 4px 0; color: #7d889b; font-size: 10px; line-height: 1.5; }
 .metric { padding: 13px; background: #f7f9fc; border: 1px solid #e8edf4; border-radius: 12px; }
 .metric span { display: block; margin-bottom: 5px; color: #8a95a6; font-size: 11px; }
-.metric strong { font-size: 14px; font-weight: 700; }
-.inactive-state { padding: 16px 18px; color: #647086; background: #f7f9fc; border: 1px dashed #bdc8d8; border-radius: 13px; }
-.inactive-state strong { display: block; margin-bottom: 6px; color: #4f5c72; font-size: 13px; }
-.inactive-state p { margin: 0; font-size: 12px; line-height: 1.65; }
+.metric strong { overflow-wrap: anywhere; font-size: 14px; font-weight: 700; line-height: 1.4; }
 
 .occupancy-section { margin-top: 15px; padding: 15px 16px; background: #fbfcff; border: 1px solid #e1e7f0; border-radius: 13px; }
 .occupancy-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
