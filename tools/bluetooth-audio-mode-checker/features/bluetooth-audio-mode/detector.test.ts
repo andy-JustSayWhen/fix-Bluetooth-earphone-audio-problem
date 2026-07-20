@@ -431,6 +431,20 @@ test("一键修复只在更新时间后显示一个列表级入口", () => {
   assert.match(recoverySource, /"一键修复全部 HFP 设备"/);
 });
 
+test("设备卡片在名称下显示模式且右侧只保留展开图标", () => {
+  const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("./web/styles.css", import.meta.url), "utf8");
+
+  assert.doesNotMatch(source, /function routeText/);
+  assert.doesNotMatch(source, /已连接，非默认设备/);
+  assert.match(source, /title\.append\(createElement\("h2", "", device\.name\), badge\)/);
+  assert.match(source, /summary\.append\(icon, title, chevron\)/);
+  assert.match(source, /header\.append\(summary\)/);
+  assert.doesNotMatch(source, /device-card__mode-actions/);
+  assert.match(styles, /\.device-title \{ display: flex;[\s\S]*?flex-direction: column/);
+  assert.doesNotMatch(styles, /\.device-card__mode-actions/);
+});
+
 test("列表级一键修复逐台处理并在需要用户选择时暂停", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 

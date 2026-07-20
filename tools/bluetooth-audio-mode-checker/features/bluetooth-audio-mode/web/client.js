@@ -156,15 +156,6 @@ function formatRateRanges(ranges) {
     .join("、") || "无法读取";
 }
 
-function routeText(device) {
-  const routes = [];
-  if (device.isDefaultOutput) routes.push("默认输出");
-  if (device.isDefaultInput) routes.push("默认输入");
-  if (device.isInputActive) routes.push("麦克风使用中");
-  if (device.isDefaultSystemOutput && routes.length === 0) routes.push("系统提示音输出");
-  return routes.length ? routes.join(" · ") : "已连接，非默认设备";
-}
-
 function metric(label, value) {
   const item = createElement("div", "metric");
   item.append(createElement("span", "", label), createElement("strong", "", value));
@@ -381,16 +372,14 @@ function createDeviceCard(device) {
 
   const icon = createElement("span", "device-icon");
   icon.setAttribute("aria-hidden", "true");
-  const title = createElement("div", "device-title");
-  title.append(createElement("h2", "", device.name), createElement("p", "", routeText(device)));
   const modePresentation = deviceModePresentation(device);
   const badge = createElement("span", `mode-badge mode-badge--${modePresentation.className}`, modePresentation.text);
-  const modeActions = createElement("div", "device-card__mode-actions");
-  modeActions.append(badge);
+  const title = createElement("div", "device-title");
+  title.append(createElement("h2", "", device.name), badge);
   const chevron = createElement("span", "chevron");
   chevron.setAttribute("aria-hidden", "true");
   summary.append(icon, title, chevron);
-  header.append(summary, modeActions);
+  header.append(summary);
 
   const details = createElement("div", "device-card__details");
   const recovery = recoveryController.feedbackByDevice.get(device.name);

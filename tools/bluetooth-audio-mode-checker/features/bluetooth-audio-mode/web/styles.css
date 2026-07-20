@@ -123,10 +123,6 @@ button { font: inherit; }
 .device-card.is-expanded { border-color: #aac2ef; box-shadow: 0 14px 36px rgba(38, 85, 172, 0.11); }
 
 .device-card__header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
   padding: 17px 18px 17px 0;
 }
 
@@ -148,17 +144,15 @@ button { font: inherit; }
 .device-icon { position: relative; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 14px; background: #edf3ff; color: #316ee1; }
 .device-icon::before { content: ""; width: 17px; height: 20px; border: 2px solid currentColor; border-radius: 9px 9px 7px 7px; }
 .device-icon::after { content: ""; position: absolute; width: 25px; height: 8px; border: 2px solid currentColor; border-top: 0; border-radius: 0 0 10px 10px; bottom: 9px; }
-.device-title { min-width: 0; }
-.device-title h2 { overflow: hidden; margin: 0 0 5px; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
-.device-title p { margin: 0; color: #788398; font-size: 13px; }
+.device-title { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 6px; }
+.device-title h2 { overflow: hidden; max-width: 100%; margin: 0; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
 
-.mode-badge { padding: 7px 11px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.mode-badge { display: block; overflow: hidden; max-width: 100%; padding: 6px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .mode-badge--a2dp { color: #176746; background: #e6f7ef; }
 .mode-badge--hfp_hsp { color: #9a5416; background: #fff1dd; }
 .mode-badge--microphone { color: #1f6398; background: #e7f4ff; }
 .mode-badge--le_audio { color: #6944ad; background: #f0eaff; }
 .mode-badge--unknown { color: #a34051; background: #fdecef; }
-.device-card__mode-actions { display: grid; justify-items: stretch; gap: 7px; min-width: 172px; }
 .chevron { width: 10px; height: 10px; border-right: 2px solid #8d98aa; border-bottom: 2px solid #8d98aa; transform: rotate(45deg); transition: transform 180ms ease; }
 .device-card.is-expanded .chevron { transform: rotate(225deg) translate(-2px, -2px); }
 
@@ -230,9 +224,8 @@ button { font: inherit; }
   .status-bar { margin-top: 25px; }
   .route-panel { grid-template-columns: 1fr; margin-top: 24px; padding: 14px; }
   .route-message { grid-column: auto; }
-  .device-card__header { grid-template-columns: 1fr; gap: 8px; padding: 14px 16px 16px; }
+  .device-card__header { padding: 14px 16px; }
   .device-card__summary { grid-template-columns: auto 1fr auto; gap: 12px; padding: 4px 0; }
-  .device-card__mode-actions { grid-template-columns: repeat(2, minmax(0, max-content)); justify-content: start; min-width: 0; padding-left: 62px; }
   .device-card__details { padding: 0 16px 18px; }
   .metric-groups { grid-template-columns: 1fr; }
 }
