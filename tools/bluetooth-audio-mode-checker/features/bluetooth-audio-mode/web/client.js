@@ -76,19 +76,10 @@ export function isRecoverableOutputDevice(device) {
 }
 
 export function deviceModePresentation(device) {
-  const confirmedOccupancy = device.microphoneOccupancy?.isInUse === true;
-  if (device.a2dpSupport === "UNSUPPORTED") {
-    return {
-      className: "a2dp_unsupported",
-      text: "不支持A2DP（该设备无需修复）",
-    };
-  }
   if (device.mode === "HFP_HSP") {
     return {
       className: "hfp_hsp",
-      text: confirmedOccupancy
-        ? "HFP等模式（低音质语音模式 · 麦克风使用中）"
-        : "HFP等模式（低音质语音模式）",
+      text: "HFP等模式（低音质语音模式）",
     };
   }
   if (device.mode === "A2DP") {
@@ -99,7 +90,7 @@ export function deviceModePresentation(device) {
   }
   return {
     className: "unknown",
-    text: confirmedOccupancy ? "模式无法确认（麦克风使用中）" : "模式无法确认",
+    text: "模式无法确认",
   };
 }
 
@@ -384,8 +375,19 @@ function createDeviceCard(device) {
   icon.setAttribute("aria-hidden", "true");
   const modePresentation = deviceModePresentation(device);
   const badge = createElement("span", `mode-badge mode-badge--${modePresentation.className}`, modePresentation.text);
+  const modeLine = createElement("div", "device-mode-line");
+  modeLine.append(badge);
+  if (device.a2dpSupport === "UNSUPPORTED") {
+    const supportNote = createElement(
+      "span",
+      "a2dp-support-note",
+      "该设备不支持A2DP，无法修复，也无需修复",
+    );
+    supportNote.title = supportNote.textContent;
+    modeLine.append(supportNote);
+  }
   const title = createElement("div", "device-title");
-  title.append(createElement("h2", "", device.name), badge);
+  title.append(createElement("h2", "", device.name), modeLine);
   const chevron = createElement("span", "chevron");
   chevron.setAttribute("aria-hidden", "true");
   summary.append(icon, title, chevron);

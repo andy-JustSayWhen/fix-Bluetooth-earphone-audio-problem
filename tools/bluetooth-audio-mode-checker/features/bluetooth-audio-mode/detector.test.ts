@@ -171,8 +171,8 @@ test("可用采样率最高只有 16 kHz 时明确判定不支持 A2DP", () => {
   assert.equal(result.a2dpSupport, "UNSUPPORTED");
   assert.equal(isRecoverableOutputDevice(result), false);
   assert.deepEqual(deviceModePresentation(result), {
-    className: "a2dp_unsupported",
-    text: "不支持A2DP（该设备无需修复）",
+    className: "unknown",
+    text: "模式无法确认",
   });
 });
 
@@ -349,8 +349,8 @@ test("仅作为输入且明确不支持 A2DP 的设备不显示修复入口", ()
 
   assert.equal(isRecoverableOutputDevice(microphone), false);
   assert.deepEqual(deviceModePresentation(microphone), {
-    className: "a2dp_unsupported",
-    text: "不支持A2DP（该设备无需修复）",
+    className: "hfp_hsp",
+    text: "HFP等模式（低音质语音模式）",
   });
 });
 
@@ -406,10 +406,10 @@ test("一键修复入口以最新 HFP 模式和 A2DP 支持能力为准", () => 
   assert.equal(deviceModePresentation({
     mode: "HFP_HSP",
     microphoneOccupancy: { isInUse: true },
-  }).text, "HFP等模式（低音质语音模式 · 麦克风使用中）");
+  }).text, "HFP等模式（低音质语音模式）");
 });
 
-test("无法确认的默认蓝牙麦克风在胶囊只显示判定和采集状态", () => {
+test("模式胶囊只显示模式而不追加其他状态", () => {
   assert.deepEqual(deviceModePresentation({
     mode: "UNKNOWN",
     label: "模式无法确认",
@@ -483,11 +483,15 @@ test("设备卡片在名称下显示模式且右侧只保留展开图标", () =>
 
   assert.doesNotMatch(source, /function routeText/);
   assert.doesNotMatch(source, /已连接，非默认设备/);
-  assert.match(source, /title\.append\(createElement\("h2", "", device\.name\), badge\)/);
+  assert.match(source, /title\.append\(createElement\("h2", "", device\.name\), modeLine\)/);
+  assert.match(source, /device\.a2dpSupport === "UNSUPPORTED"/);
+  assert.match(source, /该设备不支持A2DP，无法修复，也无需修复/);
   assert.match(source, /summary\.append\(icon, title, chevron\)/);
   assert.match(source, /header\.append\(summary\)/);
   assert.doesNotMatch(source, /device-card__mode-actions/);
   assert.match(styles, /\.device-title \{ display: flex;[\s\S]*?flex-direction: column/);
+  assert.match(styles, /\.device-mode-line \{ display: flex;[\s\S]*?align-items: center/);
+  assert.match(styles, /\.a2dp-support-note \{[\s\S]*?color: #8490a3;[\s\S]*?font-size: 11px/);
   assert.doesNotMatch(styles, /\.device-card__mode-actions/);
 });
 
