@@ -18,12 +18,14 @@ function uniqueDevices(devices: RawAudioDevice[], direction: "input" | "output")
 }
 
 export function selectCauseRoute(
-  hasConfirmedOccupancy: boolean,
   multiEndpointConfirmed: boolean,
+  hasConfirmedOccupancy: boolean,
+  linkResidualConfirmed: boolean,
   formatRequestConfirmed: boolean,
 ): RecoveryCauseKind {
-  if (hasConfirmedOccupancy) return "麦克风占用类";
   if (multiEndpointConfirmed) return "多端点会话类";
+  if (hasConfirmedOccupancy) return "麦克风占用类";
+  if (linkResidualConfirmed) return "链路残留类";
   if (formatRequestConfirmed) return "格式请求类";
   return "证据不足";
 }

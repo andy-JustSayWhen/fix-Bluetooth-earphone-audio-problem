@@ -110,6 +110,13 @@ button { font: inherit; }
 
 .device-list { display: grid; gap: 14px; }
 
+.input-activity-overview { padding: 14px 16px; color: #6f5a25; background: #fff9e8; border: 1px solid #ead9a6; border-radius: 14px; }
+.input-activity-overview > strong { display: block; color: #66501b; font-size: 13px; }
+.input-activity-overview > p { margin: 6px 0 0; font-size: 11px; line-height: 1.6; }
+.input-activity-overview__list { display: grid; gap: 7px; margin-top: 10px; }
+.input-activity-overview__item { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; background: rgba(255, 255, 255, 0.72); border-radius: 9px; font-size: 11px; }
+.input-activity-overview__item span { color: #8b7845; text-align: right; }
+
 .device-card {
   overflow: hidden;
   background: rgba(255, 255, 255, 0.96);

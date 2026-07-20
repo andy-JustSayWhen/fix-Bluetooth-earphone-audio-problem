@@ -17,6 +17,7 @@ import {
 import {
   attachEmptyMicrophoneOccupancy,
   attachMicrophoneOccupancyFromUsers,
+  classifyInputActivities,
   mergeMicrophoneOccupancy,
   readAllMicrophoneUsersAsync,
   releaseMicrophoneUsers,
@@ -170,6 +171,7 @@ function main(): void {
   let latestInputSnapshot: ActiveInputSnapshot | null = null;
   const latestLinkSnapshots = new Map<string, BluetoothLinkSnapshot>();
   let latestOccupancyCapturedAt: string | null = null;
+  let latestRawMicrophoneUsers: NonNullable<AudioModeState["microphoneUsers"]> = [];
   let latestMicrophoneUsers: AudioModeState["microphoneUsers"] = [];
   let inputActivityScanPending = false;
   let initialOccupancyScanScheduled = false;
@@ -228,6 +230,13 @@ function main(): void {
     }
     for (const linkSnapshot of latestLinkSnapshots.values()) {
       nextState = applyBluetoothLinkSnapshot(nextState, linkSnapshot);
+    }
+    if (latestOccupancyCapturedAt !== null) {
+      nextState = {
+        ...nextState,
+        devices: attachMicrophoneOccupancyFromUsers(nextState.devices, latestRawMicrophoneUsers),
+      };
+      latestMicrophoneUsers = classifyInputActivities(nextState.devices, latestRawMicrophoneUsers);
     }
     cachedState = nextState;
     cachedStateUpdatedAt = new Date().toISOString();
@@ -355,6 +364,11 @@ function main(): void {
     if (cachedState === null) return;
     const previousFingerprint = JSON.stringify(cachedState.devices);
     cachedState = applyBluetoothLinkSnapshot(cachedState, snapshot);
+    cachedState = {
+      ...cachedState,
+      devices: attachMicrophoneOccupancyFromUsers(cachedState.devices, latestRawMicrophoneUsers),
+    };
+    latestMicrophoneUsers = classifyInputActivities(cachedState.devices, latestRawMicrophoneUsers);
     const nextFingerprint = JSON.stringify(cachedState.devices);
     if (nextFingerprint === previousFingerprint) return;
     cachedStateUpdatedAt = snapshot.timestamp;
@@ -388,7 +402,8 @@ function main(): void {
       try {
         const microphoneUsers = await readAllMicrophoneUsersAsync();
         const occupancySnapshot = attachMicrophoneOccupancyFromUsers(cachedState.devices, microphoneUsers);
-        latestMicrophoneUsers = microphoneUsers;
+        latestRawMicrophoneUsers = microphoneUsers;
+        latestMicrophoneUsers = classifyInputActivities(occupancySnapshot, microphoneUsers);
         latestOccupancyCapturedAt = new Date().toISOString();
         continueScanning = shouldContinueOccupancyScanning(occupancySnapshot, microphoneUsers);
         const nextFingerprint = JSON.stringify({
@@ -396,14 +411,14 @@ function main(): void {
             name: device.name,
             users: device.microphoneOccupancy?.users ?? [],
           })),
-          microphoneUsers,
+          microphoneUsers: latestMicrophoneUsers,
         });
         if (nextFingerprint === occupancyFingerprint) return;
         occupancyFingerprint = nextFingerprint;
         detailedLog("info", "microphone-occupancy.changed", {
           source,
           durationMs: Number((performance.now() - startedAt).toFixed(3)),
-          microphoneUsers,
+          microphoneUsers: latestMicrophoneUsers,
           devices: occupancySnapshot.map((device) => ({
             name: device.name,
             users: device.microphoneOccupancy?.users ?? [],
@@ -507,12 +522,37 @@ function main(): void {
         if (request.headers.origin && request.headers.origin !== expectedOrigin) {
           throw new Error("请求来源不正确");
         }
-        const body = await readJsonBody(request) as { pids?: unknown };
+        const body = await readJsonBody(request) as { deviceName?: unknown; pids?: unknown };
+        if (typeof body.deviceName !== "string" || body.deviceName.length === 0) {
+          throw new Error("麦克风设备无效");
+        }
         if (!Array.isArray(body.pids) || !body.pids.every(Number.isInteger)) {
           throw new Error("占用程序列表无效");
         }
-        detailedLog("info", "microphone-occupancy.release-requested", { pids: body.pids });
-        const result = await releaseMicrophoneUsers(body.pids as number[]);
+        if (cachedState === null) throw new Error("当前没有可用的设备与链路状态");
+        const liveUsers = await readAllMicrophoneUsersAsync();
+        const activities = classifyInputActivities(cachedState.devices, liveUsers);
+        const confirmedUsers = activities.filter((user) =>
+          user.inputActivityKind === "已确认实体麦克风占用" &&
+          user.confirmedDeviceNames?.includes(body.deviceName as string)
+        );
+        const confirmedPids = new Set(confirmedUsers.map((user) => user.pid));
+        const requestedPids = [...new Set(body.pids as number[])];
+        if (requestedPids.length === 0 || requestedPids.some((pid) => !confirmedPids.has(pid))) {
+          throw new Error("当前没有同时满足实体麦克风端点与 tsco 的占用证据，未结束任何进程");
+        }
+        detailedLog("info", "microphone-occupancy.release-requested", {
+          deviceName: body.deviceName,
+          pids: requestedPids,
+          evidence: confirmedUsers.map((user) => ({
+            pid: user.pid,
+            processName: user.name,
+            physicalDeviceNames: user.physicalDeviceNames,
+            confirmedDeviceNames: user.confirmedDeviceNames,
+            inputActivityKind: user.inputActivityKind,
+          })),
+        });
+        const result = await releaseMicrophoneUsers(requestedPids);
         detailedLog("info", "microphone-occupancy.release-completed", { result });
         scheduleOccupancyScan(0, "manual-release-completed");
         scheduleStateRefresh();
@@ -623,6 +663,7 @@ function main(): void {
             defaultOutput: currentOutputName,
             targetSampleRate: currentDevice?.actualSampleRateOutput ?? null,
             targetAssessment: currentDevice ?? null,
+            deviceAssessments: currentState.devices,
             occupancySnapshot: latestOccupancyCapturedAt ? {
               capturedAt: latestOccupancyCapturedAt,
               users: allOccupancyUsers,
@@ -637,9 +678,13 @@ function main(): void {
           _roundState: roundState,
           _approvedRelaunchGuards: approvedRelaunchGuards,
           context: recoveryContext,
-        }, (progress) => broadcastRecoveryProgress(body.name as string, progress), () =>
-          cachedState?.devices.find((device) => device.name === body.name) ?? null
-        );
+        }, (progress) => broadcastRecoveryProgress(body.name as string, progress),
+        () => cachedState?.devices ?? [],
+        async () => {
+          const state = cachedState ?? readAudioModeState();
+          const activities = classifyInputActivities(state.devices, await readAllMicrophoneUsersAsync());
+          return activities.filter((user) => user.inputActivityKind === "已确认实体麦克风占用");
+        });
         scheduleOccupancyScan(0, "a2dp-recovery-completed");
         scheduleStateRefresh();
         const continuation = result._continuation;

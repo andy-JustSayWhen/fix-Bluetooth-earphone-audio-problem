@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import type { AudioModeAssessment } from "../../shared/audio-device-types/index.ts";
 import {
   attachEmptyMicrophoneOccupancy,
+  attachMicrophoneOccupancyFromUsers,
+  classifyInputActivities,
   mergeMicrophoneOccupancy,
   shouldContinueOccupancyScanning,
   shouldStartOccupancyScanForInputActivity,
@@ -89,6 +91,34 @@ test("读取者无法归属到蓝牙设备时仍必须继续全局占用扫描",
   const unassignedUsers = [{ pid: 80530, name: "replayd", bundleId: "", devices: [] }];
 
   assert.equal(shouldContinueOccupancyScanning(devices, unassignedUsers), true);
+});
+
+test("只有实体麦克风端点与 tsco 同时成立才确认设备占用", () => {
+  const user = [{ pid: 42, name: "语音程序", bundleId: "test.voice", devices: ["REDMI"] }];
+  const [occupied] = attachMicrophoneOccupancyFromUsers([
+    device({ mode: "HFP_HSP", audioLinkType: "tsco" }),
+  ], user);
+  const [notOccupied] = attachMicrophoneOccupancyFromUsers([
+    device({ mode: "HFP_HSP", audioLinkType: "tacl" }),
+  ], user);
+
+  assert.equal(occupied.microphoneOccupancy?.isInUse, true);
+  assert.equal(notOccupied.microphoneOccupancy?.isInUse, false);
+});
+
+test("系统声音采集和空设备列表不得归为麦克风占用", () => {
+  const activities = classifyInputActivities([
+    device({ mode: "HFP_HSP", audioLinkType: "tsco" }),
+  ], [{ pid: 1, name: "replayd", bundleId: "", devices: ["AudioTap"] }, {
+    pid: 2,
+    name: "其他程序",
+    bundleId: "",
+    devices: [],
+  }]);
+
+  assert.equal(activities[0].inputActivityKind, "系统声音采集");
+  assert.equal(activities[1].inputActivityKind, "未确认麦克风占用的输入活动");
+  assert.deepEqual(activities.flatMap((activity) => activity.confirmedDeviceNames ?? []), []);
 });
 
 test("默认输入从空闲变为运行时触发一次占用扫描", () => {

@@ -76,10 +76,11 @@ export function isRecoverableOutputDevice(device) {
 }
 
 export function deviceModePresentation(device) {
+  const confirmedOccupancy = device.microphoneOccupancy?.isInUse === true;
   if (device.mode === "HFP_HSP") {
     return {
       className: "hfp_hsp",
-      text: device.isInputActive
+      text: confirmedOccupancy
         ? "HFP等模式（低音质语音模式 · 麦克风使用中）"
         : "HFP等模式（低音质语音模式）",
     };
@@ -92,7 +93,7 @@ export function deviceModePresentation(device) {
   }
   return {
     className: "unknown",
-    text: device.isInputActive ? "模式无法确认（麦克风使用中）" : "模式无法确认",
+    text: confirmedOccupancy ? "模式无法确认（麦克风使用中）" : "模式无法确认",
   };
 }
 
@@ -221,7 +222,7 @@ async function releaseOccupancy(deviceName, users) {
     const response = await fetch("/api/microphone-occupancy/release", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pids }),
+      body: JSON.stringify({ deviceName, pids }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "解除失败");
@@ -259,12 +260,6 @@ async function releaseOccupancy(deviceName, users) {
 
 function microphoneOccupancySection(device) {
   const occupancy = device.microphoneOccupancy;
-  const assignedPids = new Set(lastRenderedDevices.flatMap((item) =>
-    item.microphoneOccupancy?.users?.map((user) => user.pid) ?? []
-  ));
-  const unassignedUsers = device.isDefaultInput
-    ? lastMicrophoneUsers.filter((user) => !assignedPids.has(user.pid))
-    : [];
   const hasAssignedUsers = Boolean(occupancy?.users.length);
   const section = createElement("section", "occupancy-section");
   const heading = createElement("div", "occupancy-heading");
@@ -272,8 +267,8 @@ function microphoneOccupancySection(device) {
     createElement("h3", "", "麦克风占用"),
     createElement(
       "span",
-      hasAssignedUsers ? "occupancy-status is-busy" : unassignedUsers.length > 0 ? "occupancy-status is-unassigned" : "occupancy-status is-free",
-      hasAssignedUsers ? "正在占用" : unassignedUsers.length > 0 ? "存在未归属读取" : "未被本机占用",
+      hasAssignedUsers ? "occupancy-status is-busy" : "occupancy-status is-free",
+      hasAssignedUsers ? "正在占用" : "未被本机占用",
     ),
   );
   section.append(heading);
@@ -306,28 +301,8 @@ function microphoneOccupancySection(device) {
     releaseAll.disabled = occupancyBusyDevices.has(device.name);
     releaseAll.addEventListener("click", () => releaseOccupancy(device.name, occupancy.users));
     section.append(releaseAll);
-  } else if (unassignedUsers.length === 0) {
+  } else {
     section.append(createElement("p", "occupancy-empty", "没有检测到正在读取此设备麦克风的本机程序。仅设为默认输入不算占用。"));
-  }
-
-  if (unassignedUsers.length > 0) {
-    section.append(createElement(
-      "p",
-      "occupancy-empty is-unassigned",
-      "系统检测到以下程序正在读取本机某个麦克风，但无法确认是否正在读取此设备。",
-    ));
-    const list = createElement("div", "occupancy-users");
-    for (const user of unassignedUsers) {
-      const row = createElement("div", "occupancy-user is-unassigned");
-      const copy = createElement("div", "");
-      copy.append(
-        createElement("strong", "", user.name),
-        createElement("span", "", user.bundleId || `进程 ${user.pid} · 设备无法归属`),
-      );
-      row.append(copy);
-      list.append(row);
-    }
-    section.append(list);
   }
 
   const capability = createElement("div", "multipoint-note");
@@ -360,6 +335,35 @@ function microphoneOccupancySection(device) {
     ));
   }
   if (feedback) section.append(createElement("p", `occupancy-feedback is-${feedback.kind}`, feedback.text));
+  return section;
+}
+
+function inputActivityOverview() {
+  const activities = lastMicrophoneUsers.filter((user) =>
+    user.inputActivityKind !== "已确认实体麦克风占用"
+  );
+  if (activities.length === 0) return null;
+  const section = createElement("section", "input-activity-overview");
+  section.append(
+    createElement("strong", "", "其他声音输入活动"),
+    createElement(
+      "p",
+      "",
+      "以下活动没有形成“进程关联实体麦克风端点且该设备链路为 tsco”的完整占用证据，不属于任何设备的麦克风占用，也不提供解除按钮。",
+    ),
+  );
+  const list = createElement("div", "input-activity-overview__list");
+  for (const user of activities) {
+    const row = createElement("div", "input-activity-overview__item");
+    row.append(
+      createElement("strong", "", user.name),
+      createElement("span", "", user.inputActivityKind === "系统声音采集"
+        ? `系统声音采集 · ${user.bundleId || `进程 ${user.pid}`}`
+        : `未确认麦克风占用 · ${user.bundleId || `进程 ${user.pid}`}`),
+    );
+    list.append(row);
+  }
+  section.append(list);
   return section;
 }
 
@@ -560,6 +564,8 @@ function renderDevices(devices) {
     return;
   }
   const fragment = document.createDocumentFragment();
+  const activityOverview = inputActivityOverview();
+  if (activityOverview) fragment.append(activityOverview);
   for (const device of devices) fragment.append(createDeviceCard(device));
   listElement.append(fragment);
 }

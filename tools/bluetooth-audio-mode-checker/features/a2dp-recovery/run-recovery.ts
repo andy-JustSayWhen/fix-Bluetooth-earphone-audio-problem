@@ -15,7 +15,6 @@ import type {
 } from "../../shared/audio-device-types/index.ts";
 import {
   diagnoseFormatRequestCause,
-  diagnoseLinkResidualCause,
   readRecentSystemAudioEvidence,
   readSystemAudioEvidenceSince,
   type FormatRequestCause,
@@ -52,6 +51,7 @@ export type RecoveryRuntime = {
   readEvidence: () => FormatRequestEvidence;
   readEvidenceSince: (startedAtMs: number) => FormatRequestEvidence;
   readModeAssessment: (name: string) => AudioModeAssessment | null;
+  readModeAssessments?: () => AudioModeAssessment[];
   setDefaultDevice: (direction: "input" | "output", name: string) => void;
   reconnectDevice: (name: string) => void;
 };
@@ -66,6 +66,7 @@ export const systemRuntime: RecoveryRuntime = {
   readEvidence: () => readRecentSystemAudioEvidence(10),
   readEvidenceSince: readSystemAudioEvidenceSince,
   readModeAssessment: () => null,
+  readModeAssessments: () => [],
   setDefaultDevice: setDefaultAudioDevice,
   reconnectDevice: reconnectBluetoothDevice,
 };
@@ -74,6 +75,7 @@ type CauseMatch = {
   diagnosis: RecoveryDiagnosis;
   processes: RunningProcess[];
   routeChoices: RecoveryRouteChoice[];
+  occupancyUsers: MicrophoneUser[];
 };
 
 type ProcessActionResult = {
@@ -120,7 +122,19 @@ function currentModeAssessment(
   runtime: RecoveryRuntime,
   request: RecoveryRequest,
 ): AudioModeAssessment | null {
-  return runtime.readModeAssessment(request.name) ?? request.context?.targetAssessment ?? null;
+  return currentModeAssessments(runtime, request).find((assessment) => assessment.name === request.name) ??
+    runtime.readModeAssessment(request.name) ?? request.context?.targetAssessment ?? null;
+}
+
+function currentModeAssessments(
+  runtime: RecoveryRuntime,
+  request: RecoveryRequest,
+): AudioModeAssessment[] {
+  const live = runtime.readModeAssessments?.() ?? [];
+  if (live.length > 0) return live;
+  if ((request.context?.deviceAssessments?.length ?? 0) > 0) return request.context?.deviceAssessments ?? [];
+  const target = runtime.readModeAssessment(request.name) ?? request.context?.targetAssessment ?? null;
+  return target ? [target] : [];
 }
 
 function currentDefaultName(
@@ -192,51 +206,120 @@ function identifyProcesses(
   };
 }
 
+function isPhysicalInputDevice(device: RawAudioDevice): boolean {
+  if (device.inputChannels <= 0 || !device.transport) return false;
+  if (["virtual", "aggregate", "unknown"].includes(device.transport)) return false;
+  return !/audiotap|audio tap|loopback|soundflower|blackhole/i.test(
+    `${device.name} ${device.uid} ${device.manufacturer}`,
+  );
+}
+
+function confirmedOccupancyUsers(
+  users: MicrophoneUser[],
+  devices: RawAudioDevice[],
+  assessments: AudioModeAssessment[],
+): MicrophoneUser[] {
+  const physicalInputs = new Map(devices
+    .filter(isPhysicalInputDevice)
+    .map((device) => [device.name, device] as const));
+  const assessmentByName = new Map(assessments.map((assessment) => [assessment.name, assessment] as const));
+  return users.flatMap((user) => {
+    const physicalDeviceNames = [...new Set(user.devices.filter((deviceName) => physicalInputs.has(deviceName)))];
+    const confirmedDeviceNames = physicalDeviceNames.filter((deviceName) =>
+      assessmentByName.get(deviceName)?.audioLinkType === "tsco"
+    );
+    return confirmedDeviceNames.length > 0 ? [{
+      ...user,
+      inputActivityKind: "已确认实体麦克风占用" as const,
+      physicalDeviceNames,
+      confirmedDeviceNames,
+    }] : [];
+  });
+}
+
+function multiEndpointCondition(
+  name: string,
+  devices: RawAudioDevice[],
+  targetAssessment: AudioModeAssessment | null,
+) {
+  const input = devices.find((device) => device.isDefaultInput && device.inputChannels > 0);
+  const output = devices.find((device) => device.isDefaultOutput && device.outputChannels > 0);
+  const differentBluetoothEndpoints = Boolean(
+    input && output && isBluetooth(input) && isBluetooth(output) && input.name !== output.name,
+  );
+  const targetHasTsco = targetAssessment?.name === name && targetAssessment.audioLinkType === "tsco";
+  return { confirmed: differentBluetoothEndpoints && targetHasTsco, input, output, targetHasTsco };
+}
+
 function diagnoseCause(
   name: string,
   devices: RawAudioDevice[],
   users: MicrophoneUser[],
   evidence: FormatRequestEvidence | null,
   runtime: RecoveryRuntime,
+  request: RecoveryRequest,
 ): CauseMatch {
-  if (users.length > 0) {
-    const identified = identifyProcesses(users, runtime);
-    const confirmed = identified.processes.length > 0 && identified.missing.length === 0;
+  const assessments = currentModeAssessments(runtime, request);
+  const targetAssessment = assessments.find((assessment) => assessment.name === name) ??
+    runtime.readModeAssessment(name) ?? request.context?.targetAssessment ?? null;
+  const multiEndpoint = multiEndpointCondition(name, devices, targetAssessment);
+  if (multiEndpoint.confirmed) {
     return {
       diagnosis: {
-        kind: selectCauseRoute(confirmed, false, false),
-        confidence: confirmed ? "已确认" : "高度疑似",
-        summary: confirmed
-          ? "本机程序正在实际读取当前麦克风，先按固定优先级尝试解除占用"
-          : "检测到麦克风读取者，但无法完整复核进程身份",
-        evidence: users.map((user) => `${user.name}（进程号 ${user.pid}）正在读取：${user.devices.join("、") || "未知麦克风"}`),
-      },
-      processes: identified.processes,
-      routeChoices: [],
-    };
-  }
-
-  const target = targetOutput(devices, name);
-  const targetAssessment = runtime.readModeAssessment(name);
-  const input = devices.find((device) => device.isDefaultInput && device.inputChannels > 0);
-  const output = devices.find((device) => device.isDefaultOutput && device.outputChannels > 0);
-  const targetRate = actualOutputRate(target);
-  if (targetAssessment?.mode === "HFP_HSP" && targetAssessment.isDefaultOutput &&
-      target?.isDefaultOutput && targetRate !== null && targetRate <= 16_000 &&
-      input && output && isBluetooth(input) && isBluetooth(output) && input.name !== output.name) {
-    return {
-      diagnosis: {
-        kind: "多端点会话类",
+        kind: selectCauseRoute(true, false, false, false),
         confidence: "已确认",
-        summary: "当前输入和输出来自两台不同的蓝牙设备，目标输出仍处于 HFP",
+        summary: "当前输入和输出来自两台不同的蓝牙设备，且目标设备最新链路为 tsco",
         evidence: [
-          `当前输入：${input.name}`,
-          `当前输出：${output.name}`,
-          `目标输出：${targetRate / 1_000} kHz`,
+          `当前输入：${multiEndpoint.input?.name ?? "未知"}`,
+          `当前输出：${multiEndpoint.output?.name ?? "未知"}`,
+          "目标设备最新链路：tsco",
         ],
       },
       processes: [],
       routeChoices: createMultiEndpointRouteChoices(devices, name),
+      occupancyUsers: [],
+    };
+  }
+
+  const occupancyUsers = confirmedOccupancyUsers(users, devices, assessments);
+  const identified = identifyProcesses(occupancyUsers, runtime);
+  if (identified.processes.length > 0) {
+    const currentUsers = occupancyUsers.filter((user) =>
+      identified.processes.some((processInfo) => processInfo.pid === user.pid)
+    );
+    return {
+      diagnosis: {
+        kind: selectCauseRoute(false, true, false, false),
+        confidence: "已确认",
+        summary: "已确认本机进程关联实体麦克风端点，且该麦克风所属蓝牙设备最新链路为 tsco",
+        evidence: currentUsers.flatMap((user) => (user.confirmedDeviceNames ?? []).map((deviceName) =>
+          `${user.name}（进程号 ${user.pid}）正在读取实体麦克风 ${deviceName}；该设备最新链路为 tsco`
+        )),
+      },
+      processes: identified.processes,
+      routeChoices: [],
+      occupancyUsers: currentUsers,
+    };
+  }
+
+  const target = targetOutput(devices, name);
+  if (targetAssessment?.audioLinkType === "tsco") {
+    return {
+      diagnosis: {
+        kind: selectCauseRoute(false, false, true, false),
+        confidence: "已确认",
+        summary: "当前没有已确认实体麦克风占用，但目标设备最新链路仍为 tsco",
+        evidence: [
+          `目标设备：${name}`,
+          "目标设备最新链路：tsco",
+          users.length > 0
+            ? "检测到声音输入活动，但没有形成进程、实体麦克风端点和 tsco 三段完整占用证据"
+            : "当前没有声音输入活动形成实体麦克风占用证据",
+        ],
+      },
+      processes: [],
+      routeChoices: [],
+      occupancyUsers: [],
     };
   }
   if (!target || !evidence) {
@@ -249,6 +332,7 @@ function diagnoseCause(
       },
       processes: [],
       routeChoices: [],
+      occupancyUsers: [],
     };
   }
 
@@ -259,7 +343,7 @@ function diagnoseCause(
     )
     .map((device) => device.name);
   const format = diagnoseFormatRequestCause(evidence, name, lowRateBluetoothOutputNames, runtime.readProcess);
-  const kind = selectCauseRoute(false, false, format.confidence === "已确认");
+  const kind = selectCauseRoute(false, false, false, format.confidence === "已确认");
   if (kind === "格式请求类") {
     return {
       diagnosis: {
@@ -270,23 +354,7 @@ function diagnoseCause(
       },
       processes: format.requester ? [format.requester] : [],
       routeChoices: [],
-    };
-  }
-
-  const residual = diagnoseLinkResidualCause(evidence, name, lowRateBluetoothOutputNames);
-  if (targetAssessment?.mode === "HFP_HSP" && residual.confidence === "高度疑似") {
-    return {
-      diagnosis: {
-        kind: "链路残留类",
-        confidence: "高度疑似",
-        summary: "最近发生过蓝牙输入启动并进入 tsco，当前没有麦克风读取者，但设备仍停留在 HFP",
-        evidence: [
-          residual.startIo ? `输入启动原文：${residual.startIo.raw}` : "没有输入启动原文",
-          residual.matchingTsco ? `通话链路原文：${residual.matchingTsco.raw}` : "没有匹配的通话链路原文",
-        ],
-      },
-      processes: [],
-      routeChoices: [],
+      occupancyUsers: [],
     };
   }
 
@@ -299,6 +367,7 @@ function diagnoseCause(
     },
     processes: [],
     routeChoices: [],
+    occupancyUsers: [],
   };
 }
 
@@ -513,6 +582,7 @@ export async function runRecovery(
     defaultOutput: currentDefaultName(firstDevices, "output"),
     targetSampleRate: actualOutputRate(firstTarget),
     targetAssessment: runtime.readModeAssessment(name),
+    deviceAssessments: runtime.readModeAssessments?.() ?? [],
   };
   const state: RecoveryRoundState = request._roundState ? {
     ...request._roundState,
@@ -543,6 +613,7 @@ export async function runRecovery(
   const originalInput = context.defaultInput;
   const originalOutput = context.defaultOutput;
   const initialRate = context.targetSampleRate ?? actualOutputRate(firstTarget);
+  const targetAssessment = currentModeAssessment(runtime, { ...request, context });
   const unique = (items: string[]) => [...new Set(items)];
   const handledCause = () => state.processAttempts.length > 0 || state.linkResidualAttempted;
 
@@ -576,13 +647,12 @@ export async function runRecovery(
   });
 
   if (!request._roundState) {
-    reportProgress({ stage: "正在保存现场", message: "正在保存点击时的输入、输出、采样率和麦克风占用。" });
-    addStep(name, steps, "保存现场", "成功", `点击时间：${context.clickedAt}；输入：${originalInput ?? "未知"}；输出：${originalOutput ?? "未知"}；目标采样率：${initialRate ?? "未知"}`);
+    reportProgress({ stage: "正在保存现场", message: "正在保存点击时的输入、输出、模式、每设备链路和进程端点关联。" });
+    addStep(name, steps, "保存现场", "成功", `点击时间：${context.clickedAt}；输入：${originalInput ?? "未知"}；输出：${originalOutput ?? "未知"}；目标采样率：${initialRate ?? "未知"}；目标链路：${targetAssessment?.audioLinkType ?? "无法确认"}`);
   } else {
     reportProgress({ stage: "正在定位原因", message: "正在沿用原点击现场和本轮处理记录继续修复。" });
   }
 
-  const targetAssessment = currentModeAssessment(runtime, { ...request, context });
   const targetRate = currentOutputRate(runtime, name);
   if (targetAssessment?.mode !== "HFP_HSP") {
     const alreadyRecovered = targetAssessment !== null;
@@ -610,16 +680,21 @@ export async function runRecovery(
 
   if (request._confirmedRouteChoice) {
     const { choice, diagnosis } = request._confirmedRouteChoice;
-    reportProgress({ stage: "正在执行处理", message: `正在应用已确认组合：${choice.label}` });
-    runtime.setDefaultDevice(choice.direction, choice.deviceName);
-    const changed = await waitForRoute(choice.direction, choice.deviceName, runtime);
-    const routeStable = changed && await verifyStableRouteChoice(choice, runtime);
-    const modeStable = routeStable ? await verifyStableRecovery(name, runtime, reportProgress, 3) : null;
-    const stable = routeStable && modeStable !== null;
-    addStep(name, steps, "应用多端点替代组合", stable ? "成功" : "失败", choice.label);
-    return result(stable ? "绕过成功" : "未恢复", diagnosis, "多端点路由组合", {
-      sampleRate: modeStable?.rate ?? currentOutputRate(runtime, name),
-    });
+    const latestTarget = currentModeAssessment(runtime, { ...request, context });
+    const stillConfirmed = multiEndpointCondition(name, runtime.readDevices(), latestTarget).confirmed;
+    if (stillConfirmed) {
+      reportProgress({ stage: "正在执行处理", message: `正在应用已确认组合：${choice.label}` });
+      runtime.setDefaultDevice(choice.direction, choice.deviceName);
+      const changed = await waitForRoute(choice.direction, choice.deviceName, runtime);
+      const routeStable = changed && await verifyStableRouteChoice(choice, runtime);
+      const modeStable = routeStable ? await verifyStableRecovery(name, runtime, reportProgress, 3) : null;
+      const stable = routeStable && modeStable !== null;
+      addStep(name, steps, "应用多端点替代组合", stable ? "成功" : "失败", choice.label);
+      return result(stable ? "绕过成功" : "未恢复", diagnosis, "多端点路由组合", {
+        sampleRate: modeStable?.rate ?? currentOutputRate(runtime, name),
+      });
+    }
+    addStep(name, steps, "复核多端点选择", "跳过", "双蓝牙组合与目标 tsco 不再同时成立，旧选择未执行，继续按最新现场匹配原因");
   }
 
   for (const guard of request._approvedRelaunchGuards ?? []) {
@@ -669,35 +744,45 @@ export async function runRecovery(
     const users = prefetchedUsersForReview ?? await readCurrentUsers(false);
     prefetchedUsersForReview = null;
     const devices = runtime.readDevices();
-    let cause = diagnoseCause(name, devices, users, null, runtime);
-    if (users.length === 0 && cause.diagnosis.kind !== "多端点会话类") {
+    let cause = diagnoseCause(name, devices, users, null, runtime, { ...request, context });
+    if (cause.diagnosis.kind === "证据不足") {
       const evidence = state.evidenceSinceMs !== null
         ? runtime.readEvidenceSince(state.evidenceSinceMs)
         : !state.initialEvidenceRead ? runtime.readEvidence() : null;
       if (state.evidenceSinceMs !== null) state.evidenceSinceMs = null;
       else if (!state.initialEvidenceRead) state.initialEvidenceRead = true;
-      cause = diagnoseCause(name, devices, users, evidence, runtime);
+      cause = diagnoseCause(name, devices, users, evidence, runtime, { ...request, context });
     }
-    const residualConfirmed = users.length === 0 && state.releasedBluetoothInputPrograms.length > 0 &&
-      runtime.readModeAssessment(name)?.mode === "HFP_HSP";
-    if (residualConfirmed && (cause.diagnosis.kind === "链路残留类" || cause.diagnosis.kind === "证据不足")) {
-      cause = {
-        diagnosis: {
-          kind: "链路残留类",
-          confidence: "已确认",
-          summary: "已确认的蓝牙输入占用已经结束且没有新的读取者，但设备仍停留在 HFP",
-          evidence: [
-            `本轮已经结束蓝牙输入占用：${unique(state.releasedBluetoothInputPrograms).join("、")}`,
-            "复查未发现新的麦克风读取者",
-            "占用结束后目标模式仍为 HFP/HSP",
-          ],
-        },
-        processes: [],
-        routeChoices: [],
-      };
-    }
+    const assessments = currentModeAssessments(runtime, { ...request, context });
+    const latestTarget = assessments.find((assessment) => assessment.name === name) ?? null;
+    const multiEndpoint = multiEndpointCondition(name, devices, latestTarget);
+    const occupancyUsers = confirmedOccupancyUsers(users, devices, assessments);
+    detailedLog("info", "a2dp-recovery.cause-gates", {
+      deviceName: name,
+      causeReviewCount: state.causeReviewCount,
+      defaultInput: multiEndpoint.input?.name ?? null,
+      defaultOutput: multiEndpoint.output?.name ?? null,
+      differentBluetoothEndpoints: Boolean(
+        multiEndpoint.input && multiEndpoint.output &&
+        isBluetooth(multiEndpoint.input) && isBluetooth(multiEndpoint.output) &&
+        multiEndpoint.input.name !== multiEndpoint.output.name,
+      ),
+      targetAudioLinkType: latestTarget?.audioLinkType ?? null,
+      multiEndpointConfirmed: multiEndpoint.confirmed,
+      inputActivities: users.map((user) => ({
+        pid: user.pid,
+        processName: user.name,
+        reportedDevices: user.devices,
+      })),
+      confirmedOccupancy: occupancyUsers.map((user) => ({
+        pid: user.pid,
+        processName: user.name,
+        microphoneDeviceNames: user.confirmedDeviceNames ?? [],
+      })),
+      selectedCause: cause.diagnosis.kind,
+    });
     addStep(name, steps, "重新匹配当前原因", cause.diagnosis.confidence === "已确认" ? "成功" : "失败", `${cause.diagnosis.kind}：${cause.diagnosis.summary}`);
-    return { cause, users };
+    return { cause, users: cause.occupancyUsers };
   };
 
   const performInputReset = async (stage: "链路残留处理" | "声音链路重建兜底"): Promise<StableRecovery | null> => {
@@ -764,13 +849,12 @@ export async function runRecovery(
     return result("未恢复", diagnosis, recoveryPath, { sampleRate: finalRate, message });
   };
 
-  reportProgress({ stage: "正在定位原因", message: "正在先检查并尝试解除麦克风占用，再根据最新现场匹配当前原因。" });
+  reportProgress({ stage: "正在定位原因", message: "正在依次检查多端点与 tsco、实体麦克风占用、链路残留和其他证据。" });
   let matched: { cause: CauseMatch; users: MicrophoneUser[] } | null = null;
   if (!state.initialOccupancyChecked) {
     state.initialOccupancyChecked = true;
     const users = await readCurrentUsers(true);
-    if (users.length > 0) matched = { cause: diagnoseCause(name, runtime.readDevices(), users, null, runtime), users };
-    else prefetchedUsersForReview = users;
+    prefetchedUsersForReview = users;
   }
 
   while (true) {
@@ -810,6 +894,9 @@ export async function runRecovery(
           cause: processCause,
           command: processInfo.command,
           processName: processInfo.name,
+          microphoneDeviceName: processCause === "麦克风占用类"
+            ? users.find((user) => user.pid === processInfo.pid)?.confirmedDeviceNames?.[0]
+            : undefined,
         }] as const)).values()];
         const processNames = unique(pendingGuards.map((guard) => guard.processName));
         const neverExited = repeatedProcesses.some((processInfo) => state.processAttempts.some((attempt) =>
@@ -841,10 +928,14 @@ export async function runRecovery(
       ));
       if (freshProcesses.length === 0) continue;
       for (const processInfo of freshProcesses) {
+        const microphoneDeviceName = processCause === "麦克风占用类"
+          ? users.find((user) => user.pid === processInfo.pid)?.confirmedDeviceNames?.[0]
+          : undefined;
         state.processAttempts.push({
           cause: processCause,
           command: processInfo.command,
           processName: processInfo.name,
+          microphoneDeviceName,
           automaticProcessPid: processInfo.pid,
           automaticProcessStartedAt: processInfo.startedAt,
           automaticAttempted: true,

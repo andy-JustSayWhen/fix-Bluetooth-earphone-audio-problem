@@ -54,18 +54,22 @@ function startThisBootRelaunchGuard(command: string, processName: string): void 
 
 export async function retainCurrentMicrophoneGuards(
   guards: RelaunchGuardRequest[],
-  readUsers: () => Promise<MicrophoneUser[]> = () => readMicrophoneUsersAsync(2_000),
+  readConfirmedUsers: () => Promise<MicrophoneUser[]> = () => readMicrophoneUsersAsync(2_000),
   readProcess: (pid: number) => RunningProcess | null = readRunningProcess,
 ): Promise<RelaunchGuardRequest[]> {
   const microphoneGuards = guards.filter((guard) => guard.cause === "麦克风占用类");
   if (microphoneGuards.length === 0) return guards;
   try {
-    const currentCommands = new Set((await readUsers())
-      .map((user) => readProcess(user.pid)?.command)
-      .filter((command): command is string => Boolean(command)));
-    return guards.filter((guard) =>
-      guard.cause !== "麦克风占用类" || currentCommands.has(guard.command)
-    );
+    const currentUsers = await readConfirmedUsers();
+    return guards.filter((guard) => {
+      if (guard.cause !== "麦克风占用类") return true;
+      return currentUsers.some((user) => {
+        const command = readProcess(user.pid)?.command;
+        return command === guard.command &&
+          user.inputActivityKind === "已确认实体麦克风占用" &&
+          (!guard.microphoneDeviceName || user.confirmedDeviceNames?.includes(guard.microphoneDeviceName));
+      });
+    });
   } catch (error) {
     detailedLog("warn", "a2dp-recovery.authorization-recheck-failed", { error });
     return guards.filter((guard) => guard.cause !== "麦克风占用类");
@@ -75,10 +79,14 @@ export async function retainCurrentMicrophoneGuards(
 export async function recoverA2dp(
   request: RecoveryRequest,
   onProgress: (progress: RecoveryProgress) => void = () => {},
-  readModeAssessment: (name: string) => AudioModeAssessment | null = () =>
-    request.context?.targetAssessment ?? null,
+  readModeAssessments: () => AudioModeAssessment[] = () =>
+    request.context?.deviceAssessments ?? (request.context?.targetAssessment ? [request.context.targetAssessment] : []),
+  readConfirmedMicrophoneUsers: () => Promise<MicrophoneUser[]> = () => Promise.resolve([]),
 ): Promise<A2dpRecoveryResult> {
-  const approvedRelaunchGuards = await retainCurrentMicrophoneGuards(request._approvedRelaunchGuards ?? []);
+  const approvedRelaunchGuards = await retainCurrentMicrophoneGuards(
+    request._approvedRelaunchGuards ?? [],
+    readConfirmedMicrophoneUsers,
+  );
   const workerRequest = approvedRelaunchGuards.length === (request._approvedRelaunchGuards?.length ?? 0)
     ? request
     : { ...request, _approvedRelaunchGuards: approvedRelaunchGuards };
@@ -95,16 +103,16 @@ export async function recoverA2dp(
     let stderr = "";
     let result: A2dpRecoveryResult | null = null;
     let lastModeMessage = "";
-    const syncModeAssessment = () => {
+    const syncModeAssessments = () => {
       if (child.stdin.destroyed) return;
-      const assessment = readModeAssessment(request.name);
-      const message = JSON.stringify({ type: "mode-assessment", assessment });
+      const assessments = readModeAssessments();
+      const message = JSON.stringify({ type: "mode-assessments", assessments });
       if (message === lastModeMessage) return;
       lastModeMessage = message;
       child.stdin.write(`${message}\n`);
     };
-    syncModeAssessment();
-    const modeSyncTimer = setInterval(syncModeAssessment, 100);
+    syncModeAssessments();
+    const modeSyncTimer = setInterval(syncModeAssessments, 100);
     child.stdin.on("error", () => {
       // The worker may close stdin immediately after returning its final result.
     });

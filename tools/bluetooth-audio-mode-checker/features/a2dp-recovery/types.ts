@@ -66,6 +66,7 @@ export type RecoveryRequestContext = {
   defaultOutput: string | null;
   targetSampleRate: number | null;
   targetAssessment: AudioModeAssessment | null;
+  deviceAssessments?: AudioModeAssessment[];
   occupancySnapshot?: {
     capturedAt: string;
     users: MicrophoneUser[];
@@ -76,6 +77,7 @@ export type RecoveryProcessAttempt = {
   cause: "麦克风占用类" | "格式请求类";
   command: string;
   processName: string;
+  microphoneDeviceName?: string;
   automaticProcessPid?: number;
   automaticProcessStartedAt?: string;
   automaticAttempted: boolean;
@@ -104,6 +106,7 @@ export type RelaunchGuardRequest = {
   cause: "麦克风占用类" | "格式请求类";
   command: string;
   processName: string;
+  microphoneDeviceName?: string;
 };
 
 export type RecoveryContinuation = {

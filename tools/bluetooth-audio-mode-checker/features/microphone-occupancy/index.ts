@@ -6,8 +6,46 @@ import {
 import type {
   ActiveInputSnapshot,
   AudioModeAssessment,
+  MicrophoneUser,
   MicrophoneOccupancy,
 } from "../../shared/audio-device-types/index.ts";
+
+function isPhysicalInputAssessment(device: AudioModeAssessment): boolean {
+  if (device.inputChannels <= 0 || !device.inputTransport) return false;
+  if (["virtual", "aggregate", "unknown"].includes(device.inputTransport)) return false;
+  return !/audiotap|audio tap|loopback|soundflower|blackhole/i.test(device.name);
+}
+
+function isSystemAudioCapture(user: MicrophoneUser): boolean {
+  return user.devices.some((name) => /audiotap|audio tap/i.test(name));
+}
+
+export function classifyInputActivities(
+  devices: AudioModeAssessment[],
+  users: MicrophoneUser[],
+): MicrophoneUser[] {
+  const byName = new Map(devices.map((device) => [device.name, device] as const));
+  return users.map((user) => {
+    const physicalDeviceNames = [...new Set(user.devices.filter((name) => {
+      const device = byName.get(name);
+      return device !== undefined && isPhysicalInputAssessment(device);
+    }))];
+    const confirmedDeviceNames = physicalDeviceNames.filter((name) =>
+      byName.get(name)?.audioLinkType === "tsco"
+    );
+    const inputActivityKind: MicrophoneUser["inputActivityKind"] = confirmedDeviceNames.length > 0
+      ? "已确认实体麦克风占用"
+      : isSystemAudioCapture(user)
+        ? "系统声音采集"
+        : "未确认麦克风占用的输入活动";
+    return {
+      ...user,
+      inputActivityKind,
+      physicalDeviceNames,
+      confirmedDeviceNames,
+    };
+  });
+}
 
 export function attachMicrophoneOccupancy(devices: AudioModeAssessment[]): AudioModeAssessment[] {
   const users = readMicrophoneUsers();
@@ -71,8 +109,12 @@ function attachOccupancy(
   devices: AudioModeAssessment[],
   users: ReturnType<typeof readMicrophoneUsers>,
 ): AudioModeAssessment[] {
+  const activities = classifyInputActivities(devices, users);
   return devices.map((device) => {
-    const matchingUsers = users.filter((user) => user.devices.includes(device.name));
+    const matchingUsers = activities.filter((user) =>
+      user.inputActivityKind === "已确认实体麦克风占用" &&
+      user.confirmedDeviceNames?.includes(device.name)
+    );
     const microphoneOccupancy: MicrophoneOccupancy = {
       isInUse: matchingUsers.length > 0,
       users: matchingUsers,

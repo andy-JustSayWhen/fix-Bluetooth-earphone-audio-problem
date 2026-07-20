@@ -20,7 +20,8 @@ const writeProgress = (progress: RecoveryProgress) => {
   process.stdout.write(`${JSON.stringify({ type: "progress", progress })}\n`);
 };
 
-let latestAssessment = request.context?.targetAssessment ?? null;
+let latestAssessments = request.context?.deviceAssessments ??
+  (request.context?.targetAssessment ? [request.context.targetAssessment] : []);
 let pendingInput = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk: string) => {
@@ -31,9 +32,9 @@ process.stdin.on("data", (chunk: string) => {
     try {
       const message = JSON.parse(line) as {
         type?: string;
-        assessment?: AudioModeAssessment | null;
+        assessments?: AudioModeAssessment[];
       };
-      if (message.type === "mode-assessment") latestAssessment = message.assessment ?? null;
+      if (message.type === "mode-assessments") latestAssessments = message.assessments ?? [];
     } catch {
       // Ignore a malformed live update and keep the last valid server assessment.
     }
@@ -42,7 +43,8 @@ process.stdin.on("data", (chunk: string) => {
 
 runRecovery(request, {
   ...systemRuntime,
-  readModeAssessment: (name) => latestAssessment?.name === name ? latestAssessment : null,
+  readModeAssessment: (name) => latestAssessments.find((assessment) => assessment.name === name) ?? null,
+  readModeAssessments: () => latestAssessments,
 }, writeProgress).then(
   (result) => {
     process.stdin.destroy();

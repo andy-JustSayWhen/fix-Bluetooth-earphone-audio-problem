@@ -31,11 +31,12 @@ function device(partial: Partial<RawAudioDevice>): RawAudioDevice {
   };
 }
 
-test("原因路由严格按占用、多端点、格式请求的优先级", () => {
-  assert.equal(selectCauseRoute(true, true, true), "麦克风占用类");
-  assert.equal(selectCauseRoute(false, true, true), "多端点会话类");
-  assert.equal(selectCauseRoute(false, false, true), "格式请求类");
-  assert.equal(selectCauseRoute(false, false, false), "证据不足");
+test("原因路由严格按多端点、占用、残留、格式请求的优先级", () => {
+  assert.equal(selectCauseRoute(true, true, true, true), "多端点会话类");
+  assert.equal(selectCauseRoute(false, true, true, true), "麦克风占用类");
+  assert.equal(selectCauseRoute(false, false, true, true), "链路残留类");
+  assert.equal(selectCauseRoute(false, false, false, true), "格式请求类");
+  assert.equal(selectCauseRoute(false, false, false, false), "证据不足");
 });
 
 test("多端点会话只生成规格允许的四类替代组合", () => {
@@ -85,7 +86,15 @@ test("麦克风占用授权只保留当前仍在读取的同一路径", async ()
   ];
   const result = await retainCurrentMicrophoneGuards(
     guards,
-    async () => [{ pid: 11, name: "replayd", bundleId: "", devices: ["未知麦克风"] }],
+    async () => [{
+      pid: 11,
+      name: "replayd",
+      bundleId: "",
+      devices: ["实体麦克风"],
+      inputActivityKind: "已确认实体麦克风占用",
+      physicalDeviceNames: ["实体麦克风"],
+      confirmedDeviceNames: ["实体麦克风"],
+    }],
     (pid) => pid === 11 ? {
       pid,
       name: "replayd",
@@ -95,6 +104,35 @@ test("麦克风占用授权只保留当前仍在读取的同一路径", async ()
   );
 
   assert.deepEqual(result, [guards[0], guards[2]]);
+});
+
+test("麦克风占用授权必须仍对应同一个实体麦克风", async () => {
+  const guard = {
+    cause: "麦克风占用类" as const,
+    command: "/usr/libexec/replayd",
+    processName: "replayd",
+    microphoneDeviceName: "蓝牙耳机 K03S",
+  };
+  const result = await retainCurrentMicrophoneGuards(
+    [guard],
+    async () => [{
+      pid: 11,
+      name: "replayd",
+      bundleId: "",
+      devices: ["其他实体麦克风"],
+      inputActivityKind: "已确认实体麦克风占用",
+      physicalDeviceNames: ["其他实体麦克风"],
+      confirmedDeviceNames: ["其他实体麦克风"],
+    }],
+    (pid) => pid === 11 ? {
+      pid,
+      name: "replayd",
+      command: "/usr/libexec/replayd",
+      startedAt: "Mon Jul 20 11:45:39 2026",
+    } : null,
+  );
+
+  assert.deepEqual(result, []);
 });
 
 test("授权前占用读取失败时不得启动麦克风进程阻止任务", async () => {
@@ -129,7 +167,7 @@ test("一键修复后台持续使用模式判定功能的最新结论", () => {
   const runnerSource = readFileSync(join(moduleDirectory, "runner.ts"), "utf8");
 
   assert.match(appSource, /targetAssessment: currentDevice \?\? null/);
-  assert.match(appSource, /cachedState\?\.devices\.find\(\(device\) => device\.name === body\.name\)/);
-  assert.match(featureSource, /type: "mode-assessment", assessment/);
-  assert.match(runnerSource, /readModeAssessment: \(name\) => latestAssessment\?\.name === name/);
+  assert.match(appSource, /\(\) => cachedState\?\.devices \?\? \[\]/);
+  assert.match(featureSource, /type: "mode-assessments", assessments/);
+  assert.match(runnerSource, /readModeAssessments: \(\) => latestAssessments/);
 });

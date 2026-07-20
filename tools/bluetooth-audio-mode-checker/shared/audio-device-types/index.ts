@@ -78,6 +78,12 @@ export type MicrophoneUser = {
   name: string;
   bundleId: string;
   devices: string[];
+  inputActivityKind?:
+    | "已确认实体麦克风占用"
+    | "系统声音采集"
+    | "未确认麦克风占用的输入活动";
+  physicalDeviceNames?: string[];
+  confirmedDeviceNames?: string[];
 };
 
 export type MicrophoneOccupancy = {

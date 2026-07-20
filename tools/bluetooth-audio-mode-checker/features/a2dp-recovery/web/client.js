@@ -55,7 +55,9 @@ export function shouldContinueAfterOccupancyEnded(feedback, microphoneUsers, occ
   const capturedAt = Date.parse(occupancyCapturedAt);
   const recordedAt = Date.parse(feedback.recordedAt ?? "");
   if (!Number.isFinite(capturedAt) || !Number.isFinite(recordedAt) || capturedAt <= recordedAt) return false;
-  const activeNames = new Set((microphoneUsers ?? []).map((user) => user.name));
+  const activeNames = new Set((microphoneUsers ?? [])
+    .filter((user) => user.inputActivityKind === "已确认实体麦克风占用")
+    .map((user) => user.name));
   return !action.processNames.some((name) => activeNames.has(name));
 }
 
@@ -175,7 +177,7 @@ export function createA2dpRecoveryController({
           ? "正在沿用原修复回合，重新确认所列进程仍在读取麦克风。"
           : continuingAfterOccupancyEnded
             ? "较新的占用快照确认相关进程已停止读取，正在撤销过时授权并沿用原回合继续。"
-            : "正在保存点击现场，然后检查并优先解除麦克风占用。",
+            : "正在保存点击现场，然后依次检查多端点与 tsco、实体麦克风占用和链路残留。",
     }, false);
     expandedDevices.add(device.name);
     renderAggregateTrigger();
