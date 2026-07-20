@@ -52,6 +52,7 @@ export type RecoveryActionRequired =
       prompt: string;
       processNames: string[];
       cause: "麦克风占用类" | "格式请求类";
+      triggerState: "still-running" | "restarted";
     };
 
 export type RecoveryProgress = {
@@ -75,7 +76,10 @@ export type RecoveryProcessAttempt = {
   cause: "麦克风占用类" | "格式请求类";
   command: string;
   processName: string;
+  automaticProcessPid?: number;
+  automaticProcessStartedAt?: string;
   automaticAttempted: boolean;
+  automaticExitConfirmed?: boolean;
   authorizedAttempted: boolean;
 };
 
@@ -97,6 +101,7 @@ export type RecoveryRoundState = {
 };
 
 export type RelaunchGuardRequest = {
+  cause: "麦克风占用类" | "格式请求类";
   command: string;
   processName: string;
 };

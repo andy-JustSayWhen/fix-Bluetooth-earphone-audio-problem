@@ -100,6 +100,7 @@ export type AudioRouteOption = {
 
 export type AudioModeState = {
   devices: AudioModeAssessment[];
+  microphoneUsers?: MicrophoneUser[];
   routes: {
     input: AudioRouteOption[];
     output: AudioRouteOption[];

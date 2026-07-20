@@ -16,8 +16,9 @@ import {
 } from "../features/bluetooth-audio-mode/index.ts";
 import {
   attachEmptyMicrophoneOccupancy,
-  attachMicrophoneOccupancyAsync,
+  attachMicrophoneOccupancyFromUsers,
   mergeMicrophoneOccupancy,
+  readAllMicrophoneUsersAsync,
   releaseMicrophoneUsers,
   shouldContinueOccupancyScanning,
   shouldStartOccupancyScanForInputActivity,
@@ -169,6 +170,7 @@ function main(): void {
   let latestInputSnapshot: ActiveInputSnapshot | null = null;
   const latestLinkSnapshots = new Map<string, BluetoothLinkSnapshot>();
   let latestOccupancyCapturedAt: string | null = null;
+  let latestMicrophoneUsers: AudioModeState["microphoneUsers"] = [];
   let inputActivityScanPending = false;
   let initialOccupancyScanScheduled = false;
   const pendingRelaunchAuthorizations = new Map<string, {
@@ -187,6 +189,7 @@ function main(): void {
 
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
+    microphoneUsers: latestMicrophoneUsers,
     refreshedAt: cachedStateUpdatedAt ?? new Date().toISOString(),
     occupancyCapturedAt: latestOccupancyCapturedAt,
   };
@@ -383,18 +386,24 @@ function main(): void {
       let continueScanning = false;
       const startedAt = performance.now();
       try {
-        const occupancySnapshot = await attachMicrophoneOccupancyAsync(cachedState.devices);
+        const microphoneUsers = await readAllMicrophoneUsersAsync();
+        const occupancySnapshot = attachMicrophoneOccupancyFromUsers(cachedState.devices, microphoneUsers);
+        latestMicrophoneUsers = microphoneUsers;
         latestOccupancyCapturedAt = new Date().toISOString();
-        continueScanning = shouldContinueOccupancyScanning(occupancySnapshot);
-        const nextFingerprint = JSON.stringify(occupancySnapshot.map((device) => ({
-          name: device.name,
-          users: device.microphoneOccupancy?.users ?? [],
-        })));
+        continueScanning = shouldContinueOccupancyScanning(occupancySnapshot, microphoneUsers);
+        const nextFingerprint = JSON.stringify({
+          devices: occupancySnapshot.map((device) => ({
+            name: device.name,
+            users: device.microphoneOccupancy?.users ?? [],
+          })),
+          microphoneUsers,
+        });
         if (nextFingerprint === occupancyFingerprint) return;
         occupancyFingerprint = nextFingerprint;
         detailedLog("info", "microphone-occupancy.changed", {
           source,
           durationMs: Number((performance.now() - startedAt).toFixed(3)),
+          microphoneUsers,
           devices: occupancySnapshot.map((device) => ({
             name: device.name,
             users: device.microphoneOccupancy?.users ?? [],
@@ -531,6 +540,7 @@ function main(): void {
           name?: unknown;
           routeChoiceId?: unknown;
           authorizeRelaunchBlock?: unknown;
+          continueAfterOccupancyEnded?: unknown;
         };
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
         if (body.routeChoiceId !== undefined && (typeof body.routeChoiceId !== "string" || body.routeChoiceId.length > 512)) {
@@ -539,28 +549,38 @@ function main(): void {
         if (body.authorizeRelaunchBlock !== undefined && typeof body.authorizeRelaunchBlock !== "boolean") {
           throw new Error("授权信息无效");
         }
-        if (body.routeChoiceId !== undefined && body.authorizeRelaunchBlock === true) {
-          throw new Error("输入输出选择和自动拉起阻止授权不能同时提交");
+        if (body.continueAfterOccupancyEnded !== undefined && typeof body.continueAfterOccupancyEnded !== "boolean") {
+          throw new Error("继续处理信息无效");
+        }
+        const continuationActions = [
+          body.routeChoiceId !== undefined,
+          body.authorizeRelaunchBlock === true,
+          body.continueAfterOccupancyEnded === true,
+        ].filter(Boolean).length;
+        if (continuationActions > 1) {
+          throw new Error("一次只能提交一种继续处理动作");
         }
         detailedLog("info", "a2dp-recovery.requested", {
           deviceName: body.name,
           continuation: body.authorizeRelaunchBlock === true
             ? "relaunch-authorization"
+            : body.continueAfterOccupancyEnded === true ? "occupancy-ended"
             : typeof body.routeChoiceId === "string" ? "route-choice" : "new-round",
         });
         const currentState = cachedState ?? readAudioModeState();
         const currentDevice = currentState.devices.find((device) => device.name === body.name);
         const currentInputName = currentState.routes.input.find((route) => route.isDefault)?.name ?? null;
         const currentOutputName = currentState.routes.output.find((route) => route.isDefault)?.name ?? null;
-        const allOccupancyUsers = [...new Map(currentState.devices
-          .flatMap((device) => device.microphoneOccupancy?.users ?? [])
+        const allOccupancyUsers = [...new Map((latestOccupancyCapturedAt
+          ? latestMicrophoneUsers ?? []
+          : currentState.devices.flatMap((device) => device.microphoneOccupancy?.users ?? []))
           .map((user) => [user.pid, user] as const)).values()];
         let recoveryContext: RecoveryRequestContext;
         let roundState: RecoveryRoundState | undefined;
         let approvedRelaunchGuards: RecoveryContinuation["pendingGuards"] | undefined;
         let confirmedRouteChoice: { choice: RecoveryRouteChoice; diagnosis: RecoveryDiagnosis } | undefined;
 
-        if (body.authorizeRelaunchBlock === true) {
+        if (body.authorizeRelaunchBlock === true || body.continueAfterOccupancyEnded === true) {
           const pending = pendingRelaunchAuthorizations.get(body.name);
           if (!pending || pending.expiresAt < Date.now()) {
             pendingRelaunchAuthorizations.delete(body.name);
@@ -574,7 +594,7 @@ function main(): void {
             pendingRelaunchAuthorizations.delete(body.name);
             throw new Error("当前输入输出已变化，旧授权对应的现场已经失效，请重新点击一键修复");
           }
-          approvedRelaunchGuards = currentDevice?.mode === "HFP_HSP"
+          approvedRelaunchGuards = body.authorizeRelaunchBlock === true && currentDevice?.mode === "HFP_HSP"
             ? pending.continuation.pendingGuards
             : [];
           pendingRelaunchAuthorizations.delete(body.name);

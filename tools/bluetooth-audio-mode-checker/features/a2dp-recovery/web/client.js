@@ -49,6 +49,16 @@ export function successfulRecoverySummary(result, deviceName) {
   return actions.join("，并");
 }
 
+export function shouldContinueAfterOccupancyEnded(feedback, microphoneUsers, occupancyCapturedAt) {
+  const action = feedback?.result?.actionRequired;
+  if (action?.kind !== "relaunch-authorization" || action.cause !== "麦克风占用类") return false;
+  const capturedAt = Date.parse(occupancyCapturedAt);
+  const recordedAt = Date.parse(feedback.recordedAt ?? "");
+  if (!Number.isFinite(capturedAt) || !Number.isFinite(recordedAt) || capturedAt <= recordedAt) return false;
+  const activeNames = new Set((microphoneUsers ?? []).map((user) => user.name));
+  return !action.processNames.some((name) => activeNames.has(name));
+}
+
 export function createA2dpRecoveryController({
   createElement,
   expandedDevices,
@@ -83,7 +93,9 @@ export function createA2dpRecoveryController({
     const obsoleteUnmarkedInspection = feedback?.result?.recoveryPath === "现场复核" &&
       !feedback.result?.actionRequired &&
       feedback.result?.diagnosis?.summary === "尚不能确认具体应用拒绝了当前双蓝牙组合";
-    if (obsoleteInspection || obsoleteIneligibleTarget || obsoleteUnmarkedInspection) {
+    const obsoleteAuthorization = feedback?.result?.actionRequired?.kind === "relaunch-authorization" &&
+      !["still-running", "restarted"].includes(feedback.result.actionRequired.triggerState);
+    if (obsoleteInspection || obsoleteIneligibleTarget || obsoleteUnmarkedInspection || obsoleteAuthorization) {
       delete storedFeedback[deviceName];
       removedLegacyInspection = true;
     }
@@ -113,17 +125,24 @@ export function createA2dpRecoveryController({
     runningDevices.add(device.name);
     const choosingRoute = Boolean(action.routeChoiceId);
     const authorizingRelaunchBlock = action.authorizeRelaunchBlock === true;
+    const continuingAfterOccupancyEnded = action.continueAfterOccupancyEnded === true;
     progressByDevice.set(
       device.name,
-      choosingRoute ? "正在切换输入输出…" : authorizingRelaunchBlock ? "正在应用本次开机授权…" : "正在保存现场…",
+      choosingRoute
+        ? "正在切换输入输出…"
+        : authorizingRelaunchBlock
+          ? "正在复核授权…"
+          : continuingAfterOccupancyEnded ? "正在按最新现场继续…" : "正在保存现场…",
     );
     setFeedback(device.name, {
       kind: "running",
       text: choosingRoute
         ? "正在按你的选择切换输入输出。"
         : authorizingRelaunchBlock
-          ? "正在沿用原修复回合，阻止已列出的进程在本次开机期间自动拉起。"
-          : "正在保存点击现场，然后检查并优先解除麦克风占用。",
+          ? "正在沿用原修复回合，重新确认所列进程仍在读取麦克风。"
+          : continuingAfterOccupancyEnded
+            ? "较新的占用快照确认相关进程已停止读取，正在撤销过时授权并沿用原回合继续。"
+            : "正在保存点击现场，然后检查并优先解除麦克风占用。",
     }, false);
     expandedDevices.add(device.name);
     renderDevices(getLastRenderedDevices());
@@ -221,9 +240,13 @@ export function createA2dpRecoveryController({
       const authorize = createElement(
         "button",
         "recovery-action is-danger",
-        processNames.length === 1
-          ? `授权本次开机阻止 ${processNames[0]} 自动拉起`
-          : "授权本次开机阻止上述进程自动拉起",
+        result.actionRequired.triggerState === "still-running" && processNames.length === 1
+          ? `授权本次开机持续阻止 ${processNames[0]} 运行`
+          : result.actionRequired.triggerState === "still-running"
+            ? "授权本次开机持续阻止上述进程运行"
+            : processNames.length === 1
+              ? `授权本次开机阻止 ${processNames[0]} 自动拉起`
+              : "授权本次开机阻止上述进程自动拉起",
       );
       authorize.type = "button";
       authorize.addEventListener("click", () => {
@@ -249,6 +272,14 @@ export function createA2dpRecoveryController({
     renderDevices(getLastRenderedDevices());
   }
 
+  function reconcilePendingAuthorizations(devices, microphoneUsers, occupancyCapturedAt) {
+    for (const [deviceName, feedback] of feedbackByDevice) {
+      if (runningDevices.has(deviceName) || !shouldContinueAfterOccupancyEnded(feedback, microphoneUsers, occupancyCapturedAt)) continue;
+      const device = devices.find((item) => item.name === deviceName);
+      if (device) recover(device, { continueAfterOccupancyEnded: true });
+    }
+  }
+
   return {
     feedbackByDevice,
     runningDevices,
@@ -257,6 +288,7 @@ export function createA2dpRecoveryController({
     recover,
     resultSection,
     handleProgress,
+    reconcilePendingAuthorizations,
     getPendingRouteChoice: () => [...feedbackByDevice.values()]
       .map((feedback) => feedback?.result)
       .find((result) => result?.actionRequired?.kind === "route-choice") ?? null,

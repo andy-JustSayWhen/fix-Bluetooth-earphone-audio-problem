@@ -676,8 +676,13 @@ test("等待授权结果必须明确列出未退出或再次触发的进程", as
   assert.equal(result.actionRequired?.kind === "relaunch-authorization"
     ? result.actionRequired.cause
     : null, "麦克风占用类");
+  assert.equal(result.actionRequired?.kind === "relaunch-authorization"
+    ? result.actionRequired.triggerState
+    : null, "still-running");
   assert.match(result.actionRequired?.prompt ?? "", /VoiceApp/);
-  assert.match(result.actionRequired?.prompt ?? "", /再次读取麦克风/);
+  assert.match(result.actionRequired?.prompt ?? "", /未能退出且仍在读取麦克风/);
+  assert.doesNotMatch(result.actionRequired?.prompt ?? "", /再次读取麦克风/);
+  assert.doesNotMatch(result.actionRequired?.prompt ?? "", /自动拉起/);
   assert.ok(result._continuation);
 });
 
@@ -739,7 +744,10 @@ test("格式请求进程二次命中时升级授权且不冒充麦克风占用",
         cause: "格式请求类",
         command: processInfo.command,
         processName: processInfo.name,
+        automaticProcessPid: processInfo.pid,
+        automaticProcessStartedAt: processInfo.startedAt,
         automaticAttempted: true,
+        automaticExitConfirmed: true,
         authorizedAttempted: false,
       }],
     }),
@@ -773,7 +781,10 @@ test("格式请求进程二次命中时升级授权且不冒充麦克风占用",
   assert.equal(result.actionRequired?.kind === "relaunch-authorization"
     ? result.actionRequired.cause
     : null, "格式请求类");
-  assert.match(result.actionRequired?.prompt ?? "", /再次触发声音格式请求/);
+  assert.equal(result.actionRequired?.kind === "relaunch-authorization"
+    ? result.actionRequired.triggerState
+    : null, "restarted");
+  assert.match(result.actionRequired?.prompt ?? "", /退出后再次触发声音格式请求/);
   assert.doesNotMatch(result.actionRequired?.prompt ?? "", /读取麦克风/);
   assert.equal(terminations, 0);
 });

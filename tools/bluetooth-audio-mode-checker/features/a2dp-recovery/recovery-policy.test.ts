@@ -7,6 +7,7 @@ import {
   createMultiEndpointRouteChoices,
   selectCauseRoute,
 } from "./recovery-policy.ts";
+import { retainCurrentMicrophoneGuards } from "./index.ts";
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -67,11 +68,45 @@ test("本次开机阻止授权必须先由服务端进入等待状态", () => {
   const clientSource = readFileSync(join(moduleDirectory, "web", "client.js"), "utf8");
   assert.match(source, /pendingRelaunchAuthorizations\.get\(body\.name\)/);
   assert.match(source, /pending\.continuation\.roundState\.context/);
+  assert.match(source, /body\.continueAfterOccupancyEnded === true/);
   assert.match(source, /expiresAt: Date\.now\(\) \+ 30 \* 60 \* 1_000/);
   assert.match(source, /result\.actionRequired\?\.kind === "relaunch-authorization"/);
   assert.match(clientSource, /result\.actionRequired\.processNames/);
   assert.match(clientSource, /涉及进程/);
   assert.match(clientSource, /授权本次开机阻止/);
+  assert.match(clientSource, /continueAfterOccupancyEnded: true/);
+});
+
+test("麦克风占用授权只保留当前仍在读取的同一路径", async () => {
+  const guards = [
+    { cause: "麦克风占用类" as const, command: "/usr/libexec/replayd", processName: "replayd" },
+    { cause: "麦克风占用类" as const, command: "/Applications/Voice.app/Voice", processName: "Voice" },
+    { cause: "格式请求类" as const, command: "/Applications/Format.app/Format", processName: "Format" },
+  ];
+  const result = await retainCurrentMicrophoneGuards(
+    guards,
+    async () => [{ pid: 11, name: "replayd", bundleId: "", devices: ["未知麦克风"] }],
+    (pid) => pid === 11 ? {
+      pid,
+      name: "replayd",
+      command: "/usr/libexec/replayd",
+      startedAt: "Mon Jul 20 11:45:39 2026",
+    } : null,
+  );
+
+  assert.deepEqual(result, [guards[0], guards[2]]);
+});
+
+test("授权前占用读取失败时不得启动麦克风进程阻止任务", async () => {
+  const guards = [
+    { cause: "麦克风占用类" as const, command: "/usr/libexec/replayd", processName: "replayd" },
+    { cause: "格式请求类" as const, command: "/Applications/Format.app/Format", processName: "Format" },
+  ];
+  const result = await retainCurrentMicrophoneGuards(guards, async () => {
+    throw new Error("读取失败");
+  });
+
+  assert.deepEqual(result, [guards[1]]);
 });
 
 test("多端点组合选择由服务端保存并复核当前路由后执行", () => {

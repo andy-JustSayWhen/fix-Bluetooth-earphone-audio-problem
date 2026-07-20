@@ -121,6 +121,7 @@ const expandedDevices = new Set();
 const occupancyFeedback = new Map();
 const occupancyBusyDevices = new Set();
 let lastRenderedDevices = [];
+let lastMicrophoneUsers = [];
 let lastRenderedRoutes = null;
 let lastRenderedStateFingerprint = "";
 let lastOccupancyCapturedAt = 0;
@@ -266,11 +267,22 @@ async function releaseOccupancy(deviceName, users) {
 
 function microphoneOccupancySection(device) {
   const occupancy = device.microphoneOccupancy;
+  const assignedPids = new Set(lastRenderedDevices.flatMap((item) =>
+    item.microphoneOccupancy?.users?.map((user) => user.pid) ?? []
+  ));
+  const unassignedUsers = device.isDefaultInput
+    ? lastMicrophoneUsers.filter((user) => !assignedPids.has(user.pid))
+    : [];
+  const hasAssignedUsers = Boolean(occupancy?.users.length);
   const section = createElement("section", "occupancy-section");
   const heading = createElement("div", "occupancy-heading");
   heading.append(
     createElement("h3", "", "麦克风占用"),
-    createElement("span", occupancy?.isInUse ? "occupancy-status is-busy" : "occupancy-status is-free", occupancy?.isInUse ? "正在占用" : "未被本机占用"),
+    createElement(
+      "span",
+      hasAssignedUsers ? "occupancy-status is-busy" : unassignedUsers.length > 0 ? "occupancy-status is-unassigned" : "occupancy-status is-free",
+      hasAssignedUsers ? "正在占用" : unassignedUsers.length > 0 ? "存在未归属读取" : "未被本机占用",
+    ),
   );
   section.append(heading);
 
@@ -302,8 +314,28 @@ function microphoneOccupancySection(device) {
     releaseAll.disabled = occupancyBusyDevices.has(device.name);
     releaseAll.addEventListener("click", () => releaseOccupancy(device.name, occupancy.users));
     section.append(releaseAll);
-  } else {
+  } else if (unassignedUsers.length === 0) {
     section.append(createElement("p", "occupancy-empty", "没有检测到正在读取此设备麦克风的本机程序。仅设为默认输入不算占用。"));
+  }
+
+  if (unassignedUsers.length > 0) {
+    section.append(createElement(
+      "p",
+      "occupancy-empty is-unassigned",
+      "系统检测到以下程序正在读取本机某个麦克风，但无法确认是否正在读取此设备。",
+    ));
+    const list = createElement("div", "occupancy-users");
+    for (const user of unassignedUsers) {
+      const row = createElement("div", "occupancy-user is-unassigned");
+      const copy = createElement("div", "");
+      copy.append(
+        createElement("strong", "", user.name),
+        createElement("span", "", user.bundleId || `进程 ${user.pid} · 设备无法归属`),
+      );
+      row.append(copy);
+      list.append(row);
+    }
+    section.append(list);
   }
 
   const capability = createElement("div", "multipoint-note");
@@ -483,8 +515,10 @@ async function changeDefaultDevice(select) {
 
 function renderState(result, options = {}) {
   lastOccupancyCapturedAt = Date.parse(result.occupancyCapturedAt) || lastOccupancyCapturedAt;
+  lastMicrophoneUsers = result.microphoneUsers ?? [];
   lastRenderedRoutes = result.routes;
-  const fingerprint = JSON.stringify({ devices: result.devices, routes: result.routes });
+  recoveryController?.reconcilePendingAuthorizations(result.devices, lastMicrophoneUsers, result.occupancyCapturedAt);
+  const fingerprint = JSON.stringify({ devices: result.devices, microphoneUsers: lastMicrophoneUsers, routes: result.routes });
   if (fingerprint !== lastRenderedStateFingerprint) {
     renderRoutes(result.routes);
     renderDevices(result.devices);

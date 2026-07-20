@@ -807,17 +807,30 @@ export async function runRecovery(
       ));
       if (repeatedProcesses.length > 0) {
         const pendingGuards = [...new Map(repeatedProcesses.map((processInfo) => [processInfo.command, {
+          cause: processCause,
           command: processInfo.command,
           processName: processInfo.name,
         }] as const)).values()];
         const processNames = unique(pendingGuards.map((guard) => guard.processName));
-        const trigger = processCause === "格式请求类" ? "再次触发声音格式请求" : "再次读取麦克风";
+        const neverExited = repeatedProcesses.some((processInfo) => state.processAttempts.some((attempt) =>
+          attempt.cause === processCause &&
+          attempt.command === processInfo.command &&
+          attempt.automaticExitConfirmed !== true &&
+          attempt.automaticProcessPid === processInfo.pid &&
+          attempt.automaticProcessStartedAt === processInfo.startedAt
+        ));
+        const trigger = processCause === "格式请求类"
+          ? neverExited ? "未能退出且仍在触发声音格式请求" : "退出后再次触发声音格式请求"
+          : neverExited ? "未能退出且仍在读取麦克风" : "退出后再次读取麦克风";
         addStep(name, steps, "检测持续或再次触发", "失败", `${trigger}：${repeatedProcesses.map(processDescription).join("、")}`);
         return result("等待授权", cause.diagnosis, "原因对应处理", {
           actionRequired: {
             kind: "relaunch-authorization",
             cause: processCause,
-            prompt: `以下进程${trigger}：${processNames.join("、")}。是否授权工具仅在本次开机期间阻止它自动拉起并继续处理？不会修改登录项、删除应用或改变下次开机配置。`,
+            triggerState: neverExited ? "still-running" : "restarted",
+            prompt: `以下进程${trigger}：${processNames.join("、")}。${neverExited
+              ? "是否授权工具仅在本次开机期间持续阻止它运行并继续处理？"
+              : "是否授权工具仅在本次开机期间阻止它自动拉起并继续处理？"}不会修改登录项、删除应用或改变下次开机配置。`,
             processNames,
           },
           continuationGuards: pendingGuards,
@@ -832,13 +845,24 @@ export async function runRecovery(
           cause: processCause,
           command: processInfo.command,
           processName: processInfo.name,
+          automaticProcessPid: processInfo.pid,
+          automaticProcessStartedAt: processInfo.startedAt,
           automaticAttempted: true,
+          automaticExitConfirmed: false,
           authorizedAttempted: false,
         });
       }
       const bluetoothInputWasUsed = processCause === "麦克风占用类" && usersIncludeBluetoothInput(users);
       const actionStartedAt = runtime.now();
       const action = await executeProcessAction(name, freshProcesses, steps, runtime, reportProgress);
+      for (const processInfo of freshProcesses) {
+        const attempt = state.processAttempts.find((item) =>
+          item.cause === processCause && item.command === processInfo.command
+        );
+        if (attempt) {
+          attempt.automaticExitConfirmed = action.released.some((released) => released.command === processInfo.command);
+        }
+      }
       state.releasedPrograms.push(...action.released.map((processInfo) => processInfo.name));
       state.remainingPrograms = state.remainingPrograms
         .filter((program) => !action.released.some((processInfo) => processInfo.name === program));

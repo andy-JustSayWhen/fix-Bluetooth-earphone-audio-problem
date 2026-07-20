@@ -84,6 +84,13 @@ test("仍有占用程序时继续扫描直到释放", () => {
   assert.equal(shouldContinueOccupancyScanning(devices), true);
 });
 
+test("读取者无法归属到蓝牙设备时仍必须继续全局占用扫描", () => {
+  const devices = attachEmptyMicrophoneOccupancy([device({ mode: "HFP_HSP", sampleRateOutput: 16_000 })]);
+  const unassignedUsers = [{ pid: 80530, name: "replayd", bundleId: "", devices: [] }];
+
+  assert.equal(shouldContinueOccupancyScanning(devices, unassignedUsers), true);
+});
+
 test("默认输入从空闲变为运行时触发一次占用扫描", () => {
   assert.equal(shouldStartOccupancyScanForInputActivity(
     { name: "蓝牙麦克风", isRunning: false },

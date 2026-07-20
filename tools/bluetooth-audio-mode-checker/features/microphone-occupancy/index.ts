@@ -17,7 +17,17 @@ export function attachMicrophoneOccupancy(devices: AudioModeAssessment[]): Audio
 export async function attachMicrophoneOccupancyAsync(
   devices: AudioModeAssessment[],
 ): Promise<AudioModeAssessment[]> {
-  const users = await readMicrophoneUsersAsync();
+  return attachOccupancy(devices, await readAllMicrophoneUsersAsync());
+}
+
+export function readAllMicrophoneUsersAsync() {
+  return readMicrophoneUsersAsync();
+}
+
+export function attachMicrophoneOccupancyFromUsers(
+  devices: AudioModeAssessment[],
+  users: ReturnType<typeof readMicrophoneUsers>,
+): AudioModeAssessment[] {
   return attachOccupancy(devices, users);
 }
 
@@ -29,8 +39,9 @@ export function attachEmptyMicrophoneOccupancy(
 
 export function shouldContinueOccupancyScanning(
   devices: AudioModeAssessment[],
+  allUsers: ReturnType<typeof readMicrophoneUsers> = [],
 ): boolean {
-  return devices.some((device) => (device.microphoneOccupancy?.users.length ?? 0) > 0);
+  return allUsers.length > 0 || devices.some((device) => (device.microphoneOccupancy?.users.length ?? 0) > 0);
 }
 
 export function shouldStartOccupancyScanForInputActivity(

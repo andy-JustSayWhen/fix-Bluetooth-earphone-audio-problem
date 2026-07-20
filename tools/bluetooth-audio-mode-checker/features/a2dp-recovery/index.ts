@@ -2,11 +2,16 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detailedLog } from "../../core/detailed-logging/index.ts";
+import { readMicrophoneUsersAsync } from "../../core/macos-microphone-usage/index.ts";
+import { readRunningProcess } from "../../core/macos-running-apps/index.ts";
 import type { AudioModeAssessment } from "../../shared/audio-device-types/index.ts";
+import type { MicrophoneUser } from "../../shared/audio-device-types/index.ts";
+import type { RunningProcess } from "../../core/macos-running-apps/index.ts";
 import type {
   A2dpRecoveryResult,
   RecoveryProgress,
   RecoveryRequest,
+  RelaunchGuardRequest,
 } from "./types.ts";
 
 export type {
@@ -47,17 +52,41 @@ function startThisBootRelaunchGuard(command: string, processName: string): void 
   });
 }
 
-export function recoverA2dp(
+export async function retainCurrentMicrophoneGuards(
+  guards: RelaunchGuardRequest[],
+  readUsers: () => Promise<MicrophoneUser[]> = () => readMicrophoneUsersAsync(2_000),
+  readProcess: (pid: number) => RunningProcess | null = readRunningProcess,
+): Promise<RelaunchGuardRequest[]> {
+  const microphoneGuards = guards.filter((guard) => guard.cause === "麦克风占用类");
+  if (microphoneGuards.length === 0) return guards;
+  try {
+    const currentCommands = new Set((await readUsers())
+      .map((user) => readProcess(user.pid)?.command)
+      .filter((command): command is string => Boolean(command)));
+    return guards.filter((guard) =>
+      guard.cause !== "麦克风占用类" || currentCommands.has(guard.command)
+    );
+  } catch (error) {
+    detailedLog("warn", "a2dp-recovery.authorization-recheck-failed", { error });
+    return guards.filter((guard) => guard.cause !== "麦克风占用类");
+  }
+}
+
+export async function recoverA2dp(
   request: RecoveryRequest,
   onProgress: (progress: RecoveryProgress) => void = () => {},
   readModeAssessment: (name: string) => AudioModeAssessment | null = () =>
     request.context?.targetAssessment ?? null,
 ): Promise<A2dpRecoveryResult> {
+  const approvedRelaunchGuards = await retainCurrentMicrophoneGuards(request._approvedRelaunchGuards ?? []);
+  const workerRequest = approvedRelaunchGuards.length === (request._approvedRelaunchGuards?.length ?? 0)
+    ? request
+    : { ...request, _approvedRelaunchGuards: approvedRelaunchGuards };
   return new Promise((resolve, reject) => {
-    for (const guard of request._approvedRelaunchGuards ?? []) {
+    for (const guard of approvedRelaunchGuards) {
       startThisBootRelaunchGuard(guard.command, guard.processName);
     }
-    const child = spawn(process.execPath, [runnerPath, JSON.stringify(request)], {
+    const child = spawn(process.execPath, [runnerPath, JSON.stringify(workerRequest)], {
       cwd: join(moduleDirectory, "..", ".."),
       stdio: ["pipe", "pipe", "pipe"],
     });
