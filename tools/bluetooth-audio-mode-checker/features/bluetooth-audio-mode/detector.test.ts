@@ -310,8 +310,8 @@ test("一键修复结果不会因麦克风仍在使用而被页面删除", () =>
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.doesNotMatch(source, /microphoneOccupancy\?\.isInUse\) feedbackByDevice\.delete/);
-  assert.match(source, /kind: result\.ok \? "success" : result\.actionRequired \|\| action\.inspectMultiEndpoint \? "pending" : "error"/);
-  assert.match(source, /finally \{\s+runningDevices\.delete\(device\.name\);\s+renderDevices\(getLastRenderedDevices\(\)\);/s);
+  assert.match(source, /kind: result\.ok \? "success" : result\.actionRequired \? "pending" : "error"/);
+  assert.match(source, /finally \{\s+runningDevices\.delete\(device\.name\);\s+progressByDevice\.delete/s);
 });
 
 test("双蓝牙抖动只读复核后才给出原有路由选择", () => {
@@ -321,4 +321,24 @@ test("双蓝牙抖动只读复核后才给出原有路由选择", () => {
   assert.match(modeClient, /页面已保留最近稳定状态/);
   assert.match(modeClient, /inspectRouteConflict\(device\)/);
   assert.match(recoveryClient, /inspectMultiEndpoint: true, routeChoiceId: choice\.id/);
+});
+
+test("自动只读复核不占用一键修复按钮的忙碌状态", () => {
+  const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
+  const inspection = source.slice(source.indexOf("async function inspectRouteConflict"));
+
+  assert.match(inspection, /inspectingDevices\.add\(device\.name\)/);
+  assert.doesNotMatch(inspection, /runningDevices\.add\(device\.name\)/);
+  assert.match(source, /"正在检查麦克风占用…"/);
+  assert.match(inspection, /if \(!result\.actionRequired\) return;/);
+  assert.match(source, /feedback\?\.source === "inspection" && !feedback\.result\?\.actionRequired/);
+});
+
+test("单独解除占用显示阶段并在完成后主动多次复查", () => {
+  const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+
+  assert.match(source, /occupancyBusyDevices\.add\(deviceName\)/);
+  assert.match(source, /正在解除并复查…/);
+  assert.match(source, /\[350, 900, 1_800\]/);
+  assert.match(source, /已重新占用/);
 });

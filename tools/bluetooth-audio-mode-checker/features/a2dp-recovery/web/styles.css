@@ -6,6 +6,7 @@
 .recovery-feedback.is-success { color: #20704f; background: #e7f7ef; }
 .recovery-feedback.is-running { color: #435673; background: #edf3fb; }
 .recovery-feedback.is-pending { color: #6f571f; background: #fff8df; }
+.recovery-feedback.is-neutral { color: #52627c; background: #eef3fb; }
 .recovery-feedback.is-error { color: #9f3346; background: #fff0f2; }
 .recovery-title { display: block; margin-bottom: 5px; font-size: 12px; }
 .recovery-time { margin: 3px 0 0; opacity: 0.68; font-size: 10px; }

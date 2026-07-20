@@ -2,8 +2,8 @@ export function createA2dpRecoveryController({
   createElement,
   expandedDevices,
   getLastRenderedDevices,
-  refreshDevices,
   renderDevices,
+  schedulePostActionRefresh,
 }) {
   const storageKey = "a2dp-recovery-feedback-v1";
 
@@ -25,8 +25,19 @@ export function createA2dpRecoveryController({
   }
 
   const storedFeedback = readStoredFeedback();
+  let removedLegacyInspection = false;
+  for (const [deviceName, feedback] of Object.entries(storedFeedback)) {
+    if (feedback?.source === "inspection" && !feedback.result?.actionRequired) {
+      delete storedFeedback[deviceName];
+      removedLegacyInspection = true;
+    }
+  }
+  if (removedLegacyInspection) writeStoredFeedback(storedFeedback);
   const feedbackByDevice = new Map(Object.entries(storedFeedback));
   const runningDevices = new Set();
+  const inspectingDevices = new Set();
+  const progressByDevice = new Map();
+  const recentlyReleasedPrograms = new Map();
   for (const [deviceName, feedback] of feedbackByDevice) {
     if (feedback?.result?.actionRequired) expandedDevices.add(deviceName);
   }
@@ -45,11 +56,11 @@ export function createA2dpRecoveryController({
   async function recover(device, action = {}) {
     if (runningDevices.has(device.name)) return;
     runningDevices.add(device.name);
+    const choosingRoute = Boolean(action.routeChoiceId);
+    progressByDevice.set(device.name, choosingRoute ? "正在切换输入输出…" : "正在检查麦克风占用…");
     setFeedback(device.name, {
       kind: "running",
-      text: action.inspectMultiEndpoint
-        ? "检测到路由波动，正在只读复核最近的应用和系统拒绝证据。"
-        : "正在保存现场并按已确证原因路由，请稍候。",
+      text: choosingRoute ? "正在按你的授权切换输入输出。" : "正在检查并优先解除麦克风占用。",
     }, false);
     expandedDevices.add(device.name);
     renderDevices(getLastRenderedDevices());
@@ -61,19 +72,21 @@ export function createA2dpRecoveryController({
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "恢复失败");
+      for (const program of result.releasedPrograms ?? []) {
+        recentlyReleasedPrograms.set(program, Date.now());
+      }
       setFeedback(device.name, {
-        kind: result.ok ? "success" : result.actionRequired || action.inspectMultiEndpoint ? "pending" : "error",
+        kind: result.ok ? "success" : result.actionRequired ? "pending" : "error",
         result,
       });
     } catch (error) {
       setFeedback(device.name, { kind: "error", text: `恢复失败：${error.message}` });
     } finally {
       runningDevices.delete(device.name);
+      progressByDevice.delete(device.name);
       renderDevices(getLastRenderedDevices());
     }
-    if (!action.inspectMultiEndpoint || action.routeChoiceId) {
-      await refreshDevices({ preserveRouteMessage: true });
-    }
+    schedulePostActionRefresh();
   }
 
   function resultSection(feedback, deviceName) {
@@ -86,7 +99,9 @@ export function createA2dpRecoveryController({
       return section;
     }
     const result = feedback.result;
-    const resultPrefix = result.actionRequired ? "需要你选择" : "最近一次修复";
+    const resultPrefix = feedback.source === "inspection"
+      ? "自动只读复核"
+      : result.actionRequired ? "需要你选择" : "最近一次修复";
     section.append(
       createElement("strong", "recovery-title", `${resultPrefix}：${result.outcome}`),
       ...(feedback.recordedAt ? [createElement(
@@ -152,6 +167,7 @@ export function createA2dpRecoveryController({
 
   function handleProgress(deviceName, progress) {
     if (!runningDevices.has(deviceName)) return;
+    progressByDevice.set(deviceName, `${progress.stage}…`);
     setFeedback(deviceName, {
       kind: "running",
       text: `${progress.stage}：${progress.message}`,
@@ -159,16 +175,40 @@ export function createA2dpRecoveryController({
     renderDevices(getLastRenderedDevices());
   }
 
-  function inspectRouteConflict(device) {
-    if (runningDevices.has(device.name)) return;
+  async function inspectRouteConflict(device) {
+    if (inspectingDevices.has(device.name) || runningDevices.has(device.name)) return;
     const existing = feedbackByDevice.get(device.name)?.result;
     if (existing?.actionRequired?.kind === "route-choice") return;
-    recover(device, { inspectMultiEndpoint: true });
+    inspectingDevices.add(device.name);
+    try {
+      const response = await fetch("/api/a2dp-recovery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: device.name, inspectMultiEndpoint: true }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "复核失败");
+      if (runningDevices.has(device.name)) return;
+      if (!result.actionRequired) return;
+      setFeedback(device.name, {
+        kind: "pending",
+        source: "inspection",
+        result,
+      });
+      expandedDevices.add(device.name);
+      renderDevices(getLastRenderedDevices());
+    } catch {
+      // 自动只读复核失败不得阻止用户主动修复。
+    } finally {
+      inspectingDevices.delete(device.name);
+    }
   }
 
   return {
     feedbackByDevice,
     runningDevices,
+    progressByDevice,
+    recentlyReleasedPrograms,
     recover,
     inspectRouteConflict,
     resultSection,

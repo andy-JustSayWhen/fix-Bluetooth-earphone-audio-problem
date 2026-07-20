@@ -121,6 +121,58 @@ test("新鲜占用快照直接路由到占用处理并三次确认完全恢复",
   assert.ok(progress.includes("正在确认稳定"));
 });
 
+test("目标输出与实际麦克风不同时仍必须先解除全局占用", async () => {
+  let running = true;
+  let rate = 16_000;
+  let evidenceReads = 0;
+  const crossDeviceUser: MicrophoneUser = {
+    ...microphoneUser,
+    devices: ["蓝牙麦克风 DJI"],
+  };
+  const result = await runRecovery({
+    name: "蓝牙耳机 K03S",
+    context: {
+      clickedAt: new Date(now).toISOString(),
+      defaultInput: "蓝牙麦克风 DJI",
+      defaultOutput: "蓝牙耳机 K03S",
+      targetSampleRate: 16_000,
+      occupancySnapshot: {
+        capturedAt: new Date(now - 500).toISOString(),
+        users: [crossDeviceUser],
+      },
+    },
+  }, runtime({
+    readDevices: () => [
+      device({ name: "蓝牙耳机 K03S", sampleRateOutput: rate }),
+      device({
+        id: 2,
+        name: "蓝牙麦克风 DJI",
+        uid: "58-B8-58-9D-C1-E8:input",
+        inputChannels: 1,
+        outputChannels: 0,
+        sampleRateOutput: null,
+        isDefaultInput: true,
+        isDefaultOutput: false,
+      }),
+    ],
+    readProcess: () => running ? processInfo : null,
+    terminateProcess: () => {
+      running = false;
+      rate = 44_100;
+    },
+    readEvidence: () => {
+      evidenceReads += 1;
+      return emptyEvidence;
+    },
+  }));
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(result.diagnosis.kind, "麦克风占用类");
+  assert.deepEqual(result.releasedPrograms, ["VoiceApp"]);
+  assert.match(result.diagnosis.evidence[0], /蓝牙麦克风 DJI/);
+  assert.equal(evidenceReads, 0);
+});
+
 test("用户授权后返回仅限本次开机的自动拉起阻止任务", async () => {
   let running = true;
   let rate = 16_000;

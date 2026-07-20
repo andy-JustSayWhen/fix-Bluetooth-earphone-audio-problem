@@ -163,6 +163,7 @@ function main(): void {
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
     refreshedAt: cachedStateUpdatedAt ?? new Date().toISOString(),
+    occupancyCapturedAt: latestOccupancyCapturedAt,
   };
   const broadcastState = () => {
     const payload = statePayload();
@@ -463,6 +464,8 @@ function main(): void {
         detailedLog("info", "microphone-occupancy.release-requested", { pids: body.pids });
         const result = await releaseMicrophoneUsers(body.pids as number[]);
         detailedLog("info", "microphone-occupancy.release-completed", { result });
+        scheduleOccupancyScan(0, "manual-release-completed");
+        scheduleStateRefresh();
         response.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",
@@ -507,6 +510,9 @@ function main(): void {
         const clickedAt = new Date().toISOString();
         const currentState = cachedState ?? readAudioModeState();
         const currentDevice = currentState.devices.find((device) => device.name === body.name);
+        const allOccupancyUsers = [...new Map(currentState.devices
+          .flatMap((device) => device.microphoneOccupancy?.users ?? [])
+          .map((user) => [user.pid, user] as const)).values()];
         const result = await recoverA2dp({
           name: body.name,
           inspectMultiEndpoint: body.inspectMultiEndpoint as boolean | undefined,
@@ -517,12 +523,14 @@ function main(): void {
             defaultInput: currentState.routes.input.find((route) => route.isDefault)?.name ?? null,
             defaultOutput: currentState.routes.output.find((route) => route.isDefault)?.name ?? null,
             targetSampleRate: currentDevice?.sampleRateOutput ?? null,
-            occupancySnapshot: latestOccupancyCapturedAt && currentDevice?.microphoneOccupancy ? {
+            occupancySnapshot: latestOccupancyCapturedAt ? {
               capturedAt: latestOccupancyCapturedAt,
-              users: currentDevice.microphoneOccupancy.users,
+              users: allOccupancyUsers,
             } : undefined,
           },
         }, (progress) => broadcastRecoveryProgress(body.name as string, progress));
+        scheduleOccupancyScan(0, "a2dp-recovery-completed");
+        scheduleStateRefresh();
         if (result.actionRequired?.kind === "relaunch-authorization") {
           pendingRelaunchAuthorizations.add(body.name);
         }

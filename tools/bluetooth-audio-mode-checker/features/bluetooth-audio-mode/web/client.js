@@ -78,9 +78,11 @@ const routeMessage = document.querySelector("#route-message");
 
 const expandedDevices = new Set();
 const occupancyFeedback = new Map();
+const occupancyBusyDevices = new Set();
 let lastRenderedDevices = [];
 let lastRenderedRoutes = null;
 let lastRenderedStateFingerprint = "";
+let lastOccupancyCapturedAt = 0;
 let recoveryController;
 let refreshRequestRunning = false;
 let pendingRouteChange = null;
@@ -128,9 +130,18 @@ function metricGroup(label, firstMetric, secondMetric, note = "") {
   return group;
 }
 
-async function releaseOccupancy(deviceName, pids, label) {
+function schedulePostActionRefresh() {
+  for (const delay of [350, 900, 1_800]) {
+    window.setTimeout(() => refreshDevices({ preserveRouteMessage: true, silent: true }), delay);
+  }
+}
+
+async function releaseOccupancy(deviceName, users) {
+  const pids = users.map((user) => user.pid);
+  const label = users.length === 1 ? users[0].name : "全部占用程序";
   if (!pids.length || !window.confirm(`确定要结束“${label}”并解除麦克风占用吗？未保存的内容可能丢失。`)) return;
-  occupancyFeedback.set(deviceName, { kind: "pending", text: "正在请求程序停止使用麦克风，并等待系统确认…" });
+  occupancyBusyDevices.add(deviceName);
+  occupancyFeedback.set(deviceName, { kind: "pending", text: "正在请求程序退出并复查麦克风，通常在 1 秒左右完成…" });
   renderDevices(lastRenderedDevices);
   try {
     const response = await fetch("/api/microphone-occupancy/release", {
@@ -139,7 +150,7 @@ async function releaseOccupancy(deviceName, pids, label) {
       body: JSON.stringify({ pids }),
     });
     const result = await response.json();
-    if (!response.ok && result.error) throw new Error(result.error);
+    if (!response.ok) throw new Error(result.error || "解除失败");
     if (result.remainingPids?.length) {
       occupancyFeedback.set(deviceName, {
         kind: "error",
@@ -152,6 +163,10 @@ async function releaseOccupancy(deviceName, pids, label) {
       occupancyFeedback.set(deviceName, {
         kind: "success",
         text: `系统已确认：相关程序不再读取此麦克风。程序自己的语音图标可能需要片刻才会复位。${inputMethodHint}`,
+        releasedAt: Date.now(),
+        releasedNames: users
+          .filter((user) => result.releasedPids.includes(user.pid))
+          .map((user) => user.name),
       });
     } else {
       occupancyFeedback.set(deviceName, {
@@ -159,10 +174,12 @@ async function releaseOccupancy(deviceName, pids, label) {
         text: "操作前占用已经消失，无需解除。",
       });
     }
-    await refreshDevices({ preserveRouteMessage: true });
   } catch (error) {
     occupancyFeedback.set(deviceName, { kind: "error", text: `解除失败：${error.message}` });
+  } finally {
+    occupancyBusyDevices.delete(deviceName);
     renderDevices(lastRenderedDevices);
+    schedulePostActionRefresh();
   }
 }
 
@@ -189,14 +206,20 @@ function microphoneOccupancySection(device) {
       close.type = "button";
       close.title = `结束 ${user.name} 并解除占用`;
       close.setAttribute("aria-label", close.title);
-      close.addEventListener("click", () => releaseOccupancy(device.name, [user.pid], user.name));
+      close.disabled = occupancyBusyDevices.has(device.name);
+      close.addEventListener("click", () => releaseOccupancy(device.name, [user]));
       row.append(copy, close);
       list.append(row);
     }
     section.append(list);
-    const releaseAll = createElement("button", "occupancy-release-all", "解除全部占用");
+    const releaseAll = createElement(
+      "button",
+      "occupancy-release-all",
+      occupancyBusyDevices.has(device.name) ? "正在解除并复查…" : "解除全部占用",
+    );
     releaseAll.type = "button";
-    releaseAll.addEventListener("click", () => releaseOccupancy(device.name, occupancy.users.map((user) => user.pid), "全部占用程序"));
+    releaseAll.disabled = occupancyBusyDevices.has(device.name);
+    releaseAll.addEventListener("click", () => releaseOccupancy(device.name, occupancy.users));
     section.append(releaseAll);
   } else {
     section.append(createElement("p", "occupancy-empty", "没有检测到正在读取此设备麦克风的本机程序。仅设为默认输入不算占用。"));
@@ -209,7 +232,28 @@ function microphoneOccupancySection(device) {
     "确保您的设备未处于双设备连接状态，本工具无法解除非本机的麦克风占用。",
   ));
   section.append(capability);
-  const feedback = occupancyFeedback.get(device.name);
+  let feedback = occupancyFeedback.get(device.name);
+  const reoccupied = feedback?.kind === "success" && lastOccupancyCapturedAt > feedback.releasedAt
+    ? occupancy?.users.filter((user) => feedback.releasedNames.includes(user.name)) ?? []
+    : [];
+  if (reoccupied.length > 0) {
+    feedback = {
+      kind: "warning",
+      text: `${reoccupied.map((user) => user.name).join("、")} 曾短暂释放麦克风，但现在已重新占用。`,
+    };
+    occupancyFeedback.set(device.name, feedback);
+  }
+  const recoveryReoccupied = occupancy?.users.filter((user) => {
+    const releasedAt = recoveryController?.recentlyReleasedPrograms.get(user.name);
+    return releasedAt && lastOccupancyCapturedAt > releasedAt && Date.now() - releasedAt <= 30_000;
+  }) ?? [];
+  if (recoveryReoccupied.length > 0) {
+    section.append(createElement(
+      "p",
+      "occupancy-feedback is-warning",
+      `${recoveryReoccupied.map((user) => user.name).join("、")} 在一键修复中曾释放麦克风，但现在已重新占用。`,
+    ));
+  }
   if (feedback) section.append(createElement("p", `occupancy-feedback is-${feedback.kind}`, feedback.text));
   return section;
 }
@@ -232,7 +276,11 @@ function createDeviceCard(device) {
   const modeActions = createElement("div", "device-card__mode-actions");
   modeActions.append(badge);
   if (recoveryController.runningDevices.has(device.name)) {
-    const runningButton = createElement("button", "recovery-trigger is-running", "正在修复，请稍候…");
+    const runningButton = createElement(
+      "button",
+      "recovery-trigger is-running",
+      recoveryController.progressByDevice.get(device.name) ?? "正在修复…",
+    );
     runningButton.type = "button";
     runningButton.disabled = true;
     modeActions.append(runningButton);
@@ -377,6 +425,7 @@ async function changeDefaultDevice(select) {
 }
 
 function renderState(result, options = {}) {
+  lastOccupancyCapturedAt = Date.parse(result.occupancyCapturedAt) || lastOccupancyCapturedAt;
   lastRenderedRoutes = result.routes;
   const fingerprint = JSON.stringify({ devices: result.devices, routes: result.routes });
   if (fingerprint !== lastRenderedStateFingerprint) {
@@ -476,10 +525,12 @@ function renderDevices(devices) {
 async function refreshDevices(options = {}) {
   if (refreshRequestRunning) return;
   refreshRequestRunning = true;
-  refreshButton.disabled = true;
-  refreshButton.classList.add("is-loading");
-  countElement.textContent = "正在刷新设备…";
-  statusDot.className = "status-dot";
+  if (!options.silent) {
+    refreshButton.disabled = true;
+    refreshButton.classList.add("is-loading");
+    countElement.textContent = "正在刷新设备…";
+    statusDot.className = "status-dot";
+  }
   try {
     const response = await fetch(`/api/devices?time=${Date.now()}`, { cache: "no-store" });
     const result = await response.json();
@@ -491,14 +542,17 @@ async function refreshDevices(options = {}) {
     if (!response.ok) throw new Error(result.error || "设备读取失败");
     renderState(result, options);
   } catch (error) {
+    if (options.silent) return;
     listElement.replaceChildren(createElement("div", "error-state", `读取失败：${error.message}`));
     countElement.textContent = "设备读取失败";
     timeElement.textContent = "请稍后重试";
     statusDot.className = "status-dot is-error";
   } finally {
     refreshRequestRunning = false;
-    refreshButton.disabled = false;
-    refreshButton.classList.remove("is-loading");
+    if (!options.silent) {
+      refreshButton.disabled = false;
+      refreshButton.classList.remove("is-loading");
+    }
   }
 }
 
@@ -506,8 +560,8 @@ recoveryController = createA2dpRecoveryController({
   createElement,
   expandedDevices,
   getLastRenderedDevices: () => lastRenderedDevices,
-  refreshDevices,
   renderDevices,
+  schedulePostActionRefresh,
 });
 
 refreshButton.addEventListener("click", refreshDevices);

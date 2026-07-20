@@ -189,9 +189,9 @@ function diagnoseCause(
         kind: selectCauseRoute(confirmed, false, false),
         confidence: confirmed ? "已确认" : "高度疑似",
         summary: confirmed
-          ? "本机程序正在实际读取目标蓝牙麦克风"
-          : "检测到目标麦克风读取者，但无法完整复核进程身份",
-        evidence: users.map((user) => `${user.name}（进程号 ${user.pid}）正在读取 ${name}`),
+          ? "本机程序正在实际读取当前麦克风，先按固定优先级尝试解除占用"
+          : "检测到麦克风读取者，但无法完整复核进程身份",
+        evidence: users.map((user) => `${user.name}（进程号 ${user.pid}）正在读取：${user.devices.join("、") || "未知麦克风"}`),
       },
       processes: identified.processes,
       routeChoices: [],
@@ -413,7 +413,7 @@ async function verifyStableRouteChoice(
   return false;
 }
 
-async function currentUsersForTarget(
+async function currentMicrophoneUsers(
   request: RecoveryRequest,
   runtime: RecoveryRuntime,
 ): Promise<MicrophoneUser[]> {
@@ -422,9 +422,9 @@ async function currentUsersForTarget(
   const capturedAt = Date.parse(cached?.capturedAt ?? "");
   if (cached && Number.isFinite(clickedAt) && Number.isFinite(capturedAt) &&
       capturedAt >= clickedAt - 2_000 && capturedAt <= runtime.now() + 1_000) {
-    return cached.users.filter((user) => user.devices.includes(request.name));
+    return cached.users;
   }
-  return (await runtime.readMicrophoneUsers()).filter((user) => user.devices.includes(request.name));
+  return runtime.readMicrophoneUsers();
 }
 
 function baseMessage(outcome: A2dpRecoveryResult["outcome"], name: string, rate: number | null): string {
@@ -490,7 +490,7 @@ export async function runRecovery(
   if (request.inspectMultiEndpoint) {
     users = [];
   } else try {
-    users = await currentUsersForTarget(request, runtime);
+    users = await currentMicrophoneUsers(request, runtime);
   } catch (error) {
     users = [];
     addStep(name, steps, "补充麦克风占用检查", "失败", error instanceof Error ? error.message : String(error));
@@ -599,7 +599,7 @@ export async function runRecovery(
 
     let freshUsers: MicrophoneUser[] = [];
     try {
-      freshUsers = (await runtime.readMicrophoneUsers()).filter((user) => user.devices.includes(name));
+      freshUsers = await runtime.readMicrophoneUsers();
     } catch (error) {
       addStep(name, steps, "重新判定现场", "失败", error instanceof Error ? error.message : String(error));
     }
