@@ -542,9 +542,10 @@ test("目标输出与实际麦克风不同时仍必须先解除全局占用", as
   assert.equal(evidenceReads, 0);
 });
 
-test("解除麦克风占用后目标仍为 HFP 才进入多端点组合选择", async () => {
+test("解除占用后先尝试链路残留输入切换，失败后才进入多端点组合选择", async () => {
   let running = true;
   let evidenceReads = 0;
+  const routeChanges: Array<{ direction: "input" | "output"; name: string }> = [];
   const result = await runRecovery({
     name: "蓝牙耳机 K03S",
     context: {
@@ -593,12 +594,20 @@ test("解除麦克风占用后目标仍为 HFP 才进入多端点组合选择", 
       evidenceReads += 1;
       return emptyEvidence;
     },
+    setDefaultDevice: (direction, name) => {
+      routeChanges.push({ direction, name });
+    },
   }));
 
   assert.equal(result.outcome, "等待选择");
   assert.equal(result.diagnosis.kind, "多端点会话类");
   assert.deepEqual(result.releasedPrograms, ["VoiceApp"]);
   assert.equal(evidenceReads, 0);
+  assert.deepEqual(routeChanges[0], { direction: "input", name: "内置麦克风" });
+  assert.ok(
+    result.steps.findIndex((step) => step.stage === "临时切换到非蓝牙输入") <
+      result.steps.findIndex((step) => step.stage === "残留处理后重新判定"),
+  );
 });
 
 test("等待授权结果必须明确列出未退出或再次触发的进程", async () => {

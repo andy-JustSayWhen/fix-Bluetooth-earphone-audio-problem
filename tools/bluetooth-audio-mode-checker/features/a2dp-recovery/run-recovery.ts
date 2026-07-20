@@ -713,6 +713,28 @@ export async function runRecovery(
     } catch (error) {
       addStep(name, steps, "重新判定现场", "失败", error instanceof Error ? error.message : String(error));
     }
+    const linkResidualConfirmed = freshUsers.length === 0 &&
+      action.released.length > 0 && action.remaining.length === 0 &&
+      runtime.readModeAssessment(name)?.mode === "HFP_HSP";
+    if (linkResidualConfirmed) {
+      const releasedNames = [...new Set(releasedPrograms)];
+      cause = {
+        diagnosis: {
+          kind: "链路残留类",
+          confidence: "已确认",
+          summary: "已确认的蓝牙输入占用已经结束且没有新的读取者，但设备仍停留在 HFP",
+          evidence: [
+            `本轮已经结束输入占用：${releasedNames.join("、")}`,
+            "复查未发现新的麦克风读取者",
+            "占用结束后目标模式仍为 HFP/HSP",
+          ],
+        },
+        processes: [],
+        routeChoices: [],
+      };
+      addStep(name, steps, "重新判定现场", "成功", `${cause.diagnosis.kind}：${cause.diagnosis.summary}`);
+    }
+    if (!linkResidualConfirmed) {
     const freshDevices = runtime.readDevices();
     let freshCause = diagnoseCause(name, freshDevices, freshUsers, null, runtime);
     if (freshUsers.length === 0 && freshCause.diagnosis.kind !== "多端点会话类") {
@@ -814,24 +836,6 @@ export async function runRecovery(
       }
     }
 
-    if (releasedPrograms.length > 0 && remainingPrograms.length === 0 &&
-        runtime.readModeAssessment(name)?.mode === "HFP_HSP") {
-      const releasedNames = [...new Set(releasedPrograms)];
-      cause = {
-        diagnosis: {
-          kind: "链路残留类",
-          confidence: "已确认",
-          summary: "已确认的蓝牙输入占用已经结束且没有新的读取者，但设备仍停留在 HFP",
-          evidence: [
-            `本轮已经结束输入占用：${releasedNames.join("、")}`,
-            "复查未发现新的麦克风读取者",
-            "占用结束后目标模式仍为 HFP/HSP",
-          ],
-        },
-        processes: [],
-        routeChoices: [],
-      };
-      addStep(name, steps, "重新判定现场", "成功", `${cause.diagnosis.kind}：${cause.diagnosis.summary}`);
     }
   }
 
@@ -886,6 +890,89 @@ export async function runRecovery(
     }
   } else {
     addStep(name, steps, "临时切换到非蓝牙输入", "跳过", "没有可用的非蓝牙中转输入，或点击前输入未知");
+  }
+
+  if (isLinkResidual && runtime.readModeAssessment(name)?.mode === "HFP_HSP") {
+    let postResidualUsers: MicrophoneUser[] = [];
+    try {
+      postResidualUsers = await runtime.readMicrophoneUsers();
+    } catch (error) {
+      addStep(name, steps, "残留处理后重新判定", "失败", error instanceof Error ? error.message : String(error));
+    }
+    const postResidualDevices = runtime.readDevices();
+    let postResidualCause = diagnoseCause(name, postResidualDevices, postResidualUsers, null, runtime);
+    if (postResidualUsers.length === 0 && postResidualCause.diagnosis.kind !== "多端点会话类") {
+      postResidualCause = diagnoseCause(name, postResidualDevices, postResidualUsers, runtime.readEvidence(), runtime);
+    }
+    if (postResidualCause.diagnosis.kind === "多端点会话类") {
+      addStep(name, steps, "残留处理后重新判定", "成功", `${postResidualCause.diagnosis.kind}：${postResidualCause.diagnosis.summary}`);
+      const outcome = postResidualCause.routeChoices.length > 0 ? "等待选择" : "未恢复";
+      return makeResult({
+        outcome,
+        recoveryPath: "多端点路由组合",
+        handledCause,
+        sampleRate: currentOutputRate(runtime, name),
+        releasedPrograms,
+        remainingPrograms,
+        diagnosis: postResidualCause.diagnosis,
+        steps,
+        usedReconnect,
+        actionRequired: postResidualCause.routeChoices.length > 0 ? {
+          kind: "route-choice",
+          prompt: `${postResidualCause.diagnosis.summary}。是否授权工具保留输入或保留输出？`,
+          choices: postResidualCause.routeChoices,
+        } : undefined,
+        message: baseMessage(outcome, name, currentOutputRate(runtime, name)),
+      });
+    }
+    if (postResidualCause.diagnosis.kind === "麦克风占用类" && postResidualCause.processes.length > 0) {
+      const processNames = [...new Set(postResidualCause.processes.map((processInfo) => processInfo.name))];
+      addStep(name, steps, "残留处理后重新判定", "失败", `发现新的或再次出现的麦克风占用：${processNames.join("、")}`);
+      const outcome = "等待授权";
+      return makeResult({
+        outcome,
+        recoveryPath,
+        handledCause,
+        sampleRate: currentOutputRate(runtime, name),
+        releasedPrograms,
+        remainingPrograms,
+        diagnosis: postResidualCause.diagnosis,
+        steps,
+        usedReconnect,
+        actionRequired: {
+          kind: "relaunch-authorization",
+          prompt: `以下进程在链路残留处理后仍在读取麦克风：${processNames.join("、")}。是否授权工具继续处理，并仅在本次开机期间阻止它重新启动？不会修改登录项、删除应用或改变下次开机配置。`,
+          processNames,
+        },
+        message: baseMessage(outcome, name, currentOutputRate(runtime, name)),
+      });
+    }
+    if (postResidualCause.diagnosis.kind === "格式请求类" && postResidualCause.processes.length > 0) {
+      cause = postResidualCause;
+      addStep(name, steps, "残留处理后重新判定", "成功", `${cause.diagnosis.kind}：${cause.diagnosis.summary}`);
+      const postResidualAction = await executeProcessAction(name, cause.processes, steps, runtime, reportProgress);
+      releasedPrograms.push(...postResidualAction.released.map((processInfo) => processInfo.name));
+      remainingPrograms.push(...postResidualAction.remaining.map((processInfo) => processInfo.name));
+      if (postResidualAction.stableRecovery !== null) {
+        const routesRestored = await restoreOriginalRoutes(name, originalInput, originalOutput, steps, runtime);
+        const restoredRecovery = routesRestored ? await verifyStableRecovery(name, runtime, reportProgress, 3) : null;
+        if (restoredRecovery !== null) {
+          const outcome = "完全恢复";
+          return makeResult({
+            outcome,
+            recoveryPath: "原因对应处理",
+            handledCause: true,
+            sampleRate: restoredRecovery.rate,
+            releasedPrograms,
+            remainingPrograms,
+            diagnosis: cause.diagnosis,
+            steps,
+            usedReconnect,
+            message: baseMessage(outcome, name, restoredRecovery.rate),
+          });
+        }
+      }
+    }
   }
 
   let reconnectError: unknown = null;
