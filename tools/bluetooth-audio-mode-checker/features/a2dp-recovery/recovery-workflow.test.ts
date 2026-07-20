@@ -76,6 +76,43 @@ test("点击后发现目标已恢复时立即结束且不查原因日志", async
   assert.equal(evidenceReads, 0);
 });
 
+test("仅作为 16 kHz 输入使用的蓝牙麦克风返回无需修复而不是失败", async () => {
+  let evidenceReads = 0;
+  let microphoneReads = 0;
+  const result = await runRecovery({ name: "DJI 麦克风" }, runtime({
+    readDevices: () => [device({
+      name: "DJI 麦克风",
+      sampleRateInput: 16_000,
+      sampleRateOutput: 16_000,
+      maxSupportedOutputRate: 16_000,
+      outputChannels: 1,
+      isDefaultInput: true,
+      isDefaultOutput: false,
+    }), device({
+      id: 2,
+      name: "蓝牙耳机 K03S",
+      sampleRateOutput: 44_100,
+      maxSupportedOutputRate: 44_100,
+      isDefaultOutput: true,
+    })],
+    readMicrophoneUsers: async () => {
+      microphoneReads += 1;
+      return [microphoneUser];
+    },
+    readEvidence: () => {
+      evidenceReads += 1;
+      return emptyEvidence;
+    },
+  }));
+
+  assert.equal(result.outcome, "无需修复");
+  assert.equal(result.ok, true);
+  assert.match(result.diagnosis.summary, /只作为麦克风输入使用/);
+  assert.match(result.message, /16 kHz 输入可以是正常规格/);
+  assert.equal(microphoneReads, 0);
+  assert.equal(evidenceReads, 0);
+});
+
 test("新鲜占用快照直接路由到占用处理并三次确认完全恢复", async () => {
   let running = true;
   let rate = 16_000;

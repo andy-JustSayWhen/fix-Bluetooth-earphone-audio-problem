@@ -454,18 +454,48 @@ export async function runRecovery(
 
   const canInspectMultiEndpoint = request.inspectMultiEndpoint === true &&
     target?.isDefaultOutput === true && hasDifferentBluetoothDefaultRoutes(devices);
+  const isNormalInputOnlyTarget = target?.isDefaultOutput === false &&
+    devices.some((device) => device.name === name && device.isDefaultInput && device.inputChannels > 0);
+  const isInactiveOutputTarget = target?.isDefaultOutput === false;
+  const cannotProveOutputDegradation = target?.isDefaultOutput === true &&
+    (target.maxSupportedOutputRate ?? 0) <= 16_000;
   if (!target || !target.isDefaultOutput || target.sampleRateOutput === null ||
+      cannotProveOutputDegradation ||
       (target.sampleRateOutput > 16_000 && !canInspectMultiEndpoint) ||
       (request.inspectMultiEndpoint === true && !canInspectMultiEndpoint)) {
     const rate = target?.sampleRateOutput ?? null;
+    const alreadyRecovered = target?.isDefaultOutput === true && rate !== null && rate > 16_000;
+    const summary = alreadyRecovered
+      ? "目标现场已经恢复"
+      : isNormalInputOnlyTarget
+        ? "该设备当前只作为麦克风输入使用，无需修复输出"
+        : cannotProveOutputDegradation
+          ? "无法证明该设备的输出从高采样率降级，无需执行输出修复"
+          : "该设备当前不是需要修复的默认输出";
     const diagnosis: RecoveryDiagnosis = {
       kind: "证据不足",
-      confidence: "无法确认",
-      summary: target && rate !== null && rate > 16_000 ? "目标现场已经恢复" : "目标当前不是可处理的低采样率默认输出",
-      evidence: [`当前实际输出：${rate === null ? "未知" : `${rate / 1_000} kHz`}`],
+      confidence: alreadyRecovered || isInactiveOutputTarget || cannotProveOutputDegradation ? "已确认" : "无法确认",
+      summary,
+      evidence: [
+        `当前默认输入：${originalInput ?? "未知"}`,
+        `当前默认输出：${originalOutput ?? "未知"}`,
+        `该设备系统输出端点：${rate === null ? "未知" : `${rate / 1_000} kHz`}${target?.isDefaultOutput ? "（当前输出）" : "（当前未播放）"}`,
+        `该设备已知最高输出采样率：${target?.maxSupportedOutputRate === null || target?.maxSupportedOutputRate === undefined ? "未知" : `${target.maxSupportedOutputRate / 1_000} kHz`}`,
+      ],
     };
-    addStep(name, steps, "复核目标", target && rate !== null && rate > 16_000 ? "成功" : "跳过", diagnosis.summary, rate);
-    const outcome = target && rate !== null && rate > 16_000 ? "无需修复" : "未恢复";
+    addStep(name, steps, "复核目标", "成功", diagnosis.summary, rate);
+    const outcome = "无需修复";
+    const message = isNormalInputOnlyTarget
+      ? `${name} 当前只作为麦克风输入使用；16 kHz 输入可以是正常规格，未播放的系统输出端点无需恢复。`
+      : cannotProveOutputDegradation
+        ? `${name} 没有已证明的高采样率输出能力，本次不把 16 kHz 当作输出故障。`
+        : alreadyRecovered
+          ? baseMessage(outcome, name, rate)
+          : !target
+            ? `${name} 当前没有可用的系统输出端点，无需执行输出修复。`
+            : !target.isDefaultOutput
+              ? `${name} 当前没有承担声音输出，无需执行输出修复。`
+              : `${name} 当前输出采样率无法读取，本次未执行修复动作。`;
     return makeResult({
       outcome,
       recoveryPath: "现场复核",
@@ -476,7 +506,7 @@ export async function runRecovery(
       diagnosis,
       steps,
       usedReconnect: false,
-      message: baseMessage(outcome, name, rate),
+      message,
     });
   }
 

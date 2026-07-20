@@ -65,6 +65,38 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
   };
 }
 
+export function isRecoverableOutputDevice(device) {
+  return device.isDefaultOutput === true &&
+    device.maxSupportedOutputRate > 16_000 &&
+    device.sampleRateOutput !== null &&
+    device.sampleRateOutput <= 16_000;
+}
+
+export function deviceModePresentation(device) {
+  if (device.isInputActive && !isRecoverableOutputDevice(device)) {
+    const inputValue = device.sampleRateInput / 1_000;
+    const inputRate = device.sampleRateInput === null
+      ? "采样率未知"
+      : `${Number.isInteger(inputValue) ? inputValue.toFixed(0) : inputValue.toFixed(1)} kHz 输入`;
+    return {
+      className: "microphone",
+      text: `蓝牙麦克风使用中（${inputRate}）`,
+    };
+  }
+  if (device.isDefaultInput && !device.isDefaultOutput) {
+    return {
+      className: "microphone",
+      text: "默认蓝牙麦克风（当前未采集）",
+    };
+  }
+  return {
+    className: device.mode.toLowerCase(),
+    text: device.mode === "HFP_HSP" && device.isInputActive
+      ? "HFP/HSP模式（麦克风使用中）"
+      : device.label,
+  };
+}
+
 export function startBluetoothAudioModePage(createA2dpRecoveryController) {
 const listElement = document.querySelector("#device-list");
 const refreshButton = document.querySelector("#refresh-button");
@@ -269,10 +301,8 @@ function createDeviceCard(device) {
   icon.setAttribute("aria-hidden", "true");
   const title = createElement("div", "device-title");
   title.append(createElement("h2", "", device.name), createElement("p", "", routeText(device)));
-  const badgeText = device.mode === "HFP_HSP"
-    ? device.isInputActive ? "HFP/HSP模式（麦克风使用中）" : device.label
-    : device.label;
-  const badge = createElement("span", `mode-badge mode-badge--${device.mode.toLowerCase()}`, badgeText);
+  const modePresentation = deviceModePresentation(device);
+  const badge = createElement("span", `mode-badge mode-badge--${modePresentation.className}`, modePresentation.text);
   const modeActions = createElement("div", "device-card__mode-actions");
   modeActions.append(badge);
   if (recoveryController.runningDevices.has(device.name)) {
@@ -284,7 +314,7 @@ function createDeviceCard(device) {
     runningButton.type = "button";
     runningButton.disabled = true;
     modeActions.append(runningButton);
-  } else if (device.mode === "HFP_HSP") {
+  } else if (isRecoverableOutputDevice(device)) {
     const recoveryButton = createElement("button", "recovery-trigger", "一键修复 HFP");
     recoveryButton.type = "button";
     recoveryButton.setAttribute("aria-label", `一键修复 ${device.name} 的 HFP 模式`);
@@ -301,32 +331,43 @@ function createDeviceCard(device) {
   if (recovery) details.append(recoveryController.resultSection(recovery, device.name));
   if (!device.isDefaultOutput && !device.isInputActive) {
     const inactiveState = createElement("div", "inactive-state");
+    const inputOnlyIdle = device.isDefaultInput;
     inactiveState.append(
-      createElement("strong", "", "当前未刷新输入输出参数"),
+      createElement("strong", "", inputOnlyIdle ? "默认蓝牙麦克风当前未采集" : "当前未刷新输入输出参数"),
       createElement(
         "p",
         "",
-        "此设备当前未承担声音输出，因此不显示采样率和声道。将它切换为默认输出后，页面会自动显示实际参数。",
+        inputOnlyIdle
+          ? "当前没有本机应用实际读取此麦克风。系统声明但未播放的同名输出端点不参与修复判断，也不证明设备具有物理扬声器。"
+          : "此设备当前未承担声音输出，因此不显示采样率和声道。将它切换为默认输出后，页面会自动显示实际参数。",
       ),
     );
     details.append(inactiveState, microphoneOccupancySection(device));
     card.append(header, details);
   } else {
   const metrics = createElement("div", "metric-groups");
-  metrics.append(
-    metricGroup(
+  if (device.isDefaultOutput) {
+    metrics.append(metricGroup(
       device.isDefaultOutput ? "系统输出端点（当前输出）" : "系统输出端点（当前未播放）",
       metric("采样率", formatRate(device.sampleRateOutput)),
       metric("声道", device.outputChannels ? `${device.outputChannels} 声道` : "无"),
       "这是系统暴露的输出端点，不代表设备具有物理扬声器。",
-    ),
-    metricGroup(
+    ));
+  }
+  metrics.append(metricGroup(
       device.isInputActive ? "输入（正在使用）" : "输入",
       metric("采样率", formatRate(device.sampleRateInput)),
       metric("声道", device.inputChannels ? `${device.inputChannels} 声道` : "无"),
-    ),
-  );
-  details.append(metrics, microphoneOccupancySection(device));
+  ));
+  details.append(metrics);
+  if (device.isInputActive && !device.isDefaultOutput) {
+    details.append(createElement(
+      "p",
+      "input-only-note",
+      "当前只使用此设备的麦克风。16 kHz 可以是蓝牙输入的正常规格；系统声明但未播放的同名输出端点不参与修复判断，也不代表设备具有物理扬声器。",
+    ));
+  }
+  details.append(microphoneOccupancySection(device));
   card.append(header, details);
   }
 

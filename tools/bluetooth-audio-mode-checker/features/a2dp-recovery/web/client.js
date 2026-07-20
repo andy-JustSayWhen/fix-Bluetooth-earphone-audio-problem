@@ -27,7 +27,9 @@ export function createA2dpRecoveryController({
   const storedFeedback = readStoredFeedback();
   let removedLegacyInspection = false;
   for (const [deviceName, feedback] of Object.entries(storedFeedback)) {
-    if (feedback?.source === "inspection" && !feedback.result?.actionRequired) {
+    const obsoleteInspection = feedback?.source === "inspection" && !feedback.result?.actionRequired;
+    const obsoleteIneligibleTarget = feedback?.result?.diagnosis?.summary === "目标当前不是可处理的低采样率默认输出";
+    if (obsoleteInspection || obsoleteIneligibleTarget) {
       delete storedFeedback[deviceName];
       removedLegacyInspection = true;
     }

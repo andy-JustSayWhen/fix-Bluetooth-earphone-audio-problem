@@ -154,9 +154,11 @@ button { font: inherit; }
 .mode-badge { padding: 7px 11px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .mode-badge--a2dp { color: #176746; background: #e6f7ef; }
 .mode-badge--hfp_hsp { color: #9a5416; background: #fff1dd; }
+.mode-badge--microphone { color: #1f6398; background: #e7f4ff; }
 .mode-badge--le_audio { color: #6944ad; background: #f0eaff; }
 .mode-badge--inactive { color: #657086; background: #eef1f5; }
 .mode-badge--unknown { color: #a34051; background: #fdecef; }
+.input-only-note { margin: -2px 2px 14px; padding: 10px 12px; color: #49657d; background: #eef7ff; border: 1px solid #cfe5f5; border-radius: 10px; font-size: 12px; line-height: 1.6; }
 .device-card__mode-actions { display: grid; justify-items: stretch; gap: 7px; min-width: 172px; }
 .chevron { width: 10px; height: 10px; border-right: 2px solid #8d98aa; border-bottom: 2px solid #8d98aa; transform: rotate(45deg); transition: transform 180ms ease; }
 .device-card.is-expanded .chevron { transform: rotate(225deg) translate(-2px, -2px); }
