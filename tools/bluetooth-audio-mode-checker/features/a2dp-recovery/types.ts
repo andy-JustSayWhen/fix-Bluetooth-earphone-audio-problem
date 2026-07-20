@@ -14,6 +14,7 @@ export type RecoveryOutcome =
 
 export type RecoveryCauseKind =
   | "麦克风占用类"
+  | "链路残留类"
   | "多端点会话类"
   | "格式请求类"
   | "证据不足";

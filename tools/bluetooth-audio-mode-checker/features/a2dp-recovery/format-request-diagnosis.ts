@@ -50,6 +50,14 @@ export type FormatRequestCause = {
   gaps: string[];
 };
 
+export type LinkResidualCause = {
+  confidence: "高度疑似" | "无法确认";
+  startIo: StartIoEvent | null;
+  matchingTsco: ProfileEvent | null;
+  laterTacl: ProfileEvent | null;
+  gaps: string[];
+};
+
 export type MultiEndpointCause = {
   confidence: "已确认" | "高度疑似" | "无法确认";
   requester: RunningProcess | null;
@@ -309,6 +317,42 @@ export function diagnoseFormatRequestCause(
     sameProcessStartIo,
     matchingTsco,
     requestCount,
+    gaps,
+  };
+}
+
+export function diagnoseLinkResidualCause(
+  evidence: FormatRequestEvidence,
+  targetName: string,
+  lowRateBluetoothOutputNames: string[],
+): LinkResidualCause {
+  const startIo = evidence.events
+    .filter((event): event is StartIoEvent => event.kind === "start-io")
+    .sort((left, right) => right.timestampMs - left.timestampMs)[0] ?? null;
+  const matchingTsco = startIo === null ? null : evidence.events.find((event): event is ProfileEvent =>
+    event.kind === "profile" &&
+    event.profile === "tsco" &&
+    event.timestampMs >= startIo.timestampMs &&
+    event.timestampMs - startIo.timestampMs <= 2_000
+  ) ?? null;
+  const laterTacl = matchingTsco === null ? null : evidence.events.find((event): event is ProfileEvent =>
+    event.kind === "profile" &&
+    event.profile === "tacl" &&
+    event.timestampMs > matchingTsco.timestampMs
+  ) ?? null;
+  const gaps: string[] = [];
+  if (evidence.queryError) gaps.push(`系统声音日志读取失败：${evidence.queryError}`);
+  if (!startIo) gaps.push("最近日志中没有蓝牙输入启动记录");
+  if (startIo && !matchingTsco) gaps.push("输入启动后两秒内没有匹配的 tsco 日志");
+  if (laterTacl) gaps.push("tsco 之后已经出现 tacl，不能认定链路仍有残留");
+  if (lowRateBluetoothOutputNames.length !== 1 || lowRateBluetoothOutputNames[0] !== targetName) {
+    gaps.push("当前低采样率蓝牙输出不是唯一目标，无法对应残留链路");
+  }
+  return {
+    confidence: gaps.length === 0 ? "高度疑似" : "无法确认",
+    startIo,
+    matchingTsco,
+    laterTacl,
     gaps,
   };
 }

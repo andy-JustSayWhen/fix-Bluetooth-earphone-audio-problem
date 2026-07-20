@@ -21,6 +21,8 @@ export function successfulRecoverySummary(result, deviceName) {
   if (programs.length > 0) {
     if (result.diagnosis.kind === "麦克风占用类") {
       actions.push(`已解除${quotedNames(programs)}的麦克风占用`);
+    } else if (result.diagnosis.kind === "链路残留类") {
+      actions.push(`已解除${quotedNames(programs)}的输入占用`);
     } else if (result.diagnosis.kind === "格式请求类") {
       actions.push(`已结束${quotedNames(programs)}发起的声音格式请求`);
     } else {
@@ -29,6 +31,11 @@ export function successfulRecoverySummary(result, deviceName) {
   }
   const routeAction = routeActionSummary(result);
   if (routeAction) actions.push(routeAction);
+  if (result.diagnosis.kind === "链路残留类" && result.recoveryPath === "原因对应处理") {
+    actions.push(result.usedReconnect
+      ? `已重建「${deviceName}」的蓝牙连接并恢复点击前输入输出`
+      : "已解除残留声音链路并恢复点击前输入输出");
+  }
   if (actions.length === 0 && result.usedReconnect) {
     actions.push(`已重建「${deviceName}」的蓝牙连接`);
   }

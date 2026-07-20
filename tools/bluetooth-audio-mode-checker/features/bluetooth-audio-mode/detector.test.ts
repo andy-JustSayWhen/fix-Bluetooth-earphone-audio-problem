@@ -470,6 +470,16 @@ test("完成结果只根据实际成功动作生成原因", () => {
     diagnosis: { kind: "格式请求类" },
     releasedPrograms: ["声音程序"],
   }, "测试耳机"), "已结束「声音程序」发起的声音格式请求");
+  assert.equal(successfulRecoverySummary({
+    ...baseResult,
+    diagnosis: { kind: "链路残留类" },
+    releasedPrograms: ["语音程序"],
+  }, "测试耳机"), "已解除「语音程序」的输入占用，并已解除残留声音链路并恢复点击前输入输出");
+  assert.equal(successfulRecoverySummary({
+    ...baseResult,
+    diagnosis: { kind: "链路残留类" },
+    usedReconnect: true,
+  }, "测试耳机"), "已重建「测试耳机」的蓝牙连接并恢复点击前输入输出");
 });
 
 test("不同经典蓝牙输入输出在语音前显示风险提示", () => {

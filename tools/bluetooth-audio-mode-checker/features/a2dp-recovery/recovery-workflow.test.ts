@@ -354,6 +354,141 @@ test("新鲜占用快照直接路由到占用处理并三次确认完全恢复",
   assert.ok(progress.includes("正在确认稳定"));
 });
 
+test("占用结束后仍为 HFP 时转为链路残留并等待中转输出稳定后再恢复输入", async () => {
+  let running = true;
+  let defaultInput = "蓝牙耳机";
+  let rate = 16_000;
+  let mode: AudioModeAssessment["mode"] = "HFP_HSP";
+  let intermediateWaits = 0;
+  let reconnects = 0;
+  const readDevices = () => [
+    device({
+      sampleRateOutput: rate,
+      actualSampleRateOutput: rate,
+      nominalSampleRateOutput: rate,
+      isDefaultInput: defaultInput === "蓝牙耳机",
+    }),
+    device({
+      id: 2,
+      name: "内置麦克风",
+      uid: "built-in-input",
+      transport: "built-in",
+      inputChannels: 1,
+      outputChannels: 0,
+      sampleRateInput: 48_000,
+      sampleRateOutput: null,
+      actualSampleRateOutput: null,
+      isDefaultInput: defaultInput === "内置麦克风",
+      isDefaultOutput: false,
+      isDefaultSystemOutput: false,
+    }),
+  ];
+  const result = await runRecovery({
+    name: "蓝牙耳机",
+    context: {
+      clickedAt: new Date(now).toISOString(),
+      defaultInput: "蓝牙耳机",
+      defaultOutput: "蓝牙耳机",
+      targetSampleRate: 16_000,
+      targetAssessment: null,
+      occupancySnapshot: {
+        capturedAt: new Date(now - 500).toISOString(),
+        users: [microphoneUser],
+      },
+    },
+  }, runtime({
+    readDevices,
+    readMicrophoneUsers: async () => [],
+    readProcess: () => running ? processInfo : null,
+    terminateProcess: () => { running = false; },
+    readModeAssessment: () => ({
+      name: "蓝牙耳机",
+      mode,
+      isDefaultOutput: true,
+    } as AudioModeAssessment),
+    wait: async (milliseconds) => {
+      if (defaultInput === "内置麦克风" && milliseconds === 500) intermediateWaits += 1;
+    },
+    setDefaultDevice: (direction, name) => {
+      if (direction !== "input") return;
+      if (name === "内置麦克风") {
+        defaultInput = name;
+        rate = 44_100;
+        return;
+      }
+      assert.ok(intermediateWaits >= 2);
+      defaultInput = name;
+      mode = "A2DP";
+    },
+    reconnectDevice: () => { reconnects += 1; },
+  }));
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(result.diagnosis.kind, "链路残留类");
+  assert.equal(result.diagnosis.confidence, "已确认");
+  assert.equal(result.recoveryPath, "原因对应处理");
+  assert.equal(result.usedReconnect, false);
+  assert.equal(reconnects, 0);
+  assert.equal(result.steps.find((step) => step.stage === "确认中转期间链路释放")?.status, "成功");
+});
+
+test("点击时占用已结束但最近输入启动后没有 tacl 时高度疑似链路残留", async () => {
+  let defaultInput = "蓝牙耳机";
+  let rate = 16_000;
+  let mode: AudioModeAssessment["mode"] = "HFP_HSP";
+  const rawLines = [
+    "2026-07-19 09:59:59.000000+0800 localhost coreaudiod[1]: BluetoothHALPlugIn_StartIO PID=30114",
+    "2026-07-19 09:59:59.050000+0800 localhost coreaudiod[1]: BTUnifiedAudioDevice: Current profile tsco",
+  ];
+  const readDevices = () => [
+    device({
+      sampleRateOutput: rate,
+      actualSampleRateOutput: rate,
+      nominalSampleRateOutput: rate,
+      isDefaultInput: defaultInput === "蓝牙耳机",
+    }),
+    device({
+      id: 2,
+      name: "内置麦克风",
+      uid: "built-in-input",
+      transport: "built-in",
+      inputChannels: 1,
+      outputChannels: 0,
+      sampleRateInput: 48_000,
+      sampleRateOutput: null,
+      actualSampleRateOutput: null,
+      isDefaultInput: defaultInput === "内置麦克风",
+      isDefaultOutput: false,
+      isDefaultSystemOutput: false,
+    }),
+  ];
+  const result = await runRecovery({ name: "蓝牙耳机" }, runtime({
+    readDevices,
+    readMicrophoneUsers: async () => [],
+    readEvidence: () => ({
+      ...emptyEvidence,
+      events: parseSystemAudioLog(rawLines.join("\n")),
+      rawLines,
+    }),
+    readModeAssessment: () => ({
+      name: "蓝牙耳机",
+      mode,
+      isDefaultOutput: true,
+    } as AudioModeAssessment),
+    setDefaultDevice: (direction, name) => {
+      if (direction !== "input") return;
+      defaultInput = name;
+      if (name === "内置麦克风") rate = 44_100;
+      if (name === "蓝牙耳机") mode = "A2DP";
+    },
+  }));
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(result.diagnosis.kind, "链路残留类");
+  assert.equal(result.diagnosis.confidence, "高度疑似");
+  assert.equal(result.recoveryPath, "原因对应处理");
+});
+
 test("目标输出与实际麦克风不同时仍必须先解除全局占用", async () => {
   let running = true;
   let rate = 16_000;

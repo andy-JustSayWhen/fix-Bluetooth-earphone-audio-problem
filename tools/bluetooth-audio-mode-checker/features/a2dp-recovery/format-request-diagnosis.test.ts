@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   diagnoseFormatRequestCause,
+  diagnoseLinkResidualCause,
   diagnoseMultiEndpointCause,
   formatSystemLogStart,
   parseSystemAudioLog,
@@ -136,6 +137,30 @@ test("已有反向格式请求时不把旧的 0 -> 1 当作当前原因", () => 
   );
   assert.equal(cause.confidence, "无法确认");
   assert.equal(cause.request, null);
+});
+
+test("输入启动进入 tsco 且没有后续 tacl 时标记链路残留", () => {
+  const startIoLine = "2026-07-18 12:47:04.280000+0800 localhost coreaudiod[90589]: BluetoothHALPlugIn_StartIO PID=30114";
+  const result = diagnoseLinkResidualCause(
+    evidence(`${startIoLine}\n${tscoLine}`),
+    "Redmi电脑音箱-3899",
+    ["Redmi电脑音箱-3899"],
+  );
+  assert.equal(result.confidence, "高度疑似");
+  assert.equal(result.matchingTsco?.profile, "tsco");
+  assert.equal(result.laterTacl, null);
+});
+
+test("tsco 后已经出现 tacl 时不得判为链路残留", () => {
+  const startIoLine = "2026-07-18 12:47:04.280000+0800 localhost coreaudiod[90589]: BluetoothHALPlugIn_StartIO PID=30114";
+  const taclLine = "2026-07-18 12:47:05.000000+0800 localhost coreaudiod[90589]: BTUnifiedAudioDevice: Current profile tacl";
+  const result = diagnoseLinkResidualCause(
+    evidence(`${startIoLine}\n${tscoLine}\n${taclLine}`),
+    "Redmi电脑音箱-3899",
+    ["Redmi电脑音箱-3899"],
+  );
+  assert.equal(result.confidence, "无法确认");
+  assert.match(result.gaps.join("\n"), /已经出现 tacl/);
 });
 
 test("同一会话绑定两台蓝牙设备且系统拒绝时确认多端点原因", () => {

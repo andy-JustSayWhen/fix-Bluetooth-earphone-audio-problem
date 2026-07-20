@@ -15,6 +15,7 @@ import type {
 } from "../../shared/audio-device-types/index.ts";
 import {
   diagnoseFormatRequestCause,
+  diagnoseLinkResidualCause,
   readRecentSystemAudioEvidence,
   readSystemAudioEvidenceSince,
   type FormatRequestCause,
@@ -270,6 +271,23 @@ function diagnoseCause(
     };
   }
 
+  const residual = diagnoseLinkResidualCause(evidence, name, lowRateBluetoothOutputNames);
+  if (targetAssessment?.mode === "HFP_HSP" && residual.confidence === "高度疑似") {
+    return {
+      diagnosis: {
+        kind: "链路残留类",
+        confidence: "高度疑似",
+        summary: "最近发生过蓝牙输入启动并进入 tsco，当前没有麦克风读取者，但设备仍停留在 HFP",
+        evidence: [
+          residual.startIo ? `输入启动原文：${residual.startIo.raw}` : "没有输入启动原文",
+          residual.matchingTsco ? `通话链路原文：${residual.matchingTsco.raw}` : "没有匹配的通话链路原文",
+        ],
+      },
+      processes: [],
+      routeChoices: [],
+    };
+  }
+
   return {
     diagnosis: {
       kind: "证据不足",
@@ -316,6 +334,39 @@ async function verifyStableRecovery(
     } else {
       consecutive = 0;
     }
+    if (attempt < attempts - 1) await runtime.wait(500);
+  }
+  return null;
+}
+
+async function verifyIntermediateLinkRelease(
+  name: string,
+  runtime: RecoveryRuntime,
+  reportProgress: (progress: RecoveryProgress) => void,
+  attempts = 10,
+): Promise<number | null> {
+  let consecutive = 0;
+  let lastRate: number | null = null;
+  let progressReported = false;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const devices = runtime.readDevices();
+    const target = targetOutput(devices, name);
+    const assessment = runtime.readModeAssessment(name);
+    lastRate = actualOutputRate(target);
+    const released = target?.isDefaultOutput
+      ? lastRate !== null && lastRate > 16_000
+      : assessment !== null && assessment.mode !== "HFP_HSP";
+    consecutive = released ? consecutive + 1 : 0;
+    if (released && !progressReported) {
+      progressReported = true;
+      reportProgress({
+        stage: "正在确认稳定",
+        message: target?.isDefaultOutput
+          ? `中转输入生效，已观察到 ${(lastRate ?? 0) / 1_000} kHz，正在确认链路释放后再恢复原输入。`
+          : "中转输入生效，已观察到设备退出 HFP/HSP，正在确认链路释放后再恢复原输入。",
+      });
+    }
+    if (consecutive >= 3) return lastRate;
     if (attempt < attempts - 1) await runtime.wait(500);
   }
   return null;
@@ -762,10 +813,36 @@ export async function runRecovery(
         });
       }
     }
+
+    if (releasedPrograms.length > 0 && remainingPrograms.length === 0 &&
+        runtime.readModeAssessment(name)?.mode === "HFP_HSP") {
+      const releasedNames = [...new Set(releasedPrograms)];
+      cause = {
+        diagnosis: {
+          kind: "链路残留类",
+          confidence: "已确认",
+          summary: "已确认的蓝牙输入占用已经结束且没有新的读取者，但设备仍停留在 HFP",
+          evidence: [
+            `本轮已经结束输入占用：${releasedNames.join("、")}`,
+            "复查未发现新的麦克风读取者",
+            "占用结束后目标模式仍为 HFP/HSP",
+          ],
+        },
+        processes: [],
+        routeChoices: [],
+      };
+      addStep(name, steps, "重新判定现场", "成功", `${cause.diagnosis.kind}：${cause.diagnosis.summary}`);
+    }
   }
 
-  recoveryPath = "声音链路重建兜底";
-  reportProgress({ stage: "正在执行处理", message: "没有可继续安全结束的进程，正在重建本次声音链路。" });
+  const isLinkResidual = cause.diagnosis.kind === "链路残留类";
+  recoveryPath = isLinkResidual ? "原因对应处理" : "声音链路重建兜底";
+  reportProgress({
+    stage: "正在执行处理",
+    message: isLinkResidual
+      ? "占用已结束但链路仍未切回，正在解除输入绑定并重建声音链路。"
+      : "没有可继续安全结束的进程，正在重建本次声音链路。",
+  });
   const fallbackInput = runtime.readDevices().find((device) =>
     device.inputChannels > 0 && !isBluetooth(device) && device.name !== originalInput
   );
@@ -774,6 +851,15 @@ export async function runRecovery(
     const switched = await waitForRoute("input", fallbackInput.name, runtime);
     addStep(name, steps, "临时切换到非蓝牙输入", switched ? "成功" : "失败", fallbackInput.name);
     if (switched) {
+      const releasedRate = await verifyIntermediateLinkRelease(name, runtime, reportProgress);
+      addStep(
+        name,
+        steps,
+        "确认中转期间链路释放",
+        releasedRate !== null ? "成功" : "失败",
+        releasedRate !== null ? "连续三次确认输出已经脱离低采样率" : "中转期间没有连续确认链路释放，恢复原输入后继续复核",
+        releasedRate,
+      );
       runtime.setDefaultDevice("input", originalInput);
       const restored = await waitForRoute("input", originalInput, runtime);
       addStep(name, steps, "恢复点击前输入", restored ? "成功" : "失败", originalInput);
