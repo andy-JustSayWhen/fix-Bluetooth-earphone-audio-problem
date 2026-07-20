@@ -100,7 +100,7 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
       ...base,
       evidence: ["活动参数未刷新：该设备当前未承担声音输出。"],
       mode: "INACTIVE",
-      label: "活动参数未刷新",
+      label: "未活动（当前未承担声音输出）",
       confidence: "高",
       explanation: "该设备不是当前默认输出，因此不展示输入、输出采样率或声道。切换为默认输出后，系统监听会立即刷新实际参数。",
     };

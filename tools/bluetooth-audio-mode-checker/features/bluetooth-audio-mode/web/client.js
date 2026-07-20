@@ -89,10 +89,10 @@ export function deviceModePresentation(device) {
       text: `蓝牙麦克风使用中（${inputRate}）`,
     };
   }
-  if (device.isDefaultInput && !device.isDefaultOutput) {
+  if (device.mode === "INACTIVE") {
     return {
-      className: "microphone",
-      text: "默认蓝牙麦克风（当前未采集）",
+      className: "inactive",
+      text: "未活动（当前未承担声音输出）",
     };
   }
   return {
