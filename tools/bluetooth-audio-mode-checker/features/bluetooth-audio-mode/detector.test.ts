@@ -392,6 +392,7 @@ test("自动只读复核不占用一键修复按钮的忙碌状态", () => {
   assert.match(source, /"正在检查麦克风占用…"/);
   assert.match(inspection, /if \(!result\.actionRequired\) return;/);
   assert.match(source, /feedback\?\.source === "inspection" && !feedback\.result\?\.actionRequired/);
+  assert.match(source, /obsoleteUnmarkedInspection/);
 });
 
 test("单独解除占用显示阶段并在完成后主动多次复查", () => {

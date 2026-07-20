@@ -29,7 +29,10 @@ export function createA2dpRecoveryController({
   for (const [deviceName, feedback] of Object.entries(storedFeedback)) {
     const obsoleteInspection = feedback?.source === "inspection" && !feedback.result?.actionRequired;
     const obsoleteIneligibleTarget = feedback?.result?.diagnosis?.summary === "目标当前不是可处理的低采样率默认输出";
-    if (obsoleteInspection || obsoleteIneligibleTarget) {
+    const obsoleteUnmarkedInspection = feedback?.result?.recoveryPath === "现场复核" &&
+      !feedback.result?.actionRequired &&
+      feedback.result?.diagnosis?.summary === "尚不能确认具体应用拒绝了当前双蓝牙组合";
+    if (obsoleteInspection || obsoleteIneligibleTarget || obsoleteUnmarkedInspection) {
       delete storedFeedback[deviceName];
       removedLegacyInspection = true;
     }
