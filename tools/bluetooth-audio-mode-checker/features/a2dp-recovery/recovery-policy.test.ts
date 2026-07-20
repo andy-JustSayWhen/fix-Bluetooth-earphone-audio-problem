@@ -64,8 +64,12 @@ test("一键修复包含兜底、重连和三次稳定确认", () => {
 
 test("本次开机阻止授权必须先由服务端进入等待状态", () => {
   const source = readFileSync(join(moduleDirectory, "..", "..", "app", "index.ts"), "utf8");
+  const clientSource = readFileSync(join(moduleDirectory, "web", "client.js"), "utf8");
   assert.match(source, /pendingRelaunchAuthorizations\.has\(body\.name\)/);
   assert.match(source, /result\.actionRequired\?\.kind === "relaunch-authorization"/);
+  assert.match(clientSource, /result\.actionRequired\.processNames/);
+  assert.match(clientSource, /涉及进程/);
+  assert.match(clientSource, /授权处理/);
 });
 
 test("多端点组合选择由服务端保存并复核当前路由后执行", () => {

@@ -466,6 +466,36 @@ test("解除麦克风占用后目标仍为 HFP 才进入多端点组合选择", 
   assert.equal(evidenceReads, 0);
 });
 
+test("等待授权结果必须明确列出未退出或再次触发的进程", async () => {
+  const result = await runRecovery({
+    name: "蓝牙耳机",
+    context: {
+      clickedAt: new Date(now).toISOString(),
+      defaultInput: "蓝牙耳机",
+      defaultOutput: "蓝牙耳机",
+      targetSampleRate: 16_000,
+      targetAssessment: null,
+      occupancySnapshot: {
+        capturedAt: new Date(now - 500).toISOString(),
+        users: [microphoneUser],
+      },
+    },
+  }, runtime({
+    readDevices: () => [device({ sampleRateOutput: 16_000, isDefaultInput: true })],
+    readMicrophoneUsers: async () => [microphoneUser],
+    readProcess: () => processInfo,
+    terminateProcess: () => {},
+  }));
+
+  assert.equal(result.outcome, "等待授权");
+  assert.equal(result.actionRequired?.kind, "relaunch-authorization");
+  assert.deepEqual(result.actionRequired?.kind === "relaunch-authorization"
+    ? result.actionRequired.processNames
+    : [], ["VoiceApp"]);
+  assert.match(result.actionRequired?.prompt ?? "", /VoiceApp/);
+  assert.match(result.actionRequired?.prompt ?? "", /未退出或再次触发/);
+});
+
 test("用户授权后返回仅限本次开机的自动拉起阻止任务", async () => {
   let running = true;
   let rate = 16_000;

@@ -474,7 +474,7 @@ function baseMessage(outcome: A2dpRecoveryResult["outcome"], name: string, rate:
   if (outcome === "绕过成功") return "替代输入输出组合已经稳定；这是绕过成功，不代表原组合已完全修复。";
   if (outcome === "原组合复发") return "恢复点击前输入输出组合后再次进入通话模式，原组合仍会复发。";
   if (outcome === "等待选择") return "已确认多端点会话问题，请选择希望保留输入还是输出。";
-  if (outcome === "等待授权") return "同一进程自动重启并再次触发问题，需要授权后才能在本次开机期间阻止它继续拉起。";
+  if (outcome === "等待授权") return "原因进程未退出或再次触发问题，需要你确认具体进程后再授权继续处理。";
   return `${name} 仍未稳定恢复到高于 16 kHz，本轮自动处理已停止。`;
 }
 
@@ -691,8 +691,9 @@ export async function runRecovery(
     const originalCommands = new Set(cause.processes.map((processInfo) => processInfo.command));
     const repeatedProcesses = freshCause.processes.filter((processInfo) => originalCommands.has(processInfo.command));
     if (freshCause.diagnosis.confidence === "已确认" && repeatedProcesses.length > 0) {
+      const repeatedProcessNames = [...new Set(repeatedProcesses.map((processInfo) => processInfo.name))];
       if (!request.authorizeRelaunchBlock) {
-        addStep(name, steps, "检测自动重启", "失败", `同一进程再次触发：${repeatedProcesses.map(processDescription).join("、")}`);
+        addStep(name, steps, "检测持续或再次占用", "失败", `进程未退出或再次触发：${repeatedProcesses.map(processDescription).join("、")}`);
         const outcome = "等待授权";
         return makeResult({
           outcome,
@@ -706,8 +707,8 @@ export async function runRecovery(
           usedReconnect,
           actionRequired: {
             kind: "relaunch-authorization",
-            prompt: "是否授权工具仅在本次开机期间阻止该进程继续自动拉起？不会修改登录项、删除应用或改变下次开机配置。",
-            processNames: repeatedProcesses.map((processInfo) => processInfo.name),
+            prompt: `以下进程未退出或再次触发麦克风占用：${repeatedProcessNames.join("、")}。是否授权工具继续处理，并仅在本次开机期间阻止它重新启动？不会修改登录项、删除应用或改变下次开机配置。`,
+            processNames: repeatedProcessNames,
           },
           message: baseMessage(outcome, name, currentOutputRate(runtime, name)),
         });

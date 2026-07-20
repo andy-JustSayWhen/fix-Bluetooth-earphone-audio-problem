@@ -194,12 +194,21 @@ export function createA2dpRecoveryController({
     }
     if (result.actionRequired?.kind === "relaunch-authorization") {
       const actions = createElement("div", "recovery-actions");
+      const processNames = [...new Set((result.actionRequired.processNames ?? [])
+        .filter((name) => typeof name === "string" && name.length > 0))];
+      const processLabel = processNames.length > 0 ? processNames.join("、") : "名称无法确认的进程";
+      actions.append(createElement("p", "recovery-action-prompt", `涉及进程：${processLabel}`));
       actions.append(createElement("p", "recovery-action-prompt", result.actionRequired.prompt));
-      const authorize = createElement("button", "recovery-action is-danger", "授权本次开机阻止自动拉起");
+      const authorize = createElement(
+        "button",
+        "recovery-action is-danger",
+        processNames.length === 1 ? `授权处理 ${processNames[0]}` : "授权处理上述进程",
+      );
       authorize.type = "button";
       authorize.addEventListener("click", () => {
         const device = getLastRenderedDevices().find((item) => item.name === deviceName);
-        if (device && window.confirm(result.actionRequired.prompt)) {
+        const confirmation = `涉及进程：${processLabel}\n\n${result.actionRequired.prompt}`;
+        if (device && window.confirm(confirmation)) {
           recover(device, { authorizeRelaunchBlock: true });
         }
       });
