@@ -62,18 +62,20 @@ test("进程身份不再有效时不保留历史占用", () => {
   assert.equal(flattenSpeakerSessions(sessions).length, 0);
 });
 
-test("页面仅在有输出占用时提供一键断开重连并显示指定备注", () => {
+test("页面无论是否识别到输出占用都提供一键断开重连", () => {
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
-  assert.match(source, /if \(inUse\)[\s\S]*?一键断开重连/);
+  assert.match(source, /if \(inUse\)[\s\S]*?\} else \{[\s\S]*?\}\s+const button = createElement\(/);
+  assert.match(source, /busyDevices\.has\(device\.name\) \? "正在断开重连…" : "一键断开重连"/);
   assert.match(source, /若当前设备处于A2DP，音频能正常播放但设备端没有声音，可以点击“一键断开重连”尝试修复/);
   assert.match(source, /仅设为系统默认输出不算应用级占用/);
 });
 
-test("服务端执行前复核当前进程和设备占用证据", () => {
+test("服务端只复核目标设备并允许占用证据为空", () => {
   const source = readFileSync(new URL("../../app/index.ts", import.meta.url), "utf8");
   assert.match(source, /filterCurrentSpeakerUsers\(latestSpeakerUsers\)/);
   assert.match(source, /speakerOccupancy\?\.users \?\? \[\]/);
-  assert.match(source, /当前没有应用正在向该设备输出声音，未执行断开重连/);
+  assert.match(source, /reconnectSpeakerDevice\(body\.name\)/);
+  assert.doesNotMatch(source, /当前没有应用正在向该设备输出声音，未执行断开重连/);
 });
 
 test("断开确认后立即重连且不保留固定等待", () => {

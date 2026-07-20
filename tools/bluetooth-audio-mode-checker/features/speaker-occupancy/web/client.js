@@ -65,15 +65,6 @@ export function createSpeakerOccupancyController({
         list.append(row);
       }
       container.append(list);
-      const button = createElement(
-        "button",
-        "speaker-reconnect-button",
-        busyDevices.has(device.name) ? "正在断开重连…" : "一键断开重连",
-      );
-      button.type = "button";
-      button.disabled = busyDevices.has(device.name);
-      button.addEventListener("click", () => reconnect(device));
-      container.append(button);
     } else {
       container.append(createElement(
         "p",
@@ -81,6 +72,16 @@ export function createSpeakerOccupancyController({
         "没有检测到正在向此设备输出声音的本机应用。仅设为系统默认输出不算应用级占用。",
       ));
     }
+
+    const button = createElement(
+      "button",
+      "speaker-reconnect-button",
+      busyDevices.has(device.name) ? "正在断开重连…" : "一键断开重连",
+    );
+    button.type = "button";
+    button.disabled = busyDevices.has(device.name);
+    button.addEventListener("click", () => reconnect(device));
+    container.append(button);
 
     container.append(createElement(
       "p",

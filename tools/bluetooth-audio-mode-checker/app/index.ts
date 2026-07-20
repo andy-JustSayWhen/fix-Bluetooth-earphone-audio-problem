@@ -37,7 +37,7 @@ import {
 import {
   attachSpeakerOccupancy,
   filterCurrentSpeakerUsers,
-  reconnectOccupiedSpeaker,
+  reconnectSpeakerDevice,
   speakerOccupancyWebAssetsDirectory,
   startSpeakerOccupancyMonitor,
 } from "../features/speaker-occupancy/index.ts";
@@ -648,15 +648,12 @@ function main(): void {
           .find((device) => device.name === body.name);
         if (!currentDevice) throw new Error("目标蓝牙设备当前未连接");
         const evidenceUsers = currentDevice.speakerOccupancy?.users ?? [];
-        if (evidenceUsers.length === 0) {
-          throw new Error("当前没有应用正在向该设备输出声音，未执行断开重连");
-        }
         speakerReconnectBusyDevices.add(body.name);
         detailedLog("info", "speaker-occupancy.reconnect-requested", {
           deviceName: body.name,
           users: evidenceUsers,
         });
-        const result = await reconnectOccupiedSpeaker(body.name);
+        const result = await reconnectSpeakerDevice(body.name);
         detailedLog("info", "speaker-occupancy.reconnect-completed", {
           deviceName: body.name,
           users: evidenceUsers,

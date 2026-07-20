@@ -209,7 +209,7 @@ export function startSpeakerOccupancyMonitor(
   };
 }
 
-export async function reconnectOccupiedSpeaker(name: string): Promise<{ durationMs: number }> {
+export async function reconnectSpeakerDevice(name: string): Promise<{ durationMs: number }> {
   const startedAt = performance.now();
   try {
     await reconnectBluetoothDeviceAsync(name);
