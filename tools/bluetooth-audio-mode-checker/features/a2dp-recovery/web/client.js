@@ -17,6 +17,10 @@ function routeActionSummary(result) {
 
 export function successfulRecoverySummary(result, deviceName) {
   const actions = [];
+  const guardedPrograms = result.guardedPrograms ?? [];
+  if (guardedPrograms.length > 0) {
+    actions.push(`已在本次开机期间阻止${quotedNames(guardedPrograms)}自动拉起`);
+  }
   const programs = result.releasedPrograms ?? [];
   if (programs.length > 0) {
     if (result.diagnosis.kind === "麦克风占用类") {
@@ -108,10 +112,18 @@ export function createA2dpRecoveryController({
     if (runningDevices.has(device.name)) return;
     runningDevices.add(device.name);
     const choosingRoute = Boolean(action.routeChoiceId);
-    progressByDevice.set(device.name, choosingRoute ? "正在切换输入输出…" : "正在检查麦克风占用…");
+    const authorizingRelaunchBlock = action.authorizeRelaunchBlock === true;
+    progressByDevice.set(
+      device.name,
+      choosingRoute ? "正在切换输入输出…" : authorizingRelaunchBlock ? "正在应用本次开机授权…" : "正在保存现场…",
+    );
     setFeedback(device.name, {
       kind: "running",
-      text: choosingRoute ? "正在按你的授权切换输入输出。" : "正在检查并优先解除麦克风占用。",
+      text: choosingRoute
+        ? "正在按你的选择切换输入输出。"
+        : authorizingRelaunchBlock
+          ? "正在沿用原修复回合，阻止已列出的进程在本次开机期间自动拉起。"
+          : "正在保存点击现场，然后检查并优先解除麦克风占用。",
     }, false);
     expandedDevices.add(device.name);
     renderDevices(getLastRenderedDevices());
@@ -209,7 +221,9 @@ export function createA2dpRecoveryController({
       const authorize = createElement(
         "button",
         "recovery-action is-danger",
-        processNames.length === 1 ? `授权处理 ${processNames[0]}` : "授权处理上述进程",
+        processNames.length === 1
+          ? `授权本次开机阻止 ${processNames[0]} 自动拉起`
+          : "授权本次开机阻止上述进程自动拉起",
       );
       authorize.type = "button";
       authorize.addEventListener("click", () => {

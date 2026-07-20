@@ -25,8 +25,11 @@ import {
 import {
   recoverA2dp,
   recoveryWebAssetsDirectory,
+  type RecoveryContinuation,
   type RecoveryDiagnosis,
   type RecoveryProgress,
+  type RecoveryRequestContext,
+  type RecoveryRoundState,
   type RecoveryRouteChoice,
 } from "../features/a2dp-recovery/index.ts";
 import { setDefaultAudioDevice } from "../core/macos-audio-route/index.ts";
@@ -168,12 +171,17 @@ function main(): void {
   let latestOccupancyCapturedAt: string | null = null;
   let inputActivityScanPending = false;
   let initialOccupancyScanScheduled = false;
-  const pendingRelaunchAuthorizations = new Set<string>();
+  const pendingRelaunchAuthorizations = new Map<string, {
+    continuation: RecoveryContinuation;
+    expiresAt: number;
+  }>();
   const pendingRouteChoices = new Map<string, {
     inputName: string;
     outputName: string;
     choices: RecoveryRouteChoice[];
     diagnosis: RecoveryDiagnosis;
+    context: RecoveryRequestContext;
+    roundState: RecoveryRoundState;
     expiresAt: number;
   }>();
 
@@ -531,20 +539,46 @@ function main(): void {
         if (body.authorizeRelaunchBlock !== undefined && typeof body.authorizeRelaunchBlock !== "boolean") {
           throw new Error("授权信息无效");
         }
-        if (body.authorizeRelaunchBlock === true && !pendingRelaunchAuthorizations.has(body.name)) {
-          throw new Error("当前没有等待确认的自动拉起阻止授权");
+        if (body.routeChoiceId !== undefined && body.authorizeRelaunchBlock === true) {
+          throw new Error("输入输出选择和自动拉起阻止授权不能同时提交");
         }
-        if (body.authorizeRelaunchBlock === true) pendingRelaunchAuthorizations.delete(body.name);
         detailedLog("info", "a2dp-recovery.requested", {
           deviceName: body.name,
+          continuation: body.authorizeRelaunchBlock === true
+            ? "relaunch-authorization"
+            : typeof body.routeChoiceId === "string" ? "route-choice" : "new-round",
         });
-        const clickedAt = new Date().toISOString();
         const currentState = cachedState ?? readAudioModeState();
         const currentDevice = currentState.devices.find((device) => device.name === body.name);
         const currentInputName = currentState.routes.input.find((route) => route.isDefault)?.name ?? null;
         const currentOutputName = currentState.routes.output.find((route) => route.isDefault)?.name ?? null;
+        const allOccupancyUsers = [...new Map(currentState.devices
+          .flatMap((device) => device.microphoneOccupancy?.users ?? [])
+          .map((user) => [user.pid, user] as const)).values()];
+        let recoveryContext: RecoveryRequestContext;
+        let roundState: RecoveryRoundState | undefined;
+        let approvedRelaunchGuards: RecoveryContinuation["pendingGuards"] | undefined;
         let confirmedRouteChoice: { choice: RecoveryRouteChoice; diagnosis: RecoveryDiagnosis } | undefined;
-        if (typeof body.routeChoiceId === "string") {
+
+        if (body.authorizeRelaunchBlock === true) {
+          const pending = pendingRelaunchAuthorizations.get(body.name);
+          if (!pending || pending.expiresAt < Date.now()) {
+            pendingRelaunchAuthorizations.delete(body.name);
+            throw new Error("当前没有仍然有效的自动拉起阻止授权，请重新点击一键修复");
+          }
+          recoveryContext = pending.continuation.roundState.context;
+          roundState = pending.continuation.roundState;
+          const originalInput = recoveryContext.defaultInput;
+          const originalOutput = recoveryContext.defaultOutput;
+          if (currentInputName !== originalInput || currentOutputName !== originalOutput) {
+            pendingRelaunchAuthorizations.delete(body.name);
+            throw new Error("当前输入输出已变化，旧授权对应的现场已经失效，请重新点击一键修复");
+          }
+          approvedRelaunchGuards = currentDevice?.mode === "HFP_HSP"
+            ? pending.continuation.pendingGuards
+            : [];
+          pendingRelaunchAuthorizations.delete(body.name);
+        } else if (typeof body.routeChoiceId === "string") {
           const pending = pendingRouteChoices.get(body.name);
           if (!pending || pending.expiresAt < Date.now()) {
             pendingRouteChoices.delete(body.name);
@@ -557,16 +591,13 @@ function main(): void {
           const choice = pending.choices.find((item) => item.id === body.routeChoiceId);
           if (!choice) throw new Error("所选输入输出组合不在已确认范围内");
           confirmedRouteChoice = { choice, diagnosis: pending.diagnosis };
-        }
-        const allOccupancyUsers = [...new Map(currentState.devices
-          .flatMap((device) => device.microphoneOccupancy?.users ?? [])
-          .map((user) => [user.pid, user] as const)).values()];
-        const result = await recoverA2dp({
-          name: body.name,
-          routeChoiceId: body.routeChoiceId as string | undefined,
-          authorizeRelaunchBlock: body.authorizeRelaunchBlock as boolean | undefined,
-          _confirmedRouteChoice: confirmedRouteChoice,
-          context: {
+          recoveryContext = pending.context;
+          roundState = pending.roundState;
+        } else {
+          pendingRelaunchAuthorizations.delete(body.name);
+          pendingRouteChoices.delete(body.name);
+          const clickedAt = new Date().toISOString();
+          recoveryContext = {
             clickedAt,
             defaultInput: currentInputName,
             defaultOutput: currentOutputName,
@@ -576,21 +607,43 @@ function main(): void {
               capturedAt: latestOccupancyCapturedAt,
               users: allOccupancyUsers,
             } : undefined,
-          },
+          };
+        }
+        const result = await recoverA2dp({
+          name: body.name,
+          routeChoiceId: body.routeChoiceId as string | undefined,
+          authorizeRelaunchBlock: body.authorizeRelaunchBlock as boolean | undefined,
+          _confirmedRouteChoice: confirmedRouteChoice,
+          _roundState: roundState,
+          _approvedRelaunchGuards: approvedRelaunchGuards,
+          context: recoveryContext,
         }, (progress) => broadcastRecoveryProgress(body.name as string, progress), () =>
           cachedState?.devices.find((device) => device.name === body.name) ?? null
         );
         scheduleOccupancyScan(0, "a2dp-recovery-completed");
         scheduleStateRefresh();
+        const continuation = result._continuation;
+        delete result._continuation;
         if (result.actionRequired?.kind === "relaunch-authorization") {
-          pendingRelaunchAuthorizations.add(body.name);
+          if (!continuation || continuation.pendingGuards.length === 0) {
+            throw new Error("修复流程没有保存等待授权所需的进程和处理记录");
+          }
+          pendingRelaunchAuthorizations.set(body.name, {
+            continuation,
+            expiresAt: Date.now() + 30 * 60 * 1_000,
+          });
+        } else {
+          pendingRelaunchAuthorizations.delete(body.name);
         }
         if (result.actionRequired?.kind === "route-choice") {
+          if (!continuation) throw new Error("修复流程没有保存多端点选择所需的处理记录");
           pendingRouteChoices.set(body.name, {
             inputName: currentInputName ?? "",
             outputName: currentOutputName ?? "",
             choices: result.actionRequired.choices,
             diagnosis: result.diagnosis,
+            context: continuation.roundState.context,
+            roundState: continuation.roundState,
             expiresAt: Date.now() + 30 * 60 * 1_000,
           });
         } else if (confirmedRouteChoice) {

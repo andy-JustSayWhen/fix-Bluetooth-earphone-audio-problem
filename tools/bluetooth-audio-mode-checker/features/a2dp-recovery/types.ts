@@ -51,6 +51,7 @@ export type RecoveryActionRequired =
       kind: "relaunch-authorization";
       prompt: string;
       processNames: string[];
+      cause: "麦克风占用类" | "格式请求类";
     };
 
 export type RecoveryProgress = {
@@ -70,6 +71,41 @@ export type RecoveryRequestContext = {
   };
 };
 
+export type RecoveryProcessAttempt = {
+  cause: "麦克风占用类" | "格式请求类";
+  command: string;
+  processName: string;
+  automaticAttempted: boolean;
+  authorizedAttempted: boolean;
+};
+
+export type RecoveryRoundState = {
+  context: RecoveryRequestContext;
+  initialOccupancyChecked: boolean;
+  causeReviewCount: number;
+  processAttempts: RecoveryProcessAttempt[];
+  linkResidualAttempted: boolean;
+  fallbackInputAttempted: boolean;
+  reconnectAttempted: boolean;
+  initialEvidenceRead: boolean;
+  evidenceSinceMs: number | null;
+  releasedBluetoothInputPrograms: string[];
+  releasedPrograms: string[];
+  remainingPrograms: string[];
+  guardedPrograms: string[];
+  steps: RecoveryStep[];
+};
+
+export type RelaunchGuardRequest = {
+  command: string;
+  processName: string;
+};
+
+export type RecoveryContinuation = {
+  roundState: RecoveryRoundState;
+  pendingGuards: RelaunchGuardRequest[];
+};
+
 export type RecoveryRequest = {
   name: string;
   context?: RecoveryRequestContext;
@@ -79,11 +115,8 @@ export type RecoveryRequest = {
     choice: RecoveryRouteChoice;
     diagnosis: RecoveryDiagnosis;
   };
-};
-
-export type RelaunchGuardRequest = {
-  command: string;
-  processName: string;
+  _roundState?: RecoveryRoundState;
+  _approvedRelaunchGuards?: RelaunchGuardRequest[];
 };
 
 export type A2dpRecoveryResult = {
@@ -94,10 +127,11 @@ export type A2dpRecoveryResult = {
   sampleRate: number | null;
   releasedPrograms: string[];
   remainingPrograms: string[];
+  guardedPrograms?: string[];
   diagnosis: RecoveryDiagnosis;
   steps: RecoveryStep[];
   usedReconnect: boolean;
   actionRequired?: RecoveryActionRequired;
   message: string;
-  _relaunchGuard?: RelaunchGuardRequest;
+  _continuation?: RecoveryContinuation;
 };

@@ -17,8 +17,11 @@ export type {
   RecoveryProgress,
   RecoveryRequest,
   RecoveryRequestContext,
+  RecoveryContinuation,
+  RecoveryRoundState,
   RecoveryRouteChoice,
   RecoveryStep,
+  RelaunchGuardRequest,
 } from "./types.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +54,9 @@ export function recoverA2dp(
     request.context?.targetAssessment ?? null,
 ): Promise<A2dpRecoveryResult> {
   return new Promise((resolve, reject) => {
+    for (const guard of request._approvedRelaunchGuards ?? []) {
+      startThisBootRelaunchGuard(guard.command, guard.processName);
+    }
     const child = spawn(process.execPath, [runnerPath, JSON.stringify(request)], {
       cwd: join(moduleDirectory, "..", ".."),
       stdio: ["pipe", "pipe", "pipe"],
@@ -108,10 +114,6 @@ export function recoverA2dp(
       if (code !== 0 || result === null) {
         reject(new Error(stderr.trim() || "恢复进程没有返回可读取结果"));
         return;
-      }
-      if (result._relaunchGuard) {
-        startThisBootRelaunchGuard(result._relaunchGuard.command, result._relaunchGuard.processName);
-        delete result._relaunchGuard;
       }
       detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.worker-result", { deviceName: request.name, result });
       resolve(result);

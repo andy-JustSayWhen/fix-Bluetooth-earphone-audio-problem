@@ -472,6 +472,10 @@ test("完成结果只根据实际成功动作生成原因", () => {
   }, "测试耳机"), "已结束「声音程序」发起的声音格式请求");
   assert.equal(successfulRecoverySummary({
     ...baseResult,
+    guardedPrograms: ["声音程序"],
+  }, "测试耳机"), "已在本次开机期间阻止「声音程序」自动拉起");
+  assert.equal(successfulRecoverySummary({
+    ...baseResult,
     diagnosis: { kind: "链路残留类" },
     releasedPrograms: ["语音程序"],
   }, "测试耳机"), "已解除「语音程序」的输入占用，并已解除残留声音链路并恢复点击前输入输出");
@@ -583,7 +587,8 @@ test("双蓝牙抖动时立即刷新但不自动发起修复", () => {
 test("多端点处理只能由用户点击一键修复发起", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
-  assert.match(source, /"正在检查麦克风占用…"/);
+  assert.match(source, /"正在保存现场…"/);
+  assert.match(source, /正在保存点击现场，然后检查并优先解除麦克风占用/);
   assert.doesNotMatch(source, /async function inspectRouteConflict|inspectingDevices/);
   assert.match(source, /feedback\?\.source === "inspection"/);
   assert.match(source, /obsoleteUnmarkedInspection/);
