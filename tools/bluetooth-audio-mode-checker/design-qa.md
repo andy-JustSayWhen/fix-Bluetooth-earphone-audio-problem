@@ -1,43 +1,45 @@
-# Design QA
+# 卡片布局还原核对
 
-- Source visual truth path: `browser-comment://current-turn/1`
-- Implementation full-view screenshot: `design-qa-implementation.png`
-- Implementation focused screenshot: `design-qa-inactive-device.png`
-- Viewport: 718 × 969 CSS pixels
-- State: REDMI Buds is the active input/output; Redmi speaker is inactive and expanded
+- 源视觉依据：`/var/folders/m8/4h1q76yx319fgvfg3n19z0z00000gn/T/codex-clipboard-26d2136a-8bf2-4ca0-9905-89cf8620af43.png`
+- 实现截图：`design-qa-implementation.png`
+- 视口：`962 × 969` 像素
+- 状态：两张蓝牙设备卡片均处于收起状态；DJI 模式无法确认，XIBERIA K03S 处于 HFP。
 
-## Full-view comparison evidence
+## 全视图对比依据
 
-The source annotation showed that the inactive Redmi speaker card still exposed output and input metric groups, including 44.1 kHz and two channels. The revised full view preserves the page structure, device order, card styling, controls, typography, colors, and responsive behavior while replacing the inactive badge with “活动参数未刷新”.
+源截图和实现截图已在同一次对比中打开。源截图显示问题现场：路由身份副标题在名称下方，模式胶囊位于卡片右侧并挤占展开图标所在区域。用户标注要求删除路由身份文字，把模式胶囊移到原副标题位置，并让右侧只保留展开图标。
 
-## Focused region comparison evidence
+实现截图确认两张卡片都使用相同的三列结构：左侧设备图标，中间为设备名称和其下方的模式胶囊，右侧只有展开图标。名称、胶囊、设备图标和展开图标在两张卡片中分别对齐。
 
-The focused implementation capture confirms that the inactive card no longer renders either the output or input metric group. Its expanded region contains only a neutral dashed status panel explaining that current input/output parameters are not refreshed or shown until the device becomes the default output.
+## 聚焦区域对比依据
 
-## Findings
+源图和实现图本身都是设备卡片区域的聚焦截图，因此不需要再截取更小区域。实现图中已不存在“已连接，非默认设备”“默认输出”“默认输入”等卡片副标题，右侧也不存在模式胶囊。
 
-- No remaining P0, P1, or P2 differences for the requested annotation.
-- Typography uses the existing system font stack and preserves the established hierarchy.
-- Spacing and layout rhythm remain aligned with the existing card design; the inactive card is shorter because stale metrics were intentionally removed.
-- Colors and visual tokens reuse the existing neutral inactive palette and dashed-border treatment.
-- No image assets were added or changed; existing icon rendering is preserved.
-- Copy clearly distinguishes unavailable active parameters from current measurements.
+## 核对结果
 
-## Comparison history
+- 没有遗留 P0/P1/P2（高、中优先级的界面问题等级）问题。
+- 字体与排版：沿用现有系统字体、设备名称字重和字号；模式胶囊缩小到适合名称下方的密度，长文案会在窄屏内截断而不会挤出卡片。
+- 间距与布局：两张卡片的左侧起点、名称起点、胶囊起点和右侧展开图标位置一致；桌面和 `390 × 844` 窄屏均未出现横向溢出。
+- 颜色：继续使用现有未知模式粉色和 HFP 橙色，不引入新的颜色规则。
+- 图片与图标：没有新增或替换图片资源；保留现有设备图标和展开图标。
+- 文案：删除路由身份副标题，模式胶囊文案保持原判定结果不变。
 
-1. Earlier P1 issue: an inactive device displayed standby input/output values as though they were current measurements.
-2. Fix: hide metric groups for non-default output devices, change the badge to “活动参数未刷新”, and add a concise empty-state explanation.
-3. Post-fix evidence: `design-qa-inactive-device.png` shows no sampling-rate or channel cards in the expanded inactive device.
+## 对比历史
 
-## Primary interactions tested
+1. 先前 P1 问题：模式胶囊和展开图标同时占据右侧，胶囊宽度不同导致两张卡片内容无法形成稳定对齐；名称下方还保留了用户不需要的路由身份文字。
+2. 修正：删除卡片路由身份生成函数和副标题节点，把模式胶囊放入名称列，并移除独立的右侧胶囊列。
+3. 修正后证据：`design-qa-implementation.png` 显示两张卡片右侧只保留展开图标，模式胶囊均位于名称下方。
 
-- Initial device loading completed.
-- Inactive device card expanded successfully.
-- Active device still displays its mode badge.
-- No browser console errors or warnings were present.
+## 已测试交互
 
-## Follow-up polish
+- 页面设备读取完成。
+- 设备卡片可以正常展开并显示声音链路与麦克风占用详情。
+- 再次点击可以正常收起，模式胶囊位置不变。
+- 列表级“一键修复”入口保持可见，没有执行实际修复动作。
+- 页面没有脚本错误。
 
-- None required for this scoped annotation.
+## 后续细节
+
+- 本次标注范围内不需要额外调整。
 
 final result: passed
