@@ -104,7 +104,7 @@ export function audioLinkTypePresentation(audioLinkType) {
   return "无法确认";
 }
 
-export function startBluetoothAudioModePage(createA2dpRecoveryController) {
+export function startBluetoothAudioModePage(createA2dpRecoveryController, createSpeakerOccupancyController) {
 const listElement = document.querySelector("#device-list");
 const refreshButton = document.querySelector("#refresh-button");
 const countElement = document.querySelector("#device-count");
@@ -125,6 +125,7 @@ let lastRenderedRoutes = null;
 let lastRenderedStateFingerprint = "";
 let lastOccupancyCapturedAt = 0;
 let recoveryController;
+let speakerOccupancyController;
 let refreshRequestRunning = false;
 let pendingRouteChange = null;
 let pendingRouteTimer = 0;
@@ -398,6 +399,7 @@ function createDeviceCard(device) {
   if (recovery) details.append(recoveryController.resultSection(recovery, device.name));
   details.append(audioLinkGroup(device));
   details.append(microphoneOccupancySection(device));
+  details.append(speakerOccupancyController.section(device));
   card.append(header, details);
 
   if (expandedDevices.has(device.name)) {
@@ -560,11 +562,15 @@ function renderDevices(devices) {
     recoveryController?.feedbackByDevice.get(device.name)?.result?.actionRequired
   );
   const occupiedDevice = devices.find((device) => device.microphoneOccupancy?.isInUse);
+  const speakerOccupiedDevice = devices.find((device) => device.speakerOccupancy?.isInUse);
   if (pendingActionDevice) {
     expandedDevices.add(pendingActionDevice.name);
   } else if (occupiedDevice) {
     expandedDevices.clear();
     expandedDevices.add(occupiedDevice.name);
+  } else if (speakerOccupiedDevice) {
+    expandedDevices.clear();
+    expandedDevices.add(speakerOccupiedDevice.name);
   }
   listElement.replaceChildren();
   if (devices.length === 0) {
@@ -617,6 +623,12 @@ recoveryController = createA2dpRecoveryController({
   expandedDevices,
   getLastRenderedDevices: () => lastRenderedDevices,
   triggerContainer: recoveryTriggerElement,
+  renderDevices,
+  schedulePostActionRefresh,
+});
+speakerOccupancyController = createSpeakerOccupancyController({
+  createElement,
+  getLastRenderedDevices: () => lastRenderedDevices,
   renderDevices,
   schedulePostActionRefresh,
 });

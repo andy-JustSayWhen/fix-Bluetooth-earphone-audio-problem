@@ -20,7 +20,6 @@ int main(int argc, const char *argv[]) {
       }
       if ([target isConnected]) return 4;
     }
-    [NSThread sleepForTimeInterval:0.8];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
       @autoreleasepool { [target openConnection]; }
     });

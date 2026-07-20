@@ -34,6 +34,13 @@ import {
   type RecoveryRoundState,
   type RecoveryRouteChoice,
 } from "../features/a2dp-recovery/index.ts";
+import {
+  attachSpeakerOccupancy,
+  filterCurrentSpeakerUsers,
+  reconnectOccupiedSpeaker,
+  speakerOccupancyWebAssetsDirectory,
+  startSpeakerOccupancyMonitor,
+} from "../features/speaker-occupancy/index.ts";
 import { setDefaultAudioDevice } from "../core/macos-audio-route/index.ts";
 import { detailedLog, getDetailedLogStatus } from "../core/detailed-logging/index.ts";
 
@@ -42,6 +49,7 @@ import type {
   ActiveOutputSnapshot,
   AudioModeState,
   BluetoothLinkSnapshot,
+  SpeakerOutputUser,
 } from "../shared/audio-device-types/index.ts";
 
 type Options = {
@@ -57,6 +65,8 @@ const allowedAssets = new Set([
   "bluetooth-audio-mode-client.js",
   "a2dp-recovery-client.js",
   "a2dp-recovery.css",
+  "speaker-occupancy-client.js",
+  "speaker-occupancy.css",
 ]);
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -110,6 +120,11 @@ async function serveAsset(assetName: string, response: import("node:http").Serve
             directory: recoveryWebAssetsDirectory,
             name: assetName === "a2dp-recovery-client.js" ? "client.js" : "styles.css",
           }
+        : assetName === "speaker-occupancy-client.js" || assetName === "speaker-occupancy.css"
+          ? {
+              directory: speakerOccupancyWebAssetsDirectory,
+              name: assetName === "speaker-occupancy-client.js" ? "client.js" : "styles.css",
+            }
         : {
             directory: webAssetsDirectory,
             name: assetName === "bluetooth-audio-mode-client.js" ? "client.js" : assetName,
@@ -173,6 +188,9 @@ function main(): void {
   let latestOccupancyCapturedAt: string | null = null;
   let latestRawMicrophoneUsers: NonNullable<AudioModeState["microphoneUsers"]> = [];
   let latestMicrophoneUsers: AudioModeState["microphoneUsers"] = [];
+  let latestSpeakerUsers: SpeakerOutputUser[] = [];
+  let speakerOccupancyFingerprint = "";
+  const speakerReconnectBusyDevices = new Set<string>();
   let inputActivityScanPending = false;
   let initialOccupancyScanScheduled = false;
   const pendingRelaunchAuthorizations = new Map<string, {
@@ -238,6 +256,10 @@ function main(): void {
       };
       latestMicrophoneUsers = classifyInputActivities(nextState.devices, latestRawMicrophoneUsers);
     }
+    nextState = {
+      ...nextState,
+      devices: attachSpeakerOccupancy(nextState.devices, latestSpeakerUsers),
+    };
     cachedState = nextState;
     cachedStateUpdatedAt = new Date().toISOString();
     const nextFingerprint = JSON.stringify({ devices: nextState.devices, routes: nextState.routes });
@@ -382,6 +404,27 @@ function main(): void {
     const nextFingerprint = JSON.stringify(cachedState.devices);
     if (nextFingerprint === previousFingerprint) return;
     cachedStateUpdatedAt = snapshot.timestamp;
+    broadcastState();
+  });
+  const stopSpeakerOccupancyMonitor = startSpeakerOccupancyMonitor((users, event) => {
+    latestSpeakerUsers = users;
+    const nextFingerprint = JSON.stringify(users.map((user) => [
+      user.sessionId, user.pid, user.deviceUid, user.observedAt,
+    ]));
+    if (nextFingerprint === speakerOccupancyFingerprint) return;
+    speakerOccupancyFingerprint = nextFingerprint;
+    detailedLog("info", "speaker-occupancy.changed", {
+      event,
+      users,
+    });
+    if (cachedState === null) return;
+    const previousDevicesFingerprint = JSON.stringify(cachedState.devices);
+    cachedState = {
+      ...cachedState,
+      devices: attachSpeakerOccupancy(cachedState.devices, latestSpeakerUsers),
+    };
+    if (JSON.stringify(cachedState.devices) === previousDevicesFingerprint) return;
+    cachedStateUpdatedAt = event?.observedAt ?? new Date().toISOString();
     broadcastState();
   });
   let occupancyFingerprint = "";
@@ -577,6 +620,68 @@ function main(): void {
         response.end(JSON.stringify({
           error: error instanceof Error ? error.message : "解除麦克风占用失败",
         }));
+      }
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/speaker-occupancy/reconnect") {
+      let requestedName: string | null = null;
+      try {
+        if (!request.headers["content-type"]?.startsWith("application/json")) {
+          throw new Error("请求格式不正确");
+        }
+        const expectedOrigin = `http://127.0.0.1:${options.port}`;
+        if (request.headers.origin && request.headers.origin !== expectedOrigin) {
+          throw new Error("请求来源不正确");
+        }
+        const body = await readJsonBody(request) as { name?: unknown };
+        if (typeof body.name !== "string" || body.name.length === 0 || body.name.length > 256) {
+          throw new Error("蓝牙设备名称无效");
+        }
+        requestedName = body.name;
+        if (speakerReconnectBusyDevices.has(body.name)) {
+          throw new Error("该设备正在断开重连，请勿重复提交");
+        }
+        if (cachedState === null) throw new Error("当前没有可用的蓝牙设备状态");
+        const currentUsers = filterCurrentSpeakerUsers(latestSpeakerUsers);
+        const currentDevice = attachSpeakerOccupancy(cachedState.devices, currentUsers)
+          .find((device) => device.name === body.name);
+        if (!currentDevice) throw new Error("目标蓝牙设备当前未连接");
+        const evidenceUsers = currentDevice.speakerOccupancy?.users ?? [];
+        if (evidenceUsers.length === 0) {
+          throw new Error("当前没有应用正在向该设备输出声音，未执行断开重连");
+        }
+        speakerReconnectBusyDevices.add(body.name);
+        detailedLog("info", "speaker-occupancy.reconnect-requested", {
+          deviceName: body.name,
+          users: evidenceUsers,
+        });
+        const result = await reconnectOccupiedSpeaker(body.name);
+        detailedLog("info", "speaker-occupancy.reconnect-completed", {
+          deviceName: body.name,
+          users: evidenceUsers,
+          ...result,
+          disconnected: true,
+          reconnected: true,
+        });
+        scheduleStateRefresh();
+        for (const delay of [350, 900, 1_800]) setTimeout(scheduleStateRefresh, delay);
+        response.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        response.end(JSON.stringify({ ok: true, name: body.name, ...result }));
+      } catch (error) {
+        detailedLog("error", "speaker-occupancy.reconnect-failed", {
+          deviceName: requestedName,
+          error,
+        });
+        response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({
+          error: error instanceof Error ? error.message : "断开重连失败",
+        }));
+      } finally {
+        if (requestedName !== null) speakerReconnectBusyDevices.delete(requestedName);
       }
       return;
     }
@@ -792,6 +897,7 @@ function main(): void {
     detailedLog("error", "service.server-error", { error, port: options.port });
     stopRealtimeMonitor();
     stopLinkMonitor();
+    stopSpeakerOccupancyMonitor();
     if (error.code === "EADDRINUSE") {
       console.error(`端口 ${options.port} 已被占用，请运行 ./run.command --port 4174 重试。`);
     } else {
@@ -804,6 +910,7 @@ function main(): void {
     detailedLog("info", "service.stopping", { eventClients: eventClients.size });
     stopRealtimeMonitor();
     stopLinkMonitor();
+    stopSpeakerOccupancyMonitor();
     if (occupancyTimer !== null) clearTimeout(occupancyTimer);
     for (const client of eventClients) client.end();
     server.close(() => {

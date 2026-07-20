@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,16 @@ function ensureHelperBuilt(): void {
 export function reconnectBluetoothDevice(name: string): void {
   ensureHelperBuilt();
   execFileSync(executablePath, [name], { encoding: "utf8", timeout: 18_000 });
+}
+
+export function reconnectBluetoothDeviceAsync(name: string): Promise<void> {
+  ensureHelperBuilt();
+  return new Promise((resolve, reject) => {
+    execFile(executablePath, [name], { encoding: "utf8", timeout: 18_000 }, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 export function disconnectBluetoothDevice(name: string): void {

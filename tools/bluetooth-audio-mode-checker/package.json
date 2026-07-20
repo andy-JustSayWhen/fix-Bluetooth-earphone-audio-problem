@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "start": "node app/index.ts",
-    "test": "node --test core/detailed-logging/index.test.ts core/macos-audio-volume/index.test.ts core/macos-bluetooth-link/index.test.ts features/bluetooth-audio-mode/detector.test.ts features/a2dp-recovery/format-request-diagnosis.test.ts features/a2dp-recovery/recovery-policy.test.ts features/a2dp-recovery/recovery-workflow.test.ts features/microphone-occupancy/merge-occupancy.test.ts"
+    "test": "node --test core/detailed-logging/index.test.ts core/macos-audio-volume/index.test.ts core/macos-bluetooth-link/index.test.ts features/bluetooth-audio-mode/detector.test.ts features/a2dp-recovery/format-request-diagnosis.test.ts features/a2dp-recovery/recovery-policy.test.ts features/a2dp-recovery/recovery-workflow.test.ts features/microphone-occupancy/merge-occupancy.test.ts features/speaker-occupancy/index.test.ts"
   }
 }

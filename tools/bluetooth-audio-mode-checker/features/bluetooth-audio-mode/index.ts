@@ -283,6 +283,7 @@ export function applyActiveOutputSnapshot(
         isDefaultOutput,
         isDefaultSystemOutput: device.isDefaultSystemOutput,
         microphoneOccupancy: device.microphoneOccupancy,
+        speakerOccupancy: device.speakerOccupancy,
       });
     }),
     routes: {
@@ -333,6 +334,7 @@ export function applyActiveInputSnapshot(
         isDefaultOutput: device.isDefaultOutput,
         isDefaultSystemOutput: device.isDefaultSystemOutput,
         microphoneOccupancy: device.microphoneOccupancy,
+        speakerOccupancy: device.speakerOccupancy,
       });
     }),
     routes: {
@@ -384,6 +386,7 @@ export function applyBluetoothLinkSnapshot(
         isDefaultOutput: device.isDefaultOutput,
         isDefaultSystemOutput: device.isDefaultSystemOutput,
         microphoneOccupancy: device.microphoneOccupancy,
+        speakerOccupancy: device.speakerOccupancy,
       });
     }),
   };

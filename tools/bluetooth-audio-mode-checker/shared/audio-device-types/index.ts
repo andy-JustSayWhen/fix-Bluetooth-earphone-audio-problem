@@ -74,6 +74,22 @@ export type AudioModeAssessment = {
   evidence: string[];
   explanation: string;
   microphoneOccupancy?: MicrophoneOccupancy;
+  speakerOccupancy?: SpeakerOccupancy;
+};
+
+export type SpeakerOutputUser = {
+  sessionId: string;
+  pid: number;
+  name: string;
+  deviceUid: string;
+  bluetoothAddress: string;
+  observedAt: string;
+};
+
+export type SpeakerOccupancy = {
+  isInUse: boolean;
+  users: SpeakerOutputUser[];
+  observedAt: string | null;
 };
 
 export type MicrophoneUser = {
