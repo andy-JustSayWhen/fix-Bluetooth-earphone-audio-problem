@@ -126,8 +126,6 @@ let refreshRequestRunning = false;
 let pendingRouteChange = null;
 let pendingRouteTimer = 0;
 let routeInstabilityState = null;
-let pendingRealtimeState = null;
-let realtimeRenderTimer = 0;
 let multiEndpointInspectionTimer = 0;
 let lastMultiEndpointInspectionKey = "";
 
@@ -493,10 +491,8 @@ function renderState(result, options = {}) {
   }
 }
 
-function clearRealtimeStabilityTimers() {
-  if (realtimeRenderTimer) window.clearTimeout(realtimeRenderTimer);
+function clearMultiEndpointInspectionTimer() {
   if (multiEndpointInspectionTimer) window.clearTimeout(multiEndpointInspectionTimer);
-  realtimeRenderTimer = 0;
   multiEndpointInspectionTimer = 0;
   lastMultiEndpointInspectionKey = "";
 }
@@ -533,23 +529,9 @@ function scheduleRouteConflictInspection(result, { force = false, lookbackSecond
   }, 500);
 }
 
-function scheduleSettledRealtimeRender(delay) {
-  if (realtimeRenderTimer) window.clearTimeout(realtimeRenderTimer);
-  realtimeRenderTimer = window.setTimeout(() => {
-    realtimeRenderTimer = 0;
-    if (!pendingRealtimeState) return;
-    const settled = pendingRealtimeState;
-    pendingRealtimeState = null;
-    routeInstabilityState = null;
-    renderState(settled, { preserveRouteMessage: true });
-    if (!pendingRouteChange) showRouteGuidance(settled.routes);
-  }, delay);
-}
-
 function renderRealtimeState(result) {
   if (pendingRouteChange) {
-    clearRealtimeStabilityTimers();
-    pendingRealtimeState = null;
+    clearMultiEndpointInspectionTimer();
     routeInstabilityState = null;
     renderState(result, { preserveRouteMessage: true });
     return;
@@ -559,24 +541,23 @@ function renderRealtimeState(result) {
   routeInstabilityState = observation.state;
   const routeConflict = getBluetoothRouteConflict(result.routes) ?? getBluetoothRouteConflict(lastRenderedRoutes ?? { input: [], output: [] });
   if (!routeConflict && !observation.unstable) {
-    clearRealtimeStabilityTimers();
-    pendingRealtimeState = null;
+    clearMultiEndpointInspectionTimer();
     renderState(result, { preserveRouteMessage: true });
+    showRouteGuidance(result.routes);
     return;
   }
 
-  pendingRealtimeState = result;
   scheduleRouteConflictInspection(result, {
     force: observation.triggered && observation.unstable,
   });
+  renderState(result, { preserveRouteMessage: true });
   if (observation.unstable) {
     routeMessage.className = "route-message is-warning is-unstable";
-    routeMessage.textContent = "检测到当前双蓝牙组合正在反复断连或切换模式。页面已保留最近稳定状态，正在确认是否有具体应用拒绝该组合。";
-    scheduleSettledRealtimeRender(5_000);
+    routeMessage.textContent = "检测到当前双蓝牙组合正在反复断连或切换模式。页面会继续实时显示每次变化，正在确认是否有具体应用拒绝该组合。";
     return;
   }
 
-  scheduleSettledRealtimeRender(1_200);
+  showRouteGuidance(result.routes);
 }
 
 function renderDevices(devices) {

@@ -353,7 +353,7 @@ function routeConflictState(mode: "A2DP" | "HFP_HSP", connected = true, inputAct
   };
 }
 
-test("双蓝牙组合连续两次模式变化后才进入稳定展示", () => {
+test("双蓝牙组合连续两次模式变化后标记路由抖动", () => {
   let observation = observeBluetoothRouteInstability(null, routeConflictState("A2DP"), 1_000);
   assert.equal(observation.unstable, false);
   observation = observeBluetoothRouteInstability(observation.state, routeConflictState("HFP_HSP"), 2_000);
@@ -407,11 +407,13 @@ test("一键修复结果不会因麦克风仍在使用而被页面删除", () =>
   assert.match(source, /finally \{\s+runningDevices\.delete\(device\.name\);\s+progressByDevice\.delete/s);
 });
 
-test("双蓝牙抖动只读复核后才给出原有路由选择", () => {
+test("双蓝牙抖动时立即刷新并继续只读复核", () => {
   const modeClient = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
   const recoveryClient = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
-  assert.match(modeClient, /页面已保留最近稳定状态/);
+  assert.doesNotMatch(modeClient, /scheduleSettledRealtimeRender|pendingRealtimeState|realtimeRenderTimer/);
+  assert.match(modeClient, /scheduleRouteConflictInspection\(result,[\s\S]*?renderState\(result, \{ preserveRouteMessage: true \}\);/);
+  assert.match(modeClient, /页面会继续实时显示每次变化/);
   assert.match(modeClient, /inspectRouteConflict\(device, \{\s+inputName: routeConflict\.input\.name,\s+outputName: routeConflict\.output\.name,\s+observedAt:/s);
   assert.match(recoveryClient, /inspectMultiEndpoint: true,\s+routeChoiceId: choice\.id,\s+observedConflict: feedback\.observedConflict/s);
 });
