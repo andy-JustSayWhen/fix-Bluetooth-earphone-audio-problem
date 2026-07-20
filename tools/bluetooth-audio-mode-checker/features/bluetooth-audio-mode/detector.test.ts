@@ -426,7 +426,7 @@ test("一键修复只在更新时间后显示一个列表级入口", () => {
   assert.match(htmlSource, /id="refresh-time"[\s\S]*?id="a2dp-recovery-trigger"/);
   assert.match(pageSource, /triggerContainer: recoveryTriggerElement/);
   assert.doesNotMatch(pageSource, /createElement\("button", "recovery-trigger"/);
-  assert.match(recoverySource, /`识别到 \$\{hfpDevices\.length\} 个设备处于 HFP`/);
+  assert.match(recoverySource, /`识别到有 \$\{hfpDevices\.length\} 个设备处于 HFP`/);
   assert.match(recoverySource, /createElement\("button", `recovery-trigger/);
   assert.match(recoverySource, /"一键修复全部 HFP 设备"/);
 });

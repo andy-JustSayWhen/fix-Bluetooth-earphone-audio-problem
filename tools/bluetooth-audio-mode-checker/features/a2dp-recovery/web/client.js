@@ -121,7 +121,7 @@ export function createA2dpRecoveryController({
     overview.append(createElement(
       "span",
       "recovery-overview__count",
-      `识别到 ${hfpDevices.length} 个设备处于 HFP`,
+      `识别到有 ${hfpDevices.length} 个设备处于 HFP`,
     ));
     if (hfpDevices.length > 0) {
       const hasPendingAction = [...feedbackByDevice.values()]
