@@ -22,7 +22,7 @@ type DeviceGroup = {
 
 type AssessmentFacts = Omit<
   AudioModeAssessment,
-  "mode" | "label" | "confidence" | "evidence" | "explanation"
+  "mode" | "a2dpSupport" | "label" | "confidence" | "evidence" | "explanation"
 >;
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -69,6 +69,9 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     0,
     ...base.availableSampleRateRangesOutput.map((range) => range.maximum),
   ) || null;
+  const a2dpSupport = maxAvailableOutputRate === null
+    ? "UNKNOWN"
+    : maxAvailableOutputRate < 44_100 ? "UNSUPPORTED" : "SUPPORTED";
   const supportsHighRate = maxAvailableOutputRate !== null && maxAvailableOutputRate > 16_000;
   const nominalIsLow = base.nominalSampleRateOutput !== null && base.nominalSampleRateOutput <= 16_000;
   const actualIsLow = base.actualSampleRateOutput !== null && base.actualSampleRateOutput <= 16_000;
@@ -78,11 +81,13 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     `输出实际采样率：${base.actualSampleRateOutput === null ? "无法读取" : formatRate(base.actualSampleRateOutput)}`,
     `输出声道：${base.outputChannels > 0 ? `${base.outputChannels} 声道` : "无法读取"}`,
     `设备最新声音链路：${base.audioLinkType ?? "无法确认"}`,
+    `A2DP 支持能力：${a2dpSupport === "UNSUPPORTED" ? "不支持" : a2dpSupport === "SUPPORTED" ? "支持" : "无法确认"}`,
   ];
 
   if (base.audioLinkType === "tsco") {
     return {
       ...base,
+      a2dpSupport,
       evidence,
       mode: "HFP_HSP",
       label: "HFP等模式（低音质语音模式）",
@@ -94,6 +99,7 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
   if (supportsHighRate && (nominalIsLow || actualIsLow)) {
     return {
       ...base,
+      a2dpSupport,
       evidence,
       mode: "HFP_HSP",
       label: "HFP等模式（低音质语音模式）",
@@ -105,6 +111,7 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
   if (base.actualSampleRateOutput !== null && base.actualSampleRateOutput > 16_000 && base.outputChannels >= 2) {
     return {
       ...base,
+      a2dpSupport,
       evidence,
       mode: "A2DP",
       label: "A2DP等模式（高音质播放模式）",
@@ -115,6 +122,7 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
 
   return {
     ...base,
+    a2dpSupport,
     evidence,
     mode: "UNKNOWN",
     label: "模式无法确认",

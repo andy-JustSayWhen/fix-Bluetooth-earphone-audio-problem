@@ -157,6 +157,7 @@ button { font: inherit; }
 .mode-badge { display: block; overflow: hidden; max-width: 100%; padding: 6px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .mode-badge--a2dp { color: #176746; background: #e6f7ef; }
 .mode-badge--hfp_hsp { color: #9a5416; background: #fff1dd; }
+.mode-badge--a2dp_unsupported { color: #5f6878; background: #eef1f5; }
 .mode-badge--microphone { color: #1f6398; background: #e7f4ff; }
 .mode-badge--le_audio { color: #6944ad; background: #f0eaff; }
 .mode-badge--unknown { color: #a34051; background: #fdecef; }

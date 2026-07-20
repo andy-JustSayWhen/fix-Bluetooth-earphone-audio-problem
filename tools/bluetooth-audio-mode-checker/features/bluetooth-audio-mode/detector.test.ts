@@ -16,6 +16,7 @@ import {
   observeBluetoothRouteInstability,
 } from "./web/client.js";
 import {
+  isA2dpRecoveryTarget,
   shouldContinueAfterOccupancyEnded,
   successfulRecoverySummary,
 } from "../a2dp-recovery/web/client.js";
@@ -156,7 +157,7 @@ test("只有标称采样率高于 16 kHz 而无法读取实际采样率时不判
   assert.equal(result.mode, "UNKNOWN");
 });
 
-test("可用采样率最高只有 16 kHz 且没有 tsco 时不强行判定为 HFP", () => {
+test("可用采样率最高只有 16 kHz 时明确判定不支持 A2DP", () => {
   const [result] = assessBluetoothDevices([
     device({
       availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 16_000 }],
@@ -167,6 +168,36 @@ test("可用采样率最高只有 16 kHz 且没有 tsco 时不强行判定为 HF
     }),
   ]);
   assert.equal(result.mode, "UNKNOWN");
+  assert.equal(result.a2dpSupport, "UNSUPPORTED");
+  assert.equal(isRecoverableOutputDevice(result), false);
+  assert.deepEqual(deviceModePresentation(result), {
+    className: "a2dp_unsupported",
+    text: "不支持A2DP（该设备无需修复）",
+  });
+});
+
+test("44.1 kHz 是支持 A2DP 的可用采样率边界", () => {
+  const [result] = assessBluetoothDevices([
+    device({
+      availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 44_100 }],
+      nominalSampleRateOutput: 16_000,
+      actualSampleRateOutput: 16_000,
+      sampleRateOutput: 16_000,
+      outputChannels: 1,
+    }),
+  ]);
+  assert.equal(result.mode, "HFP_HSP");
+  assert.equal(result.a2dpSupport, "SUPPORTED");
+  assert.equal(isRecoverableOutputDevice(result), true);
+});
+
+test("输出可用采样率无法读取时支持能力未知且不擅自排除修复", () => {
+  const deviceWithUnknownSupport = {
+    mode: "HFP_HSP",
+    a2dpSupport: "UNKNOWN",
+  };
+  assert.equal(isRecoverableOutputDevice(deviceWithUnknownSupport), true);
+  assert.equal(isA2dpRecoveryTarget(deviceWithUnknownSupport), true);
 });
 
 test("非默认设备也直接依据自身最新输出事实判定模式", () => {
@@ -302,7 +333,7 @@ test("输入开始或停止采集只更新活动状态，不直接改变模式",
   assert.equal(stopped.devices[0].isInputActive, false);
 });
 
-test("仅作为输入使用的设备只要判为 HFP 也显示修复入口", () => {
+test("仅作为输入且明确不支持 A2DP 的设备不显示修复入口", () => {
   const microphone = {
     mode: "HFP_HSP",
     label: "HFP/HSP 模式",
@@ -313,24 +344,33 @@ test("仅作为输入使用的设备只要判为 HFP 也显示修复入口", () 
     availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 16_000 }],
     actualSampleRateOutput: 16_000,
     maxSupportedOutputRate: 16_000,
+    a2dpSupport: "UNSUPPORTED",
   };
 
-  assert.equal(isRecoverableOutputDevice(microphone), true);
+  assert.equal(isRecoverableOutputDevice(microphone), false);
   assert.deepEqual(deviceModePresentation(microphone), {
-    className: "hfp_hsp",
-    text: "HFP等模式（低音质语音模式）",
+    className: "a2dp_unsupported",
+    text: "不支持A2DP（该设备无需修复）",
   });
 });
 
-test("一键修复入口只以最新 HFP 模式结论为准", () => {
+test("一键修复入口以最新 HFP 模式和 A2DP 支持能力为准", () => {
   assert.equal(isRecoverableOutputDevice({
     isDefaultOutput: true,
     mode: "HFP_HSP",
+    a2dpSupport: "SUPPORTED",
     availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 44_100 }],
     actualSampleRateOutput: 16_000,
     maxSupportedOutputRate: 44_100,
     sampleRateOutput: 16_000,
   }), true);
+  assert.equal(isRecoverableOutputDevice({
+    isDefaultOutput: false,
+    mode: "HFP_HSP",
+    a2dpSupport: "UNSUPPORTED",
+    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 16_000 }],
+    actualSampleRateOutput: 16_000,
+  }), false);
   assert.equal(isRecoverableOutputDevice({
     isDefaultOutput: true,
     mode: "UNKNOWN",
@@ -431,8 +471,9 @@ test("一键修复只在更新时间后显示一个列表级入口", () => {
   assert.match(pageSource, /triggerContainer: recoveryTriggerElement/);
   assert.doesNotMatch(pageSource, /createElement\("button", "recovery-trigger"/);
   assert.match(recoverySource, /`识别到有 \$\{hfpDevices\.length\} 个设备处于 HFP`/);
+  assert.match(recoverySource, /其中 \$\{repairableDevices\.length\} 个需要修复/);
   assert.match(recoverySource, /createElement\("button", `recovery-trigger/);
-  assert.match(recoverySource, /"一键修复全部 HFP 设备"/);
+  assert.match(recoverySource, /"一键修复全部需要修复的 HFP 设备"/);
 });
 
 test("设备卡片在名称下显示模式且右侧只保留展开图标", () => {
@@ -457,6 +498,10 @@ test("列表级一键修复逐台处理并在需要用户选择时暂停", () =>
   assert.match(source, /feedbackByDevice\.get\(deviceName\)\?\.result\?\.actionRequired/);
   assert.match(source, /batchPausedDevice = deviceName/);
   assert.match(source, /recoverAndResumeBatch/);
+  assert.match(source, /batchStorageKey = "a2dp-recovery-batch-v1"/);
+  assert.match(source, /pausedDevice: batchPausedDevice/);
+  assert.match(source, /storedBatch\?\.pausedDevice/);
+  assert.match(source, /persistBatchState\(\)/);
 });
 
 test("同一标签页刷新后保留已完成修复结果但不恢复运行中状态", () => {

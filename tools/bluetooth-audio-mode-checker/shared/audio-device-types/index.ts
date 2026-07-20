@@ -35,6 +35,8 @@ export type AudioProbeSnapshot = {
 
 export type AudioModeCode = "A2DP" | "HFP_HSP" | "UNKNOWN";
 
+export type A2dpSupport = "SUPPORTED" | "UNSUPPORTED" | "UNKNOWN";
+
 export type BluetoothLinkType = "tacl" | "tsco";
 
 export type BluetoothLinkSnapshot = {
@@ -46,6 +48,7 @@ export type BluetoothLinkSnapshot = {
 export type AudioModeAssessment = {
   name: string;
   mode: AudioModeCode;
+  a2dpSupport: A2dpSupport;
   label: string;
   confidence: "高" | "中" | "低";
   isActive: boolean;

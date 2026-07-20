@@ -72,11 +72,17 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
 }
 
 export function isRecoverableOutputDevice(device) {
-  return device.mode === "HFP_HSP";
+  return device.mode === "HFP_HSP" && device.a2dpSupport !== "UNSUPPORTED";
 }
 
 export function deviceModePresentation(device) {
   const confirmedOccupancy = device.microphoneOccupancy?.isInUse === true;
+  if (device.a2dpSupport === "UNSUPPORTED") {
+    return {
+      className: "a2dp_unsupported",
+      text: "不支持A2DP（该设备无需修复）",
+    };
+  }
   if (device.mode === "HFP_HSP") {
     return {
       className: "hfp_hsp",

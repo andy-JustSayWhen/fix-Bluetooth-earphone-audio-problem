@@ -653,6 +653,20 @@ export async function runRecovery(
     reportProgress({ stage: "正在定位原因", message: "正在沿用原点击现场和本轮处理记录继续修复。" });
   }
 
+  if (targetAssessment?.a2dpSupport === "UNSUPPORTED") {
+    const diagnosis: RecoveryDiagnosis = {
+      kind: "证据不足",
+      confidence: "已确认",
+      summary: "目标设备的输出可用采样率最高值低于 44.1 kHz，不支持 A2DP，本身无需修复",
+      evidence: targetAssessment.evidence,
+    };
+    addStep(name, steps, "复核 A2DP 支持能力", "跳过", diagnosis.summary);
+    return result("无需修复", diagnosis, "现场复核", {
+      sampleRate: currentOutputRate(runtime, name),
+      message: `${name} 不支持 A2DP，该设备本身无需修复；它的端点和链路事实仍会用于判断其他受影响设备。`,
+    });
+  }
+
   const targetRate = currentOutputRate(runtime, name);
   if (targetAssessment?.mode !== "HFP_HSP") {
     const alreadyRecovered = targetAssessment !== null;
@@ -768,6 +782,14 @@ export async function runRecovery(
         multiEndpoint.input.name !== multiEndpoint.output.name,
       ),
       targetAudioLinkType: latestTarget?.audioLinkType ?? null,
+      targetA2dpSupport: latestTarget?.a2dpSupport ?? "UNKNOWN",
+      unsupportedA2dpDevices: assessments
+        .filter((assessment) => assessment.a2dpSupport === "UNSUPPORTED")
+        .map((assessment) => ({
+          name: assessment.name,
+          isDefaultInput: assessment.isDefaultInput,
+          audioLinkType: assessment.audioLinkType,
+        })),
       multiEndpointConfirmed: multiEndpoint.confirmed,
       inputActivities: users.map((user) => ({
         pid: user.pid,

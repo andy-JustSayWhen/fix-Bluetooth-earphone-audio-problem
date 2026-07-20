@@ -61,6 +61,10 @@ export function shouldContinueAfterOccupancyEnded(feedback, microphoneUsers, occ
   return !action.processNames.some((name) => activeNames.has(name));
 }
 
+export function isA2dpRecoveryTarget(device) {
+  return device?.mode === "HFP_HSP" && device.a2dpSupport !== "UNSUPPORTED";
+}
+
 export function createA2dpRecoveryController({
   createElement,
   expandedDevices,
@@ -70,6 +74,7 @@ export function createA2dpRecoveryController({
   schedulePostActionRefresh,
 }) {
   const storageKey = "a2dp-recovery-feedback-v1";
+  const batchStorageKey = "a2dp-recovery-batch-v1";
 
   function readStoredFeedback() {
     try {
@@ -85,6 +90,32 @@ export function createA2dpRecoveryController({
       window.sessionStorage.setItem(storageKey, JSON.stringify(stored));
     } catch {
       // The current page still shows the result when browser storage is unavailable.
+    }
+  }
+
+  function readStoredBatch() {
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem(batchStorageKey) || "null");
+      if (!stored || !Array.isArray(stored.queue)) return null;
+      return {
+        queue: stored.queue.filter((name) => typeof name === "string" && name.length > 0),
+        total: Number.isInteger(stored.total) && stored.total >= 0 ? stored.total : 0,
+        completed: Number.isInteger(stored.completed) && stored.completed >= 0 ? stored.completed : 0,
+        pausedDevice: typeof stored.pausedDevice === "string" && stored.pausedDevice.length > 0
+          ? stored.pausedDevice
+          : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function writeStoredBatch(stored) {
+    try {
+      if (!stored) window.sessionStorage.removeItem(batchStorageKey);
+      else window.sessionStorage.setItem(batchStorageKey, JSON.stringify(stored));
+    } catch {
+      // Storage failure only disables refresh recovery; the current page can still finish the batch.
     }
   }
 
@@ -108,24 +139,87 @@ export function createA2dpRecoveryController({
   const runningDevices = new Set();
   const progressByDevice = new Map();
   const recentlyReleasedPrograms = new Map();
-  let batchQueue = [];
-  let batchTotal = 0;
-  let batchCompleted = 0;
+  const storedBatch = readStoredBatch();
+  let batchQueue = storedBatch?.queue ?? [];
+  let batchTotal = storedBatch?.total ?? 0;
+  let batchCompleted = storedBatch?.completed ?? 0;
   let batchRunning = false;
-  let batchPausedDevice = null;
+  let batchPausedDevice = storedBatch?.pausedDevice ?? null;
+  let batchResumeScheduled = false;
+  if (batchPausedDevice !== null && !feedbackByDevice.get(batchPausedDevice)?.result?.actionRequired) {
+    batchQueue = [];
+    batchTotal = 0;
+    batchCompleted = 0;
+    batchPausedDevice = null;
+    writeStoredBatch(null);
+  } else if (batchPausedDevice === null && batchQueue.length > 0) {
+    batchQueue = [];
+    batchTotal = 0;
+    batchCompleted = 0;
+    writeStoredBatch(null);
+  }
   for (const [deviceName, feedback] of feedbackByDevice) {
     if (feedback?.result?.actionRequired) expandedDevices.add(deviceName);
   }
 
+  function persistBatchState() {
+    if (batchQueue.length === 0 && batchPausedDevice === null) {
+      writeStoredBatch(null);
+      return;
+    }
+    writeStoredBatch({
+      queue: batchQueue,
+      total: batchTotal,
+      completed: batchCompleted,
+      pausedDevice: batchPausedDevice,
+    });
+  }
+
+  function removeStoredFeedback(deviceName) {
+    if (!feedbackByDevice.delete(deviceName)) return;
+    const stored = readStoredFeedback();
+    delete stored[deviceName];
+    writeStoredFeedback(stored);
+  }
+
+  function reconcileUnsupportedDevices(devices) {
+    const unsupportedNames = new Set(devices
+      .filter((device) => device.a2dpSupport === "UNSUPPORTED")
+      .map((device) => device.name));
+    for (const deviceName of unsupportedNames) removeStoredFeedback(deviceName);
+    if (unsupportedNames.size === 0 || batchQueue.length === 0) return;
+    const previousLength = batchQueue.length;
+    const pausedWasUnsupported = batchPausedDevice !== null && unsupportedNames.has(batchPausedDevice);
+    batchQueue = batchQueue.filter((deviceName) => !unsupportedNames.has(deviceName));
+    batchCompleted = Math.min(batchTotal, batchCompleted + previousLength - batchQueue.length);
+    if (pausedWasUnsupported) batchPausedDevice = null;
+    if (batchQueue.length === 0 && batchPausedDevice === null) {
+      batchTotal = 0;
+      batchCompleted = 0;
+    }
+    persistBatchState();
+    if (pausedWasUnsupported && batchQueue.length > 0 && !batchRunning && !batchResumeScheduled) {
+      batchResumeScheduled = true;
+      queueMicrotask(async () => {
+        batchResumeScheduled = false;
+        await runBatch();
+      });
+    }
+  }
+
   function renderAggregateTrigger(devices = getLastRenderedDevices()) {
+    reconcileUnsupportedDevices(devices);
     const hfpDevices = devices.filter((device) => device.mode === "HFP_HSP");
+    const repairableDevices = hfpDevices.filter(isA2dpRecoveryTarget);
     const overview = createElement("div", "recovery-overview");
     overview.append(createElement(
       "span",
       "recovery-overview__count",
-      `识别到有 ${hfpDevices.length} 个设备处于 HFP`,
+      hfpDevices.length === repairableDevices.length
+        ? `识别到有 ${hfpDevices.length} 个设备处于 HFP`
+        : `识别到有 ${hfpDevices.length} 个设备处于 HFP，其中 ${repairableDevices.length} 个需要修复`,
     ));
-    if (hfpDevices.length > 0) {
+    if (repairableDevices.length > 0) {
       const hasPendingAction = [...feedbackByDevice.values()]
         .some((feedback) => Boolean(feedback?.result?.actionRequired));
       const isBusy = batchRunning || runningDevices.size > 0;
@@ -135,7 +229,7 @@ export function createA2dpRecoveryController({
       const button = createElement("button", `recovery-trigger${isBusy ? " is-running" : ""}`, label);
       button.type = "button";
       button.disabled = isBusy || hasPendingAction;
-      button.setAttribute("aria-label", "一键修复全部 HFP 设备");
+      button.setAttribute("aria-label", "一键修复全部需要修复的 HFP 设备");
       if (!button.disabled) {
         button.addEventListener("click", () => recoverAll(getLastRenderedDevices()));
       }
@@ -219,33 +313,37 @@ export function createA2dpRecoveryController({
     while (batchQueue.length > 0) {
       const deviceName = batchQueue[0];
       const device = getLastRenderedDevices().find((item) => item.name === deviceName);
-      if (!device || device.mode !== "HFP_HSP") {
+      if (!device || !isA2dpRecoveryTarget(device)) {
         batchQueue.shift();
         batchCompleted += 1;
+        persistBatchState();
         continue;
       }
       await recover(device);
       if (feedbackByDevice.get(deviceName)?.result?.actionRequired) {
         batchPausedDevice = deviceName;
         batchRunning = false;
+        persistBatchState();
         renderAggregateTrigger();
         return;
       }
       batchQueue.shift();
       batchCompleted += 1;
+      persistBatchState();
     }
     batchRunning = false;
     batchPausedDevice = null;
     batchQueue = [];
     batchTotal = 0;
     batchCompleted = 0;
+    persistBatchState();
     renderAggregateTrigger();
   }
 
   async function recoverAll(devices) {
     if (batchRunning || batchPausedDevice) return;
     batchQueue = devices
-      .filter((device) => device.mode === "HFP_HSP")
+      .filter(isA2dpRecoveryTarget)
       .map((device) => device.name);
     if (batchQueue.length === 0) {
       renderAggregateTrigger(devices);
@@ -253,6 +351,7 @@ export function createA2dpRecoveryController({
     }
     batchTotal = batchQueue.length;
     batchCompleted = 0;
+    persistBatchState();
     await runBatch();
   }
 
@@ -268,6 +367,7 @@ export function createA2dpRecoveryController({
       batchCompleted += 1;
     }
     batchPausedDevice = null;
+    persistBatchState();
     await runBatch();
   }
 

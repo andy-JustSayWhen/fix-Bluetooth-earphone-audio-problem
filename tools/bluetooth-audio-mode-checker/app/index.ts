@@ -66,7 +66,7 @@ const contentTypes: Record<string, string> = {
 const manualRefreshMinimumIntervalMs = 2_500;
 
 function isRecoverableHfpOutput(device: AudioModeState["devices"][number]): boolean {
-  return device.mode === "HFP_HSP";
+  return device.mode === "HFP_HSP" && device.a2dpSupport !== "UNSUPPORTED";
 }
 
 function parseArguments(argumentsList: string[]): Options {
@@ -262,6 +262,16 @@ function main(): void {
             deviceCount: refreshedState.devices.length,
             defaultInput: refreshedState.routes.input.find((device) => device.isDefault)?.name ?? null,
             defaultOutput: refreshedState.routes.output.find((device) => device.isDefault)?.name ?? null,
+            a2dpSupport: refreshedState.devices.map((device) => ({
+              name: device.name,
+              support: device.a2dpSupport,
+              maximumAvailableOutputRate: Math.max(
+                0,
+                ...device.availableSampleRateRangesOutput.map((range) => range.maximum),
+              ) || null,
+              isDefaultInput: device.isDefaultInput,
+              audioLinkType: device.audioLinkType,
+            })),
           });
           broadcastState();
         }
@@ -634,7 +644,8 @@ function main(): void {
             pendingRelaunchAuthorizations.delete(body.name);
             throw new Error("当前输入输出已变化，旧授权对应的现场已经失效，请重新点击一键修复");
           }
-          approvedRelaunchGuards = body.authorizeRelaunchBlock === true && currentDevice?.mode === "HFP_HSP"
+          approvedRelaunchGuards = body.authorizeRelaunchBlock === true && currentDevice?.mode === "HFP_HSP" &&
+              currentDevice.a2dpSupport !== "UNSUPPORTED"
             ? pending.continuation.pendingGuards
             : [];
           pendingRelaunchAuthorizations.delete(body.name);
