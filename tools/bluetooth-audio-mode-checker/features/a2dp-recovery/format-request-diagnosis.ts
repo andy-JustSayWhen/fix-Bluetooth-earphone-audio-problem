@@ -194,6 +194,7 @@ export function diagnoseMultiEndpointCause(
   evidence: FormatRequestEvidence,
   target: RawAudioDevice,
   processReader: (pid: number) => RunningProcess | null = readRunningProcess,
+  options: { allowRecoveredTarget?: boolean } = {},
 ): MultiEndpointCause {
   const raw = evidence.rawLines.join("\n");
   const sessionRegex = new RegExp(`${timestampPattern}[^\\n]*session:\\s*([^\\n(]+)\\((\\d+)\\)`, "gi");
@@ -229,7 +230,7 @@ export function diagnoseMultiEndpointCause(
   if (!uniqueBindings.some((binding) =>
     binding.direction === "output" && targetIdentities.includes(binding.address)
   )) gaps.push("日志中的蓝牙输出端点无法与目标设备对应");
-  if (!target.isDefaultOutput || target.sampleRateOutput === null || target.sampleRateOutput > 16_000) {
+  if (!options.allowRecoveredTarget && (!target.isDefaultOutput || target.sampleRateOutput === null || target.sampleRateOutput > 16_000)) {
     gaps.push("目标当前不是低采样率默认输出");
   }
 

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runRecovery, type RecoveryRuntime } from "./run-recovery.ts";
-import type { FormatRequestEvidence } from "./format-request-diagnosis.ts";
+import { parseSystemAudioLog, type FormatRequestEvidence } from "./format-request-diagnosis.ts";
 import type { RunningProcess } from "../../core/macos-running-apps/index.ts";
 import type { MicrophoneUser, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
@@ -150,6 +150,46 @@ test("用户授权后返回仅限本次开机的自动拉起阻止任务", async
   assert.equal(result._relaunchGuard?.command, processInfo.command);
 });
 
+test("非默认蓝牙设备的低采样率不得阻止当前输出命中格式请求类", async () => {
+  let running = true;
+  let rate = 16_000;
+  const rawLines = [
+    "2026-07-19 10:00:00.000000+0800 localhost coreaudiod[1]: [ 30114 ]BTUnifiedAudioDevice: kBluetoothAudioDevicePropertyFormat request 0 ->1",
+    "2026-07-19 10:00:00.050000+0800 localhost coreaudiod[1]: BTUnifiedAudioDevice: Current profile tsco",
+  ];
+  const readDevices = () => [
+    device({ sampleRateOutput: rate }),
+    device({
+      id: 2,
+      name: "待机蓝牙设备",
+      uid: "58-B8-58-9D-C1-E8:output",
+      sampleRateOutput: 16_000,
+      isRunning: false,
+      isDefaultInput: true,
+      isDefaultOutput: false,
+      isDefaultSystemOutput: false,
+    }),
+  ];
+  const result = await runRecovery({ name: "蓝牙耳机" }, runtime({
+    readDevices,
+    readProcess: () => running ? processInfo : null,
+    terminateProcess: () => {
+      running = false;
+      rate = 48_000;
+    },
+    readEvidence: () => ({
+      ...emptyEvidence,
+      events: parseSystemAudioLog(rawLines.join("\n")),
+      rawLines,
+    }),
+  }));
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(result.diagnosis.kind, "格式请求类");
+  assert.equal(result.recoveryPath, "原因对应处理");
+  assert.deepEqual(result.releasedPrograms, ["VoiceApp"]);
+});
+
 test("证据不足时先切换非蓝牙输入再恢复原输入", async () => {
   let defaultInput = "蓝牙耳机";
   let rate = 16_000;
@@ -209,6 +249,66 @@ test("完整多端点证据先返回组合选择，不结束会话进程", async
   assert.equal(result.diagnosis.kind, "多端点会话类");
   assert.equal(result.actionRequired?.kind, "route-choice");
   assert.equal(terminated, false);
+});
+
+test("路由抖动后即使目标短暂恢复也只读确认多端点并点名应用", async () => {
+  const rawLines = [
+    "2026-07-19 10:00:00.000000+0800 localhost coreaudiod[1]: session: VoiceApp(30114)",
+    "deviceUIDs:",
+    "- 50-C0-F0-F3-6A-66:output",
+    "- 58-B8-58-9D-C1-E8:input",
+    "2026-07-19 10:00:00.100000+0800 localhost coreaudiod[1]: There was an error setting the deviceUUIDs as there are more than one BT device connected",
+  ];
+  let microphoneReads = 0;
+  let terminated = false;
+  let reconnects = 0;
+  const result = await runRecovery({
+    name: "蓝牙耳机",
+    inspectMultiEndpoint: true,
+  }, runtime({
+    readDevices: () => [
+      device({ name: "蓝牙耳机", uid: "50-C0-F0-F3-6A-66:output", sampleRateOutput: 48_000 }),
+      device({ name: "蓝牙麦克风", uid: "58-B8-58-9D-C1-E8:input", inputChannels: 1, outputChannels: 2, isDefaultInput: true, isDefaultOutput: false }),
+      device({ name: "内建设备", transport: "built-in", inputChannels: 1, outputChannels: 2, isDefaultOutput: false }),
+    ],
+    readMicrophoneUsers: async () => {
+      microphoneReads += 1;
+      return [];
+    },
+    readProcess: () => processInfo,
+    terminateProcess: () => { terminated = true; },
+    reconnectDevice: () => { reconnects += 1; },
+    readEvidence: () => ({ ...emptyEvidence, rawLines }),
+  }));
+
+  assert.equal(result.outcome, "等待选择");
+  assert.equal(result.actionRequired?.kind, "route-choice");
+  assert.match(result.diagnosis.summary, /VoiceApp/);
+  assert.equal(microphoneReads, 0);
+  assert.equal(terminated, false);
+  assert.equal(reconnects, 0);
+});
+
+test("路由抖动复核证据不足时不切换设备也不走重连兜底", async () => {
+  let routeChanges = 0;
+  let reconnects = 0;
+  const result = await runRecovery({
+    name: "蓝牙耳机",
+    inspectMultiEndpoint: true,
+  }, runtime({
+    readDevices: () => [
+      device({ name: "蓝牙耳机", sampleRateOutput: 48_000 }),
+      device({ name: "蓝牙麦克风", inputChannels: 1, outputChannels: 2, isDefaultInput: true, isDefaultOutput: false }),
+    ],
+    setDefaultDevice: () => { routeChanges += 1; },
+    reconnectDevice: () => { reconnects += 1; },
+  }));
+
+  assert.equal(result.outcome, "未恢复");
+  assert.equal(result.diagnosis.kind, "证据不足");
+  assert.match(result.message, /没有结束进程或切换设备/);
+  assert.equal(routeChanges, 0);
+  assert.equal(reconnects, 0);
 });
 
 test("用户选定多端点替代组合后只报告绕过成功", async () => {

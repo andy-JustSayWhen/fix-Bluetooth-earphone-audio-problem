@@ -8,6 +8,7 @@
 .recovery-feedback.is-pending { color: #6f571f; background: #fff8df; }
 .recovery-feedback.is-error { color: #9f3346; background: #fff0f2; }
 .recovery-title { display: block; margin-bottom: 5px; font-size: 12px; }
+.recovery-time { margin: 3px 0 0; opacity: 0.68; font-size: 10px; }
 .recovery-path, .recovery-diagnosis, .recovery-summary, .recovery-reconnect-note { margin: 6px 0 0; }
 .recovery-evidence, .recovery-steps { margin: 7px 0 0; padding-left: 20px; }
 .recovery-steps { display: grid; gap: 5px; }

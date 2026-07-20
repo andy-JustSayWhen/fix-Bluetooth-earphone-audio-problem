@@ -68,6 +68,7 @@ export type RecoveryRequestContext = {
 export type RecoveryRequest = {
   name: string;
   context?: RecoveryRequestContext;
+  inspectMultiEndpoint?: boolean;
   routeChoiceId?: string;
   authorizeRelaunchBlock?: boolean;
 };

@@ -27,12 +27,17 @@ export function createA2dpRecoveryController({
   const storedFeedback = readStoredFeedback();
   const feedbackByDevice = new Map(Object.entries(storedFeedback));
   const runningDevices = new Set();
-  for (const deviceName of feedbackByDevice.keys()) expandedDevices.add(deviceName);
+  for (const [deviceName, feedback] of feedbackByDevice) {
+    if (feedback?.result?.actionRequired) expandedDevices.add(deviceName);
+  }
 
   function setFeedback(deviceName, feedback, persist = true) {
-    feedbackByDevice.set(deviceName, feedback);
+    const nextFeedback = persist && !feedback.recordedAt
+      ? { ...feedback, recordedAt: new Date().toISOString() }
+      : feedback;
+    feedbackByDevice.set(deviceName, nextFeedback);
     const stored = readStoredFeedback();
-    if (persist) stored[deviceName] = feedback;
+    if (persist) stored[deviceName] = nextFeedback;
     else delete stored[deviceName];
     writeStoredFeedback(stored);
   }
@@ -42,7 +47,9 @@ export function createA2dpRecoveryController({
     runningDevices.add(device.name);
     setFeedback(device.name, {
       kind: "running",
-      text: "正在保存现场并按已确证原因路由，请稍候。",
+      text: action.inspectMultiEndpoint
+        ? "检测到路由波动，正在只读复核最近的应用和系统拒绝证据。"
+        : "正在保存现场并按已确证原因路由，请稍候。",
     }, false);
     expandedDevices.add(device.name);
     renderDevices(getLastRenderedDevices());
@@ -55,7 +62,7 @@ export function createA2dpRecoveryController({
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "恢复失败");
       setFeedback(device.name, {
-        kind: result.ok ? "success" : result.actionRequired ? "pending" : "error",
+        kind: result.ok ? "success" : result.actionRequired || action.inspectMultiEndpoint ? "pending" : "error",
         result,
       });
     } catch (error) {
@@ -64,7 +71,9 @@ export function createA2dpRecoveryController({
       runningDevices.delete(device.name);
       renderDevices(getLastRenderedDevices());
     }
-    await refreshDevices({ preserveRouteMessage: true });
+    if (!action.inspectMultiEndpoint || action.routeChoiceId) {
+      await refreshDevices({ preserveRouteMessage: true });
+    }
   }
 
   function resultSection(feedback, deviceName) {
@@ -77,8 +86,14 @@ export function createA2dpRecoveryController({
       return section;
     }
     const result = feedback.result;
+    const resultPrefix = result.actionRequired ? "需要你选择" : "最近一次修复";
     section.append(
-      createElement("strong", "recovery-title", result.outcome),
+      createElement("strong", "recovery-title", `${resultPrefix}：${result.outcome}`),
+      ...(feedback.recordedAt ? [createElement(
+        "p",
+        "recovery-time",
+        new Date(feedback.recordedAt).toLocaleString("zh-CN", { hour12: false }),
+      )] : []),
       createElement("p", "recovery-path", `工作流：${result.recoveryPath}`),
       createElement("p", "recovery-diagnosis", `${result.diagnosis.confidence}：${result.diagnosis.summary}`),
     );
@@ -112,7 +127,7 @@ export function createA2dpRecoveryController({
         button.type = "button";
         button.addEventListener("click", () => {
           const device = getLastRenderedDevices().find((item) => item.name === deviceName);
-          if (device) recover(device, { routeChoiceId: choice.id });
+          if (device) recover(device, { inspectMultiEndpoint: true, routeChoiceId: choice.id });
         });
         actions.append(button);
       }
@@ -144,10 +159,18 @@ export function createA2dpRecoveryController({
     renderDevices(getLastRenderedDevices());
   }
 
+  function inspectRouteConflict(device) {
+    if (runningDevices.has(device.name)) return;
+    const existing = feedbackByDevice.get(device.name)?.result;
+    if (existing?.actionRequired?.kind === "route-choice") return;
+    recover(device, { inspectMultiEndpoint: true });
+  }
+
   return {
     feedbackByDevice,
     runningDevices,
     recover,
+    inspectRouteConflict,
     resultSection,
     handleProgress,
   };

@@ -485,10 +485,14 @@ function main(): void {
         if (request.headers.origin && request.headers.origin !== expectedOrigin) throw new Error("请求来源不正确");
         const body = await readJsonBody(request) as {
           name?: unknown;
+          inspectMultiEndpoint?: unknown;
           routeChoiceId?: unknown;
           authorizeRelaunchBlock?: unknown;
         };
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
+        if (body.inspectMultiEndpoint !== undefined && typeof body.inspectMultiEndpoint !== "boolean") {
+          throw new Error("多端点复核请求无效");
+        }
         if (body.routeChoiceId !== undefined && (typeof body.routeChoiceId !== "string" || body.routeChoiceId.length > 512)) {
           throw new Error("输入输出组合无效");
         }
@@ -505,6 +509,7 @@ function main(): void {
         const currentDevice = currentState.devices.find((device) => device.name === body.name);
         const result = await recoverA2dp({
           name: body.name,
+          inspectMultiEndpoint: body.inspectMultiEndpoint as boolean | undefined,
           routeChoiceId: body.routeChoiceId as string | undefined,
           authorizeRelaunchBlock: body.authorizeRelaunchBlock as boolean | undefined,
           context: {

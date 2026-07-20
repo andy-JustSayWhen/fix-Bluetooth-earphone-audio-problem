@@ -1,4 +1,4 @@
-export function describeBluetoothRouteRisk(routes) {
+export function getBluetoothRouteConflict(routes) {
   const input = routes.input.find((route) => route.isDefault);
   const output = routes.output.find((route) => route.isDefault);
   if (
@@ -6,9 +6,63 @@ export function describeBluetoothRouteRisk(routes) {
     output?.transport === "bluetooth" &&
     input.name !== output.name
   ) {
-    return `当前输入“${input.name}”和输出“${output.name}”来自两台不同的蓝牙设备。部分语音应用会拒绝这种组合；开始语音前建议先确认是否必须保留这组路由。`;
+    return { input, output, key: `${input.name}\n${output.name}` };
   }
   return null;
+}
+
+export function describeBluetoothRouteRisk(routes) {
+  const conflict = getBluetoothRouteConflict(routes);
+  return conflict
+    ? `当前输入“${conflict.input.name}”和输出“${conflict.output.name}”来自两台不同的蓝牙设备。部分语音应用会拒绝这种组合；开始语音前建议先确认是否必须保留这组路由。`
+    : null;
+}
+
+export function observeBluetoothRouteInstability(previous, result, now = Date.now()) {
+  const conflict = getBluetoothRouteConflict(result.routes);
+  const withinPreviousConflict = previous && now - previous.lastConflictAt <= 8_000;
+  if (!conflict && !withinPreviousConflict) {
+    return { state: null, triggered: false, unstable: false, targetOutputName: null };
+  }
+
+  const key = conflict?.key ?? previous.key;
+  const targetOutputName = conflict?.output.name ?? previous.targetOutputName;
+  if (!previous || previous.key !== key) {
+    const mode = result.devices.find((device) => device.name === targetOutputName)?.mode ?? "断开";
+    return {
+      state: {
+        key,
+        targetOutputName,
+        lastSignal: conflict ? `已连接:${mode}` : "断开",
+        changes: [],
+        unstable: false,
+        lastConflictAt: conflict ? now : 0,
+      },
+      triggered: false,
+      unstable: false,
+      targetOutputName,
+    };
+  }
+
+  const mode = result.devices.find((device) => device.name === targetOutputName)?.mode ?? "断开";
+  const signal = conflict ? `已连接:${mode}` : "断开";
+  const changes = previous.lastSignal !== signal
+    ? [...previous.changes, now].filter((timestamp) => now - timestamp <= 8_000)
+    : previous.changes.filter((timestamp) => now - timestamp <= 8_000);
+  const unstable = previous.unstable || changes.length >= 2;
+  return {
+    state: {
+      key,
+      targetOutputName,
+      lastSignal: signal,
+      changes,
+      unstable,
+      lastConflictAt: conflict ? now : previous.lastConflictAt,
+    },
+    triggered: unstable && !previous.unstable,
+    unstable,
+    targetOutputName,
+  };
 }
 
 export function startBluetoothAudioModePage(createA2dpRecoveryController) {
@@ -31,6 +85,10 @@ let recoveryController;
 let refreshRequestRunning = false;
 let pendingRouteChange = null;
 let pendingRouteTimer = 0;
+let routeInstabilityState = null;
+let pendingRealtimeState = null;
+let realtimeRenderTimer = 0;
+let multiEndpointInspectionTimer = 0;
 
 function createElement(tag, className, text) {
   const element = document.createElement(tag);
@@ -338,6 +396,66 @@ function renderState(result, options = {}) {
   }
 }
 
+function clearRealtimeStabilityTimers() {
+  if (realtimeRenderTimer) window.clearTimeout(realtimeRenderTimer);
+  if (multiEndpointInspectionTimer) window.clearTimeout(multiEndpointInspectionTimer);
+  realtimeRenderTimer = 0;
+  multiEndpointInspectionTimer = 0;
+}
+
+function scheduleSettledRealtimeRender(delay) {
+  if (realtimeRenderTimer) window.clearTimeout(realtimeRenderTimer);
+  realtimeRenderTimer = window.setTimeout(() => {
+    realtimeRenderTimer = 0;
+    if (!pendingRealtimeState) return;
+    const settled = pendingRealtimeState;
+    pendingRealtimeState = null;
+    routeInstabilityState = null;
+    renderState(settled, { preserveRouteMessage: true });
+    if (!pendingRouteChange) showRouteGuidance(settled.routes);
+  }, delay);
+}
+
+function renderRealtimeState(result) {
+  if (pendingRouteChange) {
+    clearRealtimeStabilityTimers();
+    pendingRealtimeState = null;
+    routeInstabilityState = null;
+    renderState(result, { preserveRouteMessage: true });
+    return;
+  }
+
+  const observation = observeBluetoothRouteInstability(routeInstabilityState, result);
+  routeInstabilityState = observation.state;
+  const routeConflict = getBluetoothRouteConflict(result.routes) ?? getBluetoothRouteConflict(lastRenderedRoutes ?? { input: [], output: [] });
+  if (!routeConflict && !observation.unstable) {
+    clearRealtimeStabilityTimers();
+    pendingRealtimeState = null;
+    renderState(result, { preserveRouteMessage: true });
+    return;
+  }
+
+  pendingRealtimeState = result;
+  if (observation.unstable) {
+    routeMessage.className = "route-message is-warning is-unstable";
+    routeMessage.textContent = "检测到当前双蓝牙组合正在反复断连或切换模式。页面已保留最近稳定状态，正在确认是否有具体应用拒绝该组合。";
+    scheduleSettledRealtimeRender(5_000);
+    if (observation.triggered && !multiEndpointInspectionTimer) {
+      const device = result.devices.find((item) => item.name === observation.targetOutputName) ??
+        lastRenderedDevices.find((item) => item.name === observation.targetOutputName);
+      if (device) {
+        multiEndpointInspectionTimer = window.setTimeout(() => {
+          multiEndpointInspectionTimer = 0;
+          recoveryController.inspectRouteConflict(device);
+        }, 500);
+      }
+    }
+    return;
+  }
+
+  scheduleSettledRealtimeRender(1_200);
+}
+
 function renderDevices(devices) {
   lastRenderedDevices = devices;
   const occupiedDevice = devices.find((device) => device.microphoneOccupancy?.isInUse);
@@ -400,7 +518,7 @@ refreshDevices();
 const realtimeEvents = new EventSource("/api/events");
 realtimeEvents.addEventListener("message", (event) => {
   try {
-    renderState(JSON.parse(event.data), { preserveRouteMessage: true });
+    renderRealtimeState(JSON.parse(event.data));
   } catch {
     // A later system event will replace a malformed update.
   }

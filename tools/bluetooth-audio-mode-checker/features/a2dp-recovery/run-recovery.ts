@@ -97,6 +97,12 @@ function currentDefaultName(
   )?.name ?? null;
 }
 
+function hasDifferentBluetoothDefaultRoutes(devices: RawAudioDevice[]): boolean {
+  const input = devices.find((device) => device.isDefaultInput && device.inputChannels > 0);
+  const output = devices.find((device) => device.isDefaultOutput && device.outputChannels > 0);
+  return Boolean(input && output && isBluetooth(input) && isBluetooth(output) && input.name !== output.name);
+}
+
 function processDescription(processInfo: RunningProcess): string {
   return `${processInfo.name}（进程号 ${processInfo.pid}，启动时间 ${processInfo.startedAt}，路径 ${processInfo.command}）`;
 }
@@ -173,6 +179,7 @@ function diagnoseCause(
   users: MicrophoneUser[],
   evidence: FormatRequestEvidence | null,
   runtime: RecoveryRuntime,
+  options: { allowRecoveredMultiEndpoint?: boolean; onlyMultiEndpoint?: boolean } = {},
 ): CauseMatch {
   if (users.length > 0) {
     const identified = identifyProcesses(users, runtime);
@@ -205,26 +212,45 @@ function diagnoseCause(
     };
   }
 
-  const multi = diagnoseMultiEndpointCause(evidence, target, runtime.readProcess);
+  const multi = diagnoseMultiEndpointCause(evidence, target, runtime.readProcess, {
+    allowRecoveredTarget: options.allowRecoveredMultiEndpoint,
+  });
   const lowRateBluetoothOutputNames = devices
     .filter((device) =>
-      device.outputChannels > 0 && isBluetooth(device) &&
+      device.isDefaultOutput && device.outputChannels > 0 && isBluetooth(device) &&
       device.sampleRateOutput !== null && device.sampleRateOutput <= 16_000
     )
     .map((device) => device.name);
   const format = diagnoseFormatRequestCause(evidence, name, lowRateBluetoothOutputNames, runtime.readProcess);
-  const kind = selectCauseRoute(false, multi.confidence === "已确认", format.confidence === "已确认");
+  const kind = selectCauseRoute(
+    false,
+    multi.confidence === "已确认",
+    !options.onlyMultiEndpoint && format.confidence === "已确认",
+  );
 
   if (kind === "多端点会话类") {
+    const requesterName = multi.requester?.name ?? "该应用";
     return {
       diagnosis: {
         kind,
         confidence: "已确认",
-        summary: "该应用申请蓝牙麦克风时错误绑定了另一台蓝牙扬声器；调用麦克风不需要绑定蓝牙扬声器",
+        summary: `${requesterName} 提交了来自两台蓝牙设备的输入输出组合，该组合被系统拒绝`,
         evidence: multiEndpointEvidence(multi),
       },
       processes: multi.requester ? [multi.requester] : [],
       routeChoices: createMultiEndpointRouteChoices(devices, name),
+    };
+  }
+  if (options.onlyMultiEndpoint) {
+    return {
+      diagnosis: {
+        kind: "证据不足",
+        confidence: multi.confidence,
+        summary: "尚不能确认具体应用拒绝了当前双蓝牙组合",
+        evidence: multiEndpointEvidence(multi),
+      },
+      processes: [],
+      routeChoices: [],
     };
   }
   if (kind === "格式请求类") {
@@ -426,7 +452,11 @@ export async function runRecovery(
   const initialRate = target?.sampleRateOutput ?? request.context?.targetSampleRate ?? null;
   addStep(name, steps, "保存现场", "成功", `点击时间：${request.context?.clickedAt ?? new Date(runtime.now()).toISOString()}；输入：${originalInput ?? "未知"}；输出：${originalOutput ?? "未知"}；目标采样率：${initialRate ?? "未知"}`);
 
-  if (!target || !target.isDefaultOutput || target.sampleRateOutput === null || target.sampleRateOutput > 16_000) {
+  const canInspectMultiEndpoint = request.inspectMultiEndpoint === true &&
+    target?.isDefaultOutput === true && hasDifferentBluetoothDefaultRoutes(devices);
+  if (!target || !target.isDefaultOutput || target.sampleRateOutput === null ||
+      (target.sampleRateOutput > 16_000 && !canInspectMultiEndpoint) ||
+      (request.inspectMultiEndpoint === true && !canInspectMultiEndpoint)) {
     const rate = target?.sampleRateOutput ?? null;
     const diagnosis: RecoveryDiagnosis = {
       kind: "证据不足",
@@ -450,9 +480,16 @@ export async function runRecovery(
     });
   }
 
-  reportProgress({ stage: "正在定位原因", message: "正在按麦克风占用、多端点会话、格式请求的顺序定位原因。" });
+  reportProgress({
+    stage: "正在定位原因",
+    message: request.inspectMultiEndpoint
+      ? "正在只读复核最近的双蓝牙会话拒绝证据。"
+      : "正在按麦克风占用、多端点会话、格式请求的顺序定位原因。",
+  });
   let users: MicrophoneUser[];
-  try {
+  if (request.inspectMultiEndpoint) {
+    users = [];
+  } else try {
     users = await currentUsersForTarget(request, runtime);
   } catch (error) {
     users = [];
@@ -460,8 +497,26 @@ export async function runRecovery(
   }
   let evidence: FormatRequestEvidence | null = null;
   if (users.length === 0) evidence = runtime.readEvidence();
-  let cause = diagnoseCause(name, devices, users, evidence, runtime);
+  let cause = diagnoseCause(name, devices, users, evidence, runtime, {
+    allowRecoveredMultiEndpoint: request.inspectMultiEndpoint,
+    onlyMultiEndpoint: request.inspectMultiEndpoint,
+  });
   addStep(name, steps, "原因定位", cause.diagnosis.confidence === "已确认" ? "成功" : "失败", `${cause.diagnosis.kind}：${cause.diagnosis.summary}`);
+
+  if (request.inspectMultiEndpoint && cause.diagnosis.kind !== "多端点会话类") {
+    return makeResult({
+      outcome: "未恢复",
+      recoveryPath: "现场复核",
+      handledCause: false,
+      sampleRate: currentOutputRate(runtime, name),
+      releasedPrograms: [],
+      remainingPrograms: [],
+      diagnosis: cause.diagnosis,
+      steps,
+      usedReconnect: false,
+      message: "检测到双蓝牙组合波动，但系统证据尚不足以点名具体应用；本次没有结束进程或切换设备。",
+    });
+  }
 
   if (cause.diagnosis.kind === "多端点会话类") {
     const choice = cause.routeChoices.find((item) => item.id === request.routeChoiceId);
@@ -479,7 +534,7 @@ export async function runRecovery(
         usedReconnect: false,
         actionRequired: cause.routeChoices.length > 0 ? {
           kind: "route-choice",
-          prompt: "该应用错误地把两台蓝牙设备绑定进同一声音会话。请选择要保留输入还是输出：",
+          prompt: `${cause.diagnosis.summary}。是否授权工具保留输入或保留输出？`,
           choices: cause.routeChoices,
         } : undefined,
         message: baseMessage(outcome, name, currentOutputRate(runtime, name)),
