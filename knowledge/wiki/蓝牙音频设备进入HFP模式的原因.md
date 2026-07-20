@@ -227,7 +227,7 @@ There was an error setting the deviceUUIDs as there are more than one BT device 
 
 同日 22:02 和 2026-07-21 00:21，`andymacbook-air` 上的 XIBERIA K03S 处于 HFP，声音输入活动列表出现 `replayd`（进程号 80530，路径 `/usr/libexec/replayd`），但系统返回的设备列表为空。空设备列表不能证明它读取了 K03S 或其他实体麦克风，因此不能建立占用类、结束进程或等待授权；K03S 没有已确认占用但仍为 `tsco`，应按链路残留类处理。
 
-2026-07-20 23:47 起的系统日志进一步确认，UU远程的 `UURemoteServer` 请求屏幕与系统声音采集，`replayd` 随后为该调用创建 44.1 kHz 的 `AudioTap（系统声音抓取通道）`，系统权限日志中的目标进程号也直接指向 `UURemoteServer`。该活动应显示为“系统声音采集”，不属于任何具体设备的麦克风占用；完整进程与触发方证据见[进程映射表](进程映射表.md)。
+2026-07-20 23:47 起的系统日志进一步确认，UU远程的 `UURemoteServer` 请求屏幕与系统声音采集，`replayd` 随后为该调用创建 44.1 kHz 的 `AudioTap（系统声音抓取通道）`，系统权限日志中的目标进程号也直接指向 `UURemoteServer`。该活动不属于任何具体设备的麦克风占用；完整进程与触发方证据见[进程映射表](进程映射表.md)。进程映射表只保存知识，不作为前端必须显示触发 App 的产品要求。
 
 ## 2026-07-20 输入链路与输出故障的界面边界
 
