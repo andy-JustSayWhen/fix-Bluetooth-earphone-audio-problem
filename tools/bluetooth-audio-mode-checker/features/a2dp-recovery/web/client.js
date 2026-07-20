@@ -147,7 +147,11 @@ export function createA2dpRecoveryController({
         button.type = "button";
         button.addEventListener("click", () => {
           const device = getLastRenderedDevices().find((item) => item.name === deviceName);
-          if (device) recover(device, { inspectMultiEndpoint: true, routeChoiceId: choice.id });
+          if (device) recover(device, {
+            inspectMultiEndpoint: true,
+            routeChoiceId: choice.id,
+            observedConflict: feedback.observedConflict,
+          });
         });
         actions.append(button);
       }
@@ -180,7 +184,7 @@ export function createA2dpRecoveryController({
     renderDevices(getLastRenderedDevices());
   }
 
-  async function inspectRouteConflict(device) {
+  async function inspectRouteConflict(device, observedConflict) {
     if (inspectingDevices.has(device.name) || runningDevices.has(device.name)) return;
     const existing = feedbackByDevice.get(device.name)?.result;
     if (existing?.actionRequired?.kind === "route-choice") return;
@@ -189,7 +193,7 @@ export function createA2dpRecoveryController({
       const response = await fetch("/api/a2dp-recovery", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: device.name, inspectMultiEndpoint: true }),
+        body: JSON.stringify({ name: device.name, inspectMultiEndpoint: true, observedConflict }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "复核失败");
@@ -198,6 +202,7 @@ export function createA2dpRecoveryController({
       setFeedback(device.name, {
         kind: "pending",
         source: "inspection",
+        observedConflict,
         result,
       });
       expandedDevices.add(device.name);

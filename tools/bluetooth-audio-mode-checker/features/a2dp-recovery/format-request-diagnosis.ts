@@ -119,8 +119,12 @@ export function parseSystemAudioLog(output: string): SystemAudioEvent[] {
   return events.sort((left, right) => left.timestampMs - right.timestampMs);
 }
 
-function readSystemAudioEvidence(argumentsList: string[], windowMinutes: number): FormatRequestEvidence {
-  const predicate = [
+function readSystemAudioEvidence(
+  argumentsList: string[],
+  windowMinutes: number,
+  predicateOverride?: string,
+): FormatRequestEvidence {
+  const predicate = predicateOverride ?? [
     'process IN {"coreaudiod", "bluetoothd", "audioaccessoryd", "audiomxd"}',
     "AND",
     "(",
@@ -143,7 +147,7 @@ function readSystemAudioEvidence(argumentsList: string[], windowMinutes: number)
       "--style", "syslog",
       ...argumentsList,
       "--predicate", predicate,
-    ], { encoding: "utf8", timeout: 5_000, maxBuffer: 4 * 1024 * 1024 });
+    ], { encoding: "utf8", timeout: 7_500, maxBuffer: 4 * 1024 * 1024 });
     const rawLines = output.split("\n").filter((line) =>
       line.trim().length > 0 && !line.startsWith("Timestamp")
     );
@@ -186,6 +190,25 @@ export function readSystemAudioEvidenceSince(startedAtMs: number): FormatRequest
   return readSystemAudioEvidence(["--start", formatSystemLogStart(boundedStart)], windowMinutes);
 }
 
+export function readMultiEndpointEvidenceSince(startedAtMs: number): FormatRequestEvidence {
+  const boundedStart = Math.max(startedAtMs, Date.now() - 10 * 60_000);
+  const windowMinutes = Math.max(1, Math.ceil((Date.now() - boundedStart) / 60_000));
+  const predicate = [
+    'process == "audiomxd"',
+    "AND",
+    "(",
+    'eventMessage CONTAINS[c] "deviceUIDs"',
+    "OR",
+    'eventMessage CONTAINS[c] "more than one BT device connected"',
+    ")",
+  ].join(" ");
+  return readSystemAudioEvidence(
+    ["--start", formatSystemLogStart(boundedStart)],
+    windowMinutes,
+    predicate,
+  );
+}
+
 function normalizedBluetoothIdentity(value: string): string {
   return value.replace(/[^0-9a-f]/gi, "").toUpperCase();
 }
@@ -197,9 +220,12 @@ export function diagnoseMultiEndpointCause(
   options: { allowRecoveredTarget?: boolean } = {},
 ): MultiEndpointCause {
   const raw = evidence.rawLines.join("\n");
-  const sessionRegex = new RegExp(`${timestampPattern}[^\\n]*session:\\s*([^\\n(]+)\\((\\d+)\\)`, "gi");
+  const sessionRegex = new RegExp(
+    `${timestampPattern}[^\\n]*(?:session:\\s*([^\\n(]+)\\((\\d+)\\)|"session"\\s*:\\s*\\{[^\\n]*"name"\\s*:\\s*"([^"]+?)\\((\\d+)\\)")`,
+    "gi",
+  );
   const sessionMatches = [...raw.matchAll(sessionRegex)];
-  const sessionPids = [...new Set(sessionMatches.map((match) => Number(match[3])))];
+  const sessionPids = [...new Set(sessionMatches.map((match) => Number(match[3] ?? match[5])))];
   const requesterPid = sessionPids.length === 1 ? sessionPids[0] : null;
   const requester = requesterPid === null ? null : processReader(requesterPid);
   const bindings = [...raw.matchAll(/([0-9a-f]{2}(?:[-:][0-9a-f]{2}){5}):(input|output)\b/gi)]
@@ -217,6 +243,7 @@ export function diagnoseMultiEndpointCause(
     .filter(Boolean);
   const addresses = new Set(uniqueBindings.map((binding) => binding.address));
   const gaps: string[] = [];
+  if (evidence.queryError) gaps.push(`系统声音日志读取失败：${evidence.queryError}`);
   if (sessionPids.length !== 1) gaps.push("同一日志窗口内无法锁定唯一声音会话进程");
   if (!requester) gaps.push("声音会话进程已经退出或无法复核身份");
   const latestSessionTimestampMs = Math.max(0, ...sessionMatches.map((match) => timestampToMilliseconds(match[1])));

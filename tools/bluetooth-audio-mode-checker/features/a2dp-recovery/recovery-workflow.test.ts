@@ -55,6 +55,7 @@ function runtime(overrides: Partial<RecoveryRuntime> = {}): RecoveryRuntime {
     terminateProcess: () => {},
     readEvidence: () => emptyEvidence,
     readEvidenceSince: () => emptyEvidence,
+    readMultiEndpointEvidenceSince: () => emptyEvidence,
     setDefaultDevice: () => {},
     reconnectDevice: () => {},
     ...overrides,
@@ -376,6 +377,85 @@ test("路由抖动后即使目标短暂恢复也只读确认多端点并点名�
   assert.equal(microphoneReads, 0);
   assert.equal(terminated, false);
   assert.equal(reconnects, 0);
+});
+
+test("系统在复核前自行改成同一蓝牙设备时仍按十五秒内的前端现场确诊", async () => {
+  const rawLines = [
+    "2026-07-19 10:00:00.000000+0800 localhost coreaudiod[1]: session: VoiceApp(30114)",
+    "deviceUIDs:",
+    "- 50-C0-F0-F3-6A-66:output",
+    "- 58-B8-58-9D-C1-E8:input",
+    "2026-07-19 10:00:00.100000+0800 localhost coreaudiod[1]: There was an error setting the deviceUUIDs as there are more than one BT device connected",
+  ];
+  let evidenceStartedAt: number | null = null;
+  const result = await runRecovery({
+    name: "蓝牙耳机",
+    inspectMultiEndpoint: true,
+    context: {
+      clickedAt: new Date(now).toISOString(),
+      defaultInput: "蓝牙耳机",
+      defaultOutput: "蓝牙耳机",
+      targetSampleRate: 48_000,
+      observedBluetoothConflict: {
+        inputName: "蓝牙麦克风",
+        outputName: "蓝牙耳机",
+        observedAt: new Date(now - 500).toISOString(),
+        lookbackSeconds: 300,
+      },
+    },
+  }, runtime({
+    readDevices: () => [
+      device({ name: "蓝牙耳机", uid: "50-C0-F0-F3-6A-66:output", sampleRateOutput: 48_000, isDefaultInput: true }),
+      device({ name: "蓝牙麦克风", uid: "58-B8-58-9D-C1-E8:input", inputChannels: 1, outputChannels: 2, isDefaultInput: false, isDefaultOutput: false }),
+      device({ name: "内建设备", transport: "built-in", inputChannels: 1, outputChannels: 2, isDefaultInput: false, isDefaultOutput: false }),
+    ],
+    readProcess: () => processInfo,
+    readMultiEndpointEvidenceSince: (startedAt) => {
+      evidenceStartedAt = startedAt;
+      return { ...emptyEvidence, rawLines };
+    },
+  }));
+
+  assert.equal(result.outcome, "等待选择");
+  assert.equal(result.diagnosis.kind, "多端点会话类");
+  assert.match(result.diagnosis.summary, /VoiceApp/);
+  assert.equal(result.actionRequired?.kind, "route-choice");
+  assert.ok(result.actionRequired?.kind === "route-choice" && result.actionRequired.choices.some((choice) =>
+    choice.id === "input:内建设备" && choice.preserves === "输出"
+  ));
+  assert.match(result.steps[0].detail, /输入：蓝牙麦克风；输出：蓝牙耳机/);
+  assert.equal(evidenceStartedAt, now - 300_500);
+});
+
+test("超过十五秒的前端双蓝牙现场不得绕过当前路由复核", async () => {
+  let evidenceReads = 0;
+  const result = await runRecovery({
+    name: "蓝牙耳机",
+    inspectMultiEndpoint: true,
+    context: {
+      clickedAt: new Date(now).toISOString(),
+      defaultInput: "蓝牙耳机",
+      defaultOutput: "蓝牙耳机",
+      targetSampleRate: 48_000,
+      observedBluetoothConflict: {
+        inputName: "蓝牙麦克风",
+        outputName: "蓝牙耳机",
+        observedAt: new Date(now - 15_001).toISOString(),
+      },
+    },
+  }, runtime({
+    readDevices: () => [
+      device({ name: "蓝牙耳机", sampleRateOutput: 48_000, isDefaultInput: true }),
+      device({ name: "蓝牙麦克风", inputChannels: 1, outputChannels: 2, isDefaultInput: false, isDefaultOutput: false }),
+    ],
+    readEvidence: () => {
+      evidenceReads += 1;
+      return emptyEvidence;
+    },
+  }));
+
+  assert.equal(result.outcome, "无需修复");
+  assert.equal(evidenceReads, 0);
 });
 
 test("路由抖动复核证据不足时不切换设备也不走重连兜底", async () => {

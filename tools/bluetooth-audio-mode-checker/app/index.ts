@@ -489,12 +489,29 @@ function main(): void {
         const body = await readJsonBody(request) as {
           name?: unknown;
           inspectMultiEndpoint?: unknown;
+          observedConflict?: unknown;
           routeChoiceId?: unknown;
           authorizeRelaunchBlock?: unknown;
         };
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
         if (body.inspectMultiEndpoint !== undefined && typeof body.inspectMultiEndpoint !== "boolean") {
           throw new Error("多端点复核请求无效");
+        }
+        const observedConflict = body.observedConflict as Record<string, unknown> | undefined;
+        if (observedConflict !== undefined && (
+          observedConflict === null ||
+          typeof observedConflict !== "object" ||
+          typeof observedConflict.inputName !== "string" || observedConflict.inputName.length === 0 ||
+          typeof observedConflict.outputName !== "string" || observedConflict.outputName.length === 0 ||
+          observedConflict.inputName === observedConflict.outputName ||
+          typeof observedConflict.observedAt !== "string" || !Number.isFinite(Date.parse(observedConflict.observedAt)) ||
+          (observedConflict.lookbackSeconds !== undefined && (
+            !Number.isInteger(observedConflict.lookbackSeconds) ||
+            (observedConflict.lookbackSeconds as number) < 2 ||
+            (observedConflict.lookbackSeconds as number) > 300
+          ))
+        )) {
+          throw new Error("多端点现场快照无效");
         }
         if (body.routeChoiceId !== undefined && (typeof body.routeChoiceId !== "string" || body.routeChoiceId.length > 512)) {
           throw new Error("输入输出组合无效");
@@ -506,7 +523,11 @@ function main(): void {
           throw new Error("当前没有等待确认的自动拉起阻止授权");
         }
         if (body.authorizeRelaunchBlock === true) pendingRelaunchAuthorizations.delete(body.name);
-        detailedLog("info", "a2dp-recovery.requested", { deviceName: body.name });
+        detailedLog("info", "a2dp-recovery.requested", {
+          deviceName: body.name,
+          inspectMultiEndpoint: body.inspectMultiEndpoint === true,
+          observedConflict,
+        });
         const clickedAt = new Date().toISOString();
         const currentState = cachedState ?? readAudioModeState();
         const currentDevice = currentState.devices.find((device) => device.name === body.name);
@@ -523,6 +544,12 @@ function main(): void {
             defaultInput: currentState.routes.input.find((route) => route.isDefault)?.name ?? null,
             defaultOutput: currentState.routes.output.find((route) => route.isDefault)?.name ?? null,
             targetSampleRate: currentDevice?.sampleRateOutput ?? null,
+            observedBluetoothConflict: observedConflict ? {
+              inputName: observedConflict.inputName as string,
+              outputName: observedConflict.outputName as string,
+              observedAt: observedConflict.observedAt as string,
+              lookbackSeconds: observedConflict.lookbackSeconds as number | undefined,
+            } : undefined,
             occupancySnapshot: latestOccupancyCapturedAt ? {
               capturedAt: latestOccupancyCapturedAt,
               users: allOccupancyUsers,

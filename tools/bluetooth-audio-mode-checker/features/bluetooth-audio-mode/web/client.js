@@ -14,7 +14,7 @@ export function getBluetoothRouteConflict(routes) {
 export function describeBluetoothRouteRisk(routes) {
   const conflict = getBluetoothRouteConflict(routes);
   return conflict
-    ? `当前输入“${conflict.input.name}”和输出“${conflict.output.name}”来自两台不同的蓝牙设备。部分语音应用会拒绝这种组合；开始语音前建议先确认是否必须保留这组路由。`
+    ? "⚠️注意：当前输入和输出来自两个不同的蓝牙设备，微信输入法等App的语音功能可能无法正常处理这种组合。"
     : null;
 }
 
@@ -27,6 +27,9 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
 
   const key = conflict?.key ?? previous.key;
   const targetOutputName = conflict?.output.name ?? previous.targetOutputName;
+  const inputActive = Boolean(conflict && result.devices.find((device) =>
+    device.name === conflict.input.name
+  )?.isInputActive);
   if (!previous || previous.key !== key) {
     const mode = result.devices.find((device) => device.name === targetOutputName)?.mode ?? "断开";
     return {
@@ -36,9 +39,10 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
         lastSignal: conflict ? `已连接:${mode}` : "断开",
         changes: [],
         unstable: false,
+        inputActive,
         lastConflictAt: conflict ? now : 0,
       },
-      triggered: false,
+      triggered: inputActive,
       unstable: false,
       targetOutputName,
     };
@@ -50,6 +54,7 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
     ? [...previous.changes, now].filter((timestamp) => now - timestamp <= 8_000)
     : previous.changes.filter((timestamp) => now - timestamp <= 8_000);
   const unstable = previous.unstable || changes.length >= 2;
+  const inputStarted = inputActive && !previous.inputActive;
   return {
     state: {
       key,
@@ -57,9 +62,10 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
       lastSignal: signal,
       changes,
       unstable,
+      inputActive,
       lastConflictAt: conflict ? now : previous.lastConflictAt,
     },
-    triggered: unstable && !previous.unstable,
+    triggered: (unstable && !previous.unstable) || inputStarted,
     unstable,
     targetOutputName,
   };
@@ -123,6 +129,7 @@ let routeInstabilityState = null;
 let pendingRealtimeState = null;
 let realtimeRenderTimer = 0;
 let multiEndpointInspectionTimer = 0;
+let lastMultiEndpointInspectionKey = "";
 
 function createElement(tag, className, text) {
   const element = document.createElement(tag);
@@ -491,6 +498,39 @@ function clearRealtimeStabilityTimers() {
   if (multiEndpointInspectionTimer) window.clearTimeout(multiEndpointInspectionTimer);
   realtimeRenderTimer = 0;
   multiEndpointInspectionTimer = 0;
+  lastMultiEndpointInspectionKey = "";
+}
+
+function scheduleRouteConflictInspection(result, { force = false, lookbackSeconds = 2 } = {}) {
+  const routeConflict = getBluetoothRouteConflict(result.routes);
+  if (!routeConflict) {
+    lastMultiEndpointInspectionKey = "";
+    return;
+  }
+  const inputActive = Boolean(result.devices.find((device) =>
+    device.name === routeConflict.input.name
+  )?.isInputActive);
+  if (!inputActive && !force) {
+    if (lastMultiEndpointInspectionKey.endsWith("\n输入采集中")) {
+      lastMultiEndpointInspectionKey = "";
+    }
+    return;
+  }
+  const inspectionKey = `${routeConflict.key}\n${inputActive ? "输入采集中" : "路由抖动"}`;
+  if (inspectionKey === lastMultiEndpointInspectionKey || multiEndpointInspectionTimer) return;
+  const device = result.devices.find((item) => item.name === routeConflict.output.name) ??
+    lastRenderedDevices.find((item) => item.name === routeConflict.output.name);
+  if (!device) return;
+  lastMultiEndpointInspectionKey = inspectionKey;
+  multiEndpointInspectionTimer = window.setTimeout(() => {
+    multiEndpointInspectionTimer = 0;
+    recoveryController.inspectRouteConflict(device, {
+      inputName: routeConflict.input.name,
+      outputName: routeConflict.output.name,
+      observedAt: new Date().toISOString(),
+      lookbackSeconds,
+    });
+  }, 500);
 }
 
 function scheduleSettledRealtimeRender(delay) {
@@ -526,20 +566,13 @@ function renderRealtimeState(result) {
   }
 
   pendingRealtimeState = result;
+  scheduleRouteConflictInspection(result, {
+    force: observation.triggered && observation.unstable,
+  });
   if (observation.unstable) {
     routeMessage.className = "route-message is-warning is-unstable";
     routeMessage.textContent = "检测到当前双蓝牙组合正在反复断连或切换模式。页面已保留最近稳定状态，正在确认是否有具体应用拒绝该组合。";
     scheduleSettledRealtimeRender(5_000);
-    if (observation.triggered && !multiEndpointInspectionTimer) {
-      const device = result.devices.find((item) => item.name === observation.targetOutputName) ??
-        lastRenderedDevices.find((item) => item.name === observation.targetOutputName);
-      if (device) {
-        multiEndpointInspectionTimer = window.setTimeout(() => {
-          multiEndpointInspectionTimer = 0;
-          recoveryController.inspectRouteConflict(device);
-        }, 500);
-      }
-    }
     return;
   }
 
@@ -582,6 +615,7 @@ async function refreshDevices(options = {}) {
     }
     if (!response.ok) throw new Error(result.error || "设备读取失败");
     renderState(result, options);
+    scheduleRouteConflictInspection(result, { lookbackSeconds: 300 });
   } catch (error) {
     if (options.silent) return;
     listElement.replaceChildren(createElement("div", "error-state", `读取失败：${error.message}`));

@@ -13,6 +13,7 @@ import {
   diagnoseFormatRequestCause,
   diagnoseMultiEndpointCause,
   readRecentSystemAudioEvidence,
+  readMultiEndpointEvidenceSince,
   readSystemAudioEvidenceSince,
   type FormatRequestCause,
   type FormatRequestEvidence,
@@ -46,6 +47,7 @@ export type RecoveryRuntime = {
   terminateProcess: (processInfo: RunningProcess) => void;
   readEvidence: () => FormatRequestEvidence;
   readEvidenceSince: (startedAtMs: number) => FormatRequestEvidence;
+  readMultiEndpointEvidenceSince: (startedAtMs: number) => FormatRequestEvidence;
   setDefaultDevice: (direction: "input" | "output", name: string) => void;
   reconnectDevice: (name: string) => void;
 };
@@ -59,6 +61,7 @@ const systemRuntime: RecoveryRuntime = {
   terminateProcess: terminateRunningProcess,
   readEvidence: () => readRecentSystemAudioEvidence(10),
   readEvidenceSince: readSystemAudioEvidenceSince,
+  readMultiEndpointEvidenceSince,
   setDefaultDevice: setDefaultAudioDevice,
   reconnectDevice: reconnectBluetoothDevice,
 };
@@ -74,6 +77,8 @@ type ProcessActionResult = {
   released: RunningProcess[];
   remaining: RunningProcess[];
 };
+
+type ObservedBluetoothConflict = NonNullable<NonNullable<RecoveryRequest["context"]>["observedBluetoothConflict"]>;
 
 function isBluetooth(device: RawAudioDevice): boolean {
   return device.transport === "bluetooth" || device.transport === "bluetooth-le";
@@ -101,6 +106,32 @@ function hasDifferentBluetoothDefaultRoutes(devices: RawAudioDevice[]): boolean 
   const input = devices.find((device) => device.isDefaultInput && device.inputChannels > 0);
   const output = devices.find((device) => device.isDefaultOutput && device.outputChannels > 0);
   return Boolean(input && output && isBluetooth(input) && isBluetooth(output) && input.name !== output.name);
+}
+
+function recentObservedBluetoothConflict(
+  request: RecoveryRequest,
+  devices: RawAudioDevice[],
+  now: number,
+): ObservedBluetoothConflict | null {
+  const observed = request.context?.observedBluetoothConflict;
+  if (!observed || observed.inputName === observed.outputName || observed.outputName !== request.name) return null;
+  const observedAt = Date.parse(observed.observedAt);
+  if (!Number.isFinite(observedAt) || observedAt > now + 1_000 || now - observedAt > 15_000) return null;
+  const input = devices.find((device) => device.name === observed.inputName && device.inputChannels > 0);
+  const output = devices.find((device) => device.name === observed.outputName && device.outputChannels > 0);
+  return input && output && isBluetooth(input) && isBluetooth(output) ? observed : null;
+}
+
+function withObservedDefaultRoutes(
+  devices: RawAudioDevice[],
+  observed: ObservedBluetoothConflict,
+): RawAudioDevice[] {
+  if (!observed) return devices;
+  return devices.map((device) => ({
+    ...device,
+    isDefaultInput: device.inputChannels > 0 && device.name === observed.inputName,
+    isDefaultOutput: device.outputChannels > 0 && device.name === observed.outputName,
+  }));
 }
 
 function processDescription(processInfo: RunningProcess): string {
@@ -447,13 +478,14 @@ export async function runRecovery(
   reportProgress({ stage: "正在保存现场", message: "正在保存点击时的输入、输出、采样率和麦克风占用。" });
   const devices = runtime.readDevices();
   const target = targetOutput(devices, name);
-  const originalInput = request.context?.defaultInput ?? currentDefaultName(devices, "input");
-  const originalOutput = request.context?.defaultOutput ?? currentDefaultName(devices, "output");
+  const observedConflict = recentObservedBluetoothConflict(request, devices, runtime.now());
+  const originalInput = observedConflict?.inputName ?? request.context?.defaultInput ?? currentDefaultName(devices, "input");
+  const originalOutput = observedConflict?.outputName ?? request.context?.defaultOutput ?? currentDefaultName(devices, "output");
   const initialRate = target?.sampleRateOutput ?? request.context?.targetSampleRate ?? null;
   addStep(name, steps, "保存现场", "成功", `点击时间：${request.context?.clickedAt ?? new Date(runtime.now()).toISOString()}；输入：${originalInput ?? "未知"}；输出：${originalOutput ?? "未知"}；目标采样率：${initialRate ?? "未知"}`);
 
   const canInspectMultiEndpoint = request.inspectMultiEndpoint === true &&
-    target?.isDefaultOutput === true && hasDifferentBluetoothDefaultRoutes(devices);
+    target?.isDefaultOutput === true && (hasDifferentBluetoothDefaultRoutes(devices) || observedConflict !== null);
   const isNormalInputOnlyTarget = target?.isDefaultOutput === false &&
     devices.some((device) => device.name === name && device.isDefaultInput && device.inputChannels > 0);
   const isInactiveOutputTarget = target?.isDefaultOutput === false;
@@ -526,8 +558,15 @@ export async function runRecovery(
     addStep(name, steps, "补充麦克风占用检查", "失败", error instanceof Error ? error.message : String(error));
   }
   let evidence: FormatRequestEvidence | null = null;
-  if (users.length === 0) evidence = runtime.readEvidence();
-  let cause = diagnoseCause(name, devices, users, evidence, runtime, {
+  if (users.length === 0) {
+    evidence = request.inspectMultiEndpoint && observedConflict
+      ? runtime.readMultiEndpointEvidenceSince(
+          Date.parse(observedConflict.observedAt) - (observedConflict.lookbackSeconds ?? 2) * 1_000,
+        )
+      : runtime.readEvidence();
+  }
+  const diagnosisDevices = observedConflict ? withObservedDefaultRoutes(devices, observedConflict) : devices;
+  let cause = diagnoseCause(name, diagnosisDevices, users, evidence, runtime, {
     allowRecoveredMultiEndpoint: request.inspectMultiEndpoint,
     onlyMultiEndpoint: request.inspectMultiEndpoint,
   });

@@ -59,6 +59,12 @@ export type RecoveryRequestContext = {
   defaultInput: string | null;
   defaultOutput: string | null;
   targetSampleRate: number | null;
+  observedBluetoothConflict?: {
+    inputName: string;
+    outputName: string;
+    observedAt: string;
+    lookbackSeconds?: number;
+  };
   occupancySnapshot?: {
     capturedAt: string;
     users: MicrophoneUser[];

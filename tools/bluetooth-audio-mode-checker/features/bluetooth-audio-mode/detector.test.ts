@@ -326,7 +326,10 @@ test("不同经典蓝牙输入输出在语音前显示风险提示", () => {
     output: [{ name: "蓝牙耳机 B", transport: "bluetooth", isDefault: true }],
   };
 
-  assert.match(describeBluetoothRouteRisk(routes), /两台不同的蓝牙设备/);
+  assert.equal(
+    describeBluetoothRouteRisk(routes),
+    "⚠️注意：当前输入和输出来自两个不同的蓝牙设备，微信输入法等App的语音功能可能无法正常处理这种组合。",
+  );
   assert.equal(describeBluetoothRouteRisk({
     input: [{ name: "同一耳机", transport: "bluetooth", isDefault: true }],
     output: [{ name: "同一耳机", transport: "bluetooth", isDefault: true }],
@@ -337,9 +340,12 @@ test("不同经典蓝牙输入输出在语音前显示风险提示", () => {
   }), null);
 });
 
-function routeConflictState(mode: "A2DP" | "HFP_HSP", connected = true) {
+function routeConflictState(mode: "A2DP" | "HFP_HSP", connected = true, inputActive = false) {
   return {
-    devices: [{ name: "蓝牙耳机 B", mode }],
+    devices: [
+      { name: "蓝牙麦克风 A", mode: "INACTIVE", isInputActive: inputActive },
+      { name: "蓝牙耳机 B", mode },
+    ],
     routes: connected ? {
       input: [{ name: "蓝牙麦克风 A", transport: "bluetooth", isDefault: true }],
       output: [{ name: "蓝牙耳机 B", transport: "bluetooth", isDefault: true }],
@@ -366,6 +372,33 @@ test("双蓝牙组合断开后又重连也视为路由抖动", () => {
   assert.equal(observation.unstable, true);
 });
 
+test("双蓝牙输入开始实际采集时即使输出不抖动也触发只读复核", () => {
+  let observation = observeBluetoothRouteInstability(null, routeConflictState("A2DP"), 1_000);
+  assert.equal(observation.triggered, false);
+  observation = observeBluetoothRouteInstability(
+    observation.state,
+    routeConflictState("A2DP", true, true),
+    2_000,
+  );
+  assert.equal(observation.unstable, false);
+  assert.equal(observation.triggered, true);
+});
+
+test("页面首次扫描时双蓝牙输入已经采集也触发只读复核", () => {
+  const observation = observeBluetoothRouteInstability(
+    null,
+    routeConflictState("A2DP", true, true),
+    1_000,
+  );
+  assert.equal(observation.unstable, false);
+  assert.equal(observation.triggered, true);
+
+  const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+  assert.match(source, /renderState\(result, options\);\s+scheduleRouteConflictInspection\(result, \{ lookbackSeconds: 300 \}\);/);
+  assert.match(source, /function scheduleRouteConflictInspection\(result, \{ force = false, lookbackSeconds = 2 \} = \{\}\)/);
+  assert.match(source, /lastMultiEndpointInspectionKey/);
+});
+
 test("一键修复结果不会因麦克风仍在使用而被页面删除", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
@@ -379,8 +412,8 @@ test("双蓝牙抖动只读复核后才给出原有路由选择", () => {
   const recoveryClient = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.match(modeClient, /页面已保留最近稳定状态/);
-  assert.match(modeClient, /inspectRouteConflict\(device\)/);
-  assert.match(recoveryClient, /inspectMultiEndpoint: true, routeChoiceId: choice\.id/);
+  assert.match(modeClient, /inspectRouteConflict\(device, \{\s+inputName: routeConflict\.input\.name,\s+outputName: routeConflict\.output\.name,\s+observedAt:/s);
+  assert.match(recoveryClient, /inspectMultiEndpoint: true,\s+routeChoiceId: choice\.id,\s+observedConflict: feedback\.observedConflict/s);
 });
 
 test("自动只读复核不占用一键修复按钮的忙碌状态", () => {
