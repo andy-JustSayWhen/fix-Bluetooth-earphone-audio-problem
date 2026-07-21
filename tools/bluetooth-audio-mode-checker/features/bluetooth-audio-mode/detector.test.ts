@@ -16,9 +16,9 @@ import {
   observeBluetoothRouteInstability,
 } from "./web/client.js";
 import {
+  createA2dpRecoveryController,
   isA2dpRecoveryTarget,
   shouldContinueAfterOccupancyEnded,
-  successfulRecoverySummary,
 } from "../a2dp-recovery/web/client.js";
 
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
@@ -458,8 +458,9 @@ test("一键修复请求期间立即显示忙碌状态并阻止重复提交", ()
   const request = source.indexOf('fetch("/api/a2dp-recovery"');
 
   assert.ok(busyState >= 0 && busyState < request);
-  assert.match(source, /正在修复，请稍候/);
+  assert.match(source, /`正在修复 \$\{Math\.min\(batchCompleted \+ 1, batchTotal\)\}\/\$\{batchTotal\}`/);
   assert.match(source, /if \(runningDevices\.has\(device\.name\)\) return/);
+  assert.doesNotMatch(source, /正在修复，请稍候/);
 });
 
 test("一键修复只在更新时间后显示一个列表级入口", () => {
@@ -475,6 +476,8 @@ test("一键修复只在更新时间后显示一个列表级入口", () => {
   assert.doesNotMatch(recoverySource, /其中 \$\{repairableDevices\.length\} 个需要修复/);
   assert.match(recoverySource, /createElement\("button", `recovery-trigger/);
   assert.match(recoverySource, /"一键修复全部需要修复的 HFP 设备"/);
+  assert.match(recoverySource, /terminalBatchState === "success" \? "成功" : "错误"/);
+  assert.match(recoverySource, /terminalDisplayMs = 10_000/);
 });
 
 test("设备卡片在名称下显示模式且右侧只保留展开图标", () => {
@@ -509,13 +512,15 @@ test("列表级一键修复逐台处理并在需要用户选择时暂停", () =>
   assert.match(source, /persistBatchState\(\)/);
 });
 
-test("同一标签页刷新后保留已完成修复结果但不恢复运行中状态", () => {
+test("同一标签页刷新后只恢复等待交互而不恢复完成或运行状态", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.match(source, /window\.sessionStorage\.getItem\(storageKey\)/);
+  assert.match(source, /const obsoleteCompleted = !feedback\?\.result\?\.actionRequired/);
   assert.match(source, /obsoleteAuthorization/);
   assert.match(source, /setFeedback\(device\.name, \{\s+kind: "running"[\s\S]*?\}, false\)/);
-  assert.match(source, /setFeedback\(device\.name, \{\s+kind: result\.actionRequired/);
+  assert.match(source, /setFeedback\(device\.name, \{ kind: "pending", result \}\)/);
+  assert.match(source, /removeStoredFeedback\(device\.name\)/);
   assert.match(source, /if \(feedback\?\.result\?\.actionRequired\) expandedDevices\.add/);
   assert.doesNotMatch(source, /for \(const deviceName of feedbackByDevice\.keys\(\)\) expandedDevices\.add/);
 });
@@ -528,48 +533,81 @@ test("多端点确诊后路由选择不会被持续麦克风占用折叠", () =>
   assert.match(pageSource, /if \(pendingActionDevice\) \{\s+expandedDevices\.add\(pendingActionDevice\.name\)/);
   assert.match(pageSource, /const pendingRouteChoice = recoveryController\.getPendingRouteChoice\(\)/);
   assert.match(pageSource, /showConfirmedRouteConflict\(pendingRouteChoice\)/);
-  assert.match(recoverySource, /result\.outcome === "无需修复"[\s\S]*?"neutral"/);
   assert.match(recoverySource, /routeChoiceId: choice\.id/);
-  assert.match(recoverySource, /createElement\("div", "recovery-result-header"\)/);
-  assert.match(recoverySource, /successfulRecoverySummary\(result, deviceName\)/);
-  assert.doesNotMatch(recoverySource, /查看处理详情|recovery-details|工作流：/);
+  assert.match(recoverySource, /function actionSection\(feedback, deviceName\)/);
+  assert.doesNotMatch(recoverySource, /recovery-result-header|successfulRecoverySummary|修复成功|修复失败|未执行修复/);
 });
 
-test("完成结果只根据实际成功动作生成原因", () => {
-  const baseResult = {
-    releasedPrograms: [],
-    diagnosis: { kind: "麦克风占用类" },
-    steps: [],
-    usedReconnect: false,
-    recoveryPath: "原因对应处理",
+test("批次完成后胶囊只显示成功或错误并在十秒后清除", () => {
+  const pageSource = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
+  const recoverySource = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
+
+  assert.match(recoverySource, /const terminalKind = batchHadError \? "error" : "success"/);
+  assert.match(recoverySource, /terminalBatchState === "success" \? "成功" : "错误"/);
+  assert.match(recoverySource, /window\.setTimeout\([\s\S]*?terminalBatchState = null;[\s\S]*?terminalDisplayMs\)/);
+  assert.match(pageSource, /if \(recovery\?\.result\?\.actionRequired\) \{[\s\S]*?actionSection/);
+  assert.doesNotMatch(pageSource, /resultSection/);
+});
+
+test("列表级胶囊成功态保留十秒后按当前设备恢复入口", async () => {
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  const timers = [];
+  const storage = new Map();
+  globalThis.window = {
+    sessionStorage: {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: (key) => storage.delete(key),
+    },
+    setTimeout: (callback, delay) => {
+      const timer = { callback, delay };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout: () => {},
   };
-  assert.equal(successfulRecoverySummary({
-    ...baseResult,
-    releasedPrograms: ["语音程序"],
-  }, "测试耳机"), "已解除「语音程序」的麦克风占用");
-  assert.equal(successfulRecoverySummary({
-    ...baseResult,
-    steps: [{ stage: "应用多端点替代组合", status: "成功", detail: "保留当前扬声器，麦克风改为“内置麦克风”" }],
-  }, "测试耳机"), "已将输入切换为「内置麦克风」");
-  assert.equal(successfulRecoverySummary({
-    ...baseResult,
-    diagnosis: { kind: "格式请求类" },
-    releasedPrograms: ["声音程序"],
-  }, "测试耳机"), "已结束「声音程序」发起的声音格式请求");
-  assert.equal(successfulRecoverySummary({
-    ...baseResult,
-    guardedPrograms: ["声音程序"],
-  }, "测试耳机"), "已在本次开机期间阻止「声音程序」自动拉起");
-  assert.equal(successfulRecoverySummary({
-    ...baseResult,
-    diagnosis: { kind: "链路残留类" },
-    releasedPrograms: ["语音程序"],
-  }, "测试耳机"), "已解除「语音程序」的输入占用，并已解除残留声音链路并恢复点击前输入输出");
-  assert.equal(successfulRecoverySummary({
-    ...baseResult,
-    diagnosis: { kind: "链路残留类" },
-    usedReconnect: true,
-  }, "测试耳机"), "已重建「测试耳机」的蓝牙连接并恢复点击前输入输出");
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      ok: true,
+      outcome: "完全恢复",
+      releasedPrograms: [],
+      actionRequired: null,
+    }),
+  });
+  const createElement = (tag, className, text) => ({
+    tag,
+    className,
+    textContent: text ?? "",
+    children: [],
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; },
+    setAttribute() {},
+    addEventListener() {},
+  });
+  const triggerContainer = createElement("div", "", "");
+  const devices = [{ name: "测试耳机", mode: "HFP_HSP", a2dpSupport: "SUPPORTED" }];
+
+  try {
+    const controller = createA2dpRecoveryController({
+      createElement,
+      expandedDevices: new Set(),
+      getLastRenderedDevices: () => devices,
+      triggerContainer,
+      renderDevices: () => {},
+      schedulePostActionRefresh: () => {},
+    });
+    await controller.recoverAll(devices);
+    assert.equal(triggerContainer.children[0].children[1].textContent, "成功");
+    assert.match(triggerContainer.children[0].children[1].className, /is-success/);
+    assert.equal(timers[0].delay, 10_000);
+    timers[0].callback();
+    assert.equal(triggerContainer.children[0].children[1].textContent, "一键修复");
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("只有较新的占用快照确认相关进程停止读取时才撤销麦克风授权", () => {
@@ -686,11 +724,12 @@ test("页面首次扫描只展示双蓝牙实时状态而不自动发起修复",
   assert.match(source, /renderState\(result, options\)/);
 });
 
-test("一键修复结果不会因麦克风仍在使用而被页面删除", () => {
+test("一键修复完成结果不再进入设备卡片", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
-  assert.doesNotMatch(source, /microphoneOccupancy\?\.isInUse\) feedbackByDevice\.delete/);
-  assert.match(source, /kind: result\.actionRequired[\s\S]*?result\.ok \? "success" : "error"/);
+  assert.match(source, /if \(result\.actionRequired\) \{[\s\S]*?setFeedback\(device\.name, \{ kind: "pending", result \}\)/);
+  assert.match(source, /batchHadError = batchHadError \|\| !result\.ok;[\s\S]*?removeStoredFeedback\(device\.name\)/);
+  assert.doesNotMatch(source, /kind: result\.ok \? "success" : "error"/);
   assert.match(source, /finally \{\s+runningDevices\.delete\(device\.name\);\s+progressByDevice\.delete/s);
 });
 
@@ -723,4 +762,6 @@ test("单独解除占用显示阶段并在完成后主动多次复查", () => {
   assert.match(source, /正在解除并复查…/);
   assert.match(source, /\[350, 900, 1_800\]/);
   assert.match(source, /已重新占用/);
+  assert.match(source, /setOccupancyFeedback\(deviceName, \{[\s\S]*?kind: "success"[\s\S]*?\}, 10_000\)/);
+  assert.match(source, /occupancyFeedback\.get\(deviceName\) === feedback/);
 });

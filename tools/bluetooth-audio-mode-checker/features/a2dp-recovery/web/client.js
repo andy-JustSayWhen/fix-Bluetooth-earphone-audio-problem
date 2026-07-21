@@ -1,54 +1,3 @@
-function quotedNames(names) {
-  return names.map((name) => `「${name}」`).join("、");
-}
-
-function routeActionSummary(result) {
-  const detail = result.steps?.find((item) =>
-    item.stage === "应用多端点替代组合" && item.status === "成功"
-  )?.detail;
-  if (!detail) return null;
-  const input = detail.match(/麦克风改为“([^”]+)”$/)?.[1] ?? detail.match(/麦克风改为(.+)$/)?.[1];
-  if (input) return `已将输入切换为「${input}」`;
-  const output = detail.match(/扬声器改为“([^”]+)”$/)?.[1] ?? detail.match(/扬声器改为(.+)$/)?.[1];
-  if (output) return `已将输出切换为「${output}」`;
-  const both = detail.match(/输入输出都改用“([^”]+)”$/)?.[1] ?? detail.match(/输入输出都改用(.+)$/)?.[1];
-  return both ? `已将输入和输出切换为「${both}」` : null;
-}
-
-export function successfulRecoverySummary(result, deviceName) {
-  const actions = [];
-  const guardedPrograms = result.guardedPrograms ?? [];
-  if (guardedPrograms.length > 0) {
-    actions.push(`已在本次开机期间阻止${quotedNames(guardedPrograms)}自动拉起`);
-  }
-  const programs = result.releasedPrograms ?? [];
-  if (programs.length > 0) {
-    if (result.diagnosis.kind === "麦克风占用类") {
-      actions.push(`已解除${quotedNames(programs)}的麦克风占用`);
-    } else if (result.diagnosis.kind === "链路残留类") {
-      actions.push(`已解除${quotedNames(programs)}的输入占用`);
-    } else if (result.diagnosis.kind === "格式请求类") {
-      actions.push(`已结束${quotedNames(programs)}发起的声音格式请求`);
-    } else {
-      actions.push(`已结束${quotedNames(programs)}的相关声音会话`);
-    }
-  }
-  const routeAction = routeActionSummary(result);
-  if (routeAction) actions.push(routeAction);
-  if (result.diagnosis.kind === "链路残留类" && result.recoveryPath === "原因对应处理") {
-    actions.push(result.usedReconnect
-      ? `已重建「${deviceName}」的蓝牙连接并恢复点击前输入输出`
-      : "已解除残留声音链路并恢复点击前输入输出");
-  }
-  if (actions.length === 0 && result.usedReconnect) {
-    actions.push(`已重建「${deviceName}」的蓝牙连接`);
-  }
-  if (actions.length === 0 && result.recoveryPath === "声音链路重建兜底") {
-    actions.push("已重建声音链路并恢复点击前输入输出");
-  }
-  return actions.join("，并");
-}
-
 export function shouldContinueAfterOccupancyEnded(feedback, microphoneUsers, occupancyCapturedAt) {
   const action = feedback?.result?.actionRequired;
   if (action?.kind !== "relaunch-authorization" || action.cause !== "麦克风占用类") return false;
@@ -75,6 +24,7 @@ export function createA2dpRecoveryController({
 }) {
   const storageKey = "a2dp-recovery-feedback-v1";
   const batchStorageKey = "a2dp-recovery-batch-v1";
+  const terminalDisplayMs = 10_000;
 
   function readStoredFeedback() {
     try {
@@ -101,6 +51,7 @@ export function createA2dpRecoveryController({
         queue: stored.queue.filter((name) => typeof name === "string" && name.length > 0),
         total: Number.isInteger(stored.total) && stored.total >= 0 ? stored.total : 0,
         completed: Number.isInteger(stored.completed) && stored.completed >= 0 ? stored.completed : 0,
+        hadError: stored.hadError === true,
         pausedDevice: typeof stored.pausedDevice === "string" && stored.pausedDevice.length > 0
           ? stored.pausedDevice
           : null,
@@ -122,6 +73,7 @@ export function createA2dpRecoveryController({
   const storedFeedback = readStoredFeedback();
   let removedLegacyInspection = false;
   for (const [deviceName, feedback] of Object.entries(storedFeedback)) {
+    const obsoleteCompleted = !feedback?.result?.actionRequired;
     const obsoleteInspection = feedback?.source === "inspection";
     const obsoleteIneligibleTarget = feedback?.result?.diagnosis?.summary === "目标当前不是可处理的低采样率默认输出";
     const obsoleteUnmarkedInspection = feedback?.result?.recoveryPath === "现场复核" &&
@@ -129,7 +81,7 @@ export function createA2dpRecoveryController({
       feedback.result?.diagnosis?.summary === "尚不能确认具体应用拒绝了当前双蓝牙组合";
     const obsoleteAuthorization = feedback?.result?.actionRequired?.kind === "relaunch-authorization" &&
       !["still-running", "restarted"].includes(feedback.result.actionRequired.triggerState);
-    if (obsoleteInspection || obsoleteIneligibleTarget || obsoleteUnmarkedInspection || obsoleteAuthorization) {
+    if (obsoleteCompleted || obsoleteInspection || obsoleteIneligibleTarget || obsoleteUnmarkedInspection || obsoleteAuthorization) {
       delete storedFeedback[deviceName];
       removedLegacyInspection = true;
     }
@@ -143,19 +95,24 @@ export function createA2dpRecoveryController({
   let batchQueue = storedBatch?.queue ?? [];
   let batchTotal = storedBatch?.total ?? 0;
   let batchCompleted = storedBatch?.completed ?? 0;
+  let batchHadError = storedBatch?.hadError ?? false;
   let batchRunning = false;
   let batchPausedDevice = storedBatch?.pausedDevice ?? null;
   let batchResumeScheduled = false;
+  let terminalBatchState = null;
+  let terminalBatchTimer = 0;
   if (batchPausedDevice !== null && !feedbackByDevice.get(batchPausedDevice)?.result?.actionRequired) {
     batchQueue = [];
     batchTotal = 0;
     batchCompleted = 0;
+    batchHadError = false;
     batchPausedDevice = null;
     writeStoredBatch(null);
   } else if (batchPausedDevice === null && batchQueue.length > 0) {
     batchQueue = [];
     batchTotal = 0;
     batchCompleted = 0;
+    batchHadError = false;
     writeStoredBatch(null);
   }
   for (const [deviceName, feedback] of feedbackByDevice) {
@@ -171,6 +128,7 @@ export function createA2dpRecoveryController({
       queue: batchQueue,
       total: batchTotal,
       completed: batchCompleted,
+      hadError: batchHadError,
       pausedDevice: batchPausedDevice,
     });
   }
@@ -216,7 +174,18 @@ export function createA2dpRecoveryController({
       "recovery-overview__count",
       `识别到有 ${repairableDevices.length} 个设备处于 HFP`,
     ));
-    if (repairableDevices.length > 0) {
+    if (terminalBatchState) {
+      const result = createElement(
+        "button",
+        `recovery-trigger is-${terminalBatchState}`,
+        terminalBatchState === "success" ? "成功" : "错误",
+      );
+      result.type = "button";
+      result.disabled = true;
+      result.setAttribute("role", "status");
+      result.setAttribute("aria-live", "polite");
+      overview.append(result);
+    } else if (repairableDevices.length > 0) {
       const hasPendingAction = [...feedbackByDevice.values()]
         .some((feedback) => Boolean(feedback?.result?.actionRequired));
       const isBusy = batchRunning || runningDevices.size > 0;
@@ -233,6 +202,23 @@ export function createA2dpRecoveryController({
       overview.append(button);
     }
     triggerContainer.replaceChildren(overview);
+  }
+
+  function clearTerminalBatchState() {
+    if (terminalBatchTimer) window.clearTimeout(terminalBatchTimer);
+    terminalBatchTimer = 0;
+    terminalBatchState = null;
+  }
+
+  function showTerminalBatchState(kind) {
+    clearTerminalBatchState();
+    terminalBatchState = kind;
+    renderAggregateTrigger();
+    terminalBatchTimer = window.setTimeout(() => {
+      terminalBatchTimer = 0;
+      terminalBatchState = null;
+      renderAggregateTrigger();
+    }, terminalDisplayMs);
   }
 
   function setFeedback(deviceName, feedback, persist = true) {
@@ -270,9 +256,7 @@ export function createA2dpRecoveryController({
             ? "较新的占用快照确认相关进程已停止读取，正在撤销过时授权并沿用原回合继续。"
             : "正在保存点击现场，然后依次检查多端点与 tsco、实体麦克风占用和链路残留。",
     }, false);
-    expandedDevices.add(device.name);
     renderAggregateTrigger();
-    renderDevices(getLastRenderedDevices());
     try {
       const response = await fetch("/api/a2dp-recovery", {
         method: "POST",
@@ -284,16 +268,15 @@ export function createA2dpRecoveryController({
       for (const program of result.releasedPrograms ?? []) {
         recentlyReleasedPrograms.set(program, Date.now());
       }
-      setFeedback(device.name, {
-        kind: result.actionRequired
-          ? "pending"
-          : result.outcome === "无需修复"
-            ? "neutral"
-            : result.ok ? "success" : "error",
-        result,
-      });
+      if (result.actionRequired) {
+        setFeedback(device.name, { kind: "pending", result });
+      } else {
+        batchHadError = batchHadError || !result.ok;
+        removeStoredFeedback(device.name);
+      }
     } catch (error) {
-      setFeedback(device.name, { kind: "error", text: `恢复失败：${error.message}` });
+      batchHadError = true;
+      removeStoredFeedback(device.name);
     } finally {
       runningDevices.delete(device.name);
       progressByDevice.delete(device.name);
@@ -334,11 +317,14 @@ export function createA2dpRecoveryController({
     batchTotal = 0;
     batchCompleted = 0;
     persistBatchState();
-    renderAggregateTrigger();
+    const terminalKind = batchHadError ? "error" : "success";
+    batchHadError = false;
+    showTerminalBatchState(terminalKind);
   }
 
   async function recoverAll(devices) {
     if (batchRunning || batchPausedDevice) return;
+    clearTerminalBatchState();
     batchQueue = devices
       .filter(isA2dpRecoveryTarget)
       .map((device) => device.name);
@@ -348,6 +334,7 @@ export function createA2dpRecoveryController({
     }
     batchTotal = batchQueue.length;
     batchCompleted = 0;
+    batchHadError = false;
     persistBatchState();
     await runBatch();
   }
@@ -368,44 +355,11 @@ export function createA2dpRecoveryController({
     await runBatch();
   }
 
-  function resultSection(feedback, deviceName) {
-    const displayKind = feedback.result?.outcome === "无需修复" ? "neutral" : feedback.kind;
-    const section = createElement("section", `recovery-feedback is-${displayKind}`);
+  function actionSection(feedback, deviceName) {
+    const section = createElement("section", "recovery-feedback is-pending");
     section.setAttribute("role", "status");
     section.setAttribute("aria-live", "polite");
-    if (!feedback.result) {
-      if (feedback.kind === "running") section.append(createElement("strong", "recovery-title", "正在修复，请稍候…"));
-      section.append(createElement("p", "recovery-summary", feedback.text));
-      return section;
-    }
     const result = feedback.result;
-    if (!result.actionRequired) {
-      const succeeded = result.outcome === "完全恢复" || result.outcome === "绕过成功";
-      const status = succeeded
-        ? "修复成功"
-        : result.outcome === "无需修复" ? "未执行修复" : "修复失败";
-      const header = createElement("div", "recovery-result-header");
-      header.append(
-        createElement("strong", "recovery-title", status),
-        createElement(
-          "time",
-          "recovery-time",
-          feedback.recordedAt
-            ? new Date(feedback.recordedAt).toLocaleString("zh-CN", { hour12: false })
-            : "时间未知",
-        ),
-      );
-      section.append(header);
-      if (succeeded) {
-        section.append(createElement(
-          "p",
-          "recovery-summary",
-          successfulRecoverySummary(result, deviceName) || "已恢复目标设备的高音质播放",
-        ));
-      }
-      return section;
-    }
-
     section.append(createElement("strong", "recovery-title", "需要你选择"));
     if (result.actionRequired?.kind === "route-choice") {
       const actions = createElement("div", "recovery-actions");
@@ -462,7 +416,7 @@ export function createA2dpRecoveryController({
       kind: "running",
       text: `${progress.stage}：${progress.message}`,
     }, false);
-    renderDevices(getLastRenderedDevices());
+    renderAggregateTrigger();
   }
 
   function reconcilePendingAuthorizations(devices, microphoneUsers, occupancyCapturedAt) {
@@ -481,7 +435,7 @@ export function createA2dpRecoveryController({
     recover,
     recoverAll,
     renderAggregateTrigger,
-    resultSection,
+    actionSection,
     handleProgress,
     reconcilePendingAuthorizations,
     getPendingRouteChoice: () => [...feedbackByDevice.values()]

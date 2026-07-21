@@ -60,7 +60,7 @@ export function createSpeakerOccupancyController({
         const row = createElement("div", "speaker-occupancy-user");
         row.append(
           createElement("strong", "", user.name),
-          createElement("span", "", `进程 ${user.pid} · 正在向此设备输出声音`),
+          createElement("span", "", `进程 ${user.pid} · 正在通过本设备播放声音`),
         );
         list.append(row);
       }
@@ -69,7 +69,7 @@ export function createSpeakerOccupancyController({
       container.append(createElement(
         "p",
         "speaker-occupancy-empty",
-        "没有检测到正在向此设备输出声音的本机应用。仅设为系统默认输出不算应用级占用。",
+        "没有检测到正在通过本设备播放声音的本机应用。仅设为系统默认输出不算应用级占用。",
       ));
     }
 

@@ -68,6 +68,8 @@ test("页面无论是否识别到输出占用都提供一键断开重连", () =>
   assert.match(source, /busyDevices\.has\(device\.name\) \? "正在断开重连…" : "一键断开重连"/);
   assert.match(source, /若当前设备处于A2DP，音频能正常播放但设备端没有声音，可以点击“一键断开重连”尝试修复/);
   assert.match(source, /仅设为系统默认输出不算应用级占用/);
+  assert.match(source, /正在通过本设备播放声音/);
+  assert.doesNotMatch(source, /正在向此设备输出声音/);
 });
 
 test("服务端只复核目标设备并允许占用证据为空", () => {

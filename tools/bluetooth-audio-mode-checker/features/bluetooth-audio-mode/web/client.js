@@ -118,6 +118,7 @@ const routeMessage = document.querySelector("#route-message");
 
 const expandedDevices = new Set();
 const occupancyFeedback = new Map();
+const occupancyFeedbackTimers = new Map();
 const occupancyBusyDevices = new Set();
 let lastRenderedDevices = [];
 let lastMicrophoneUsers = [];
@@ -209,12 +210,30 @@ function schedulePostActionRefresh() {
   }
 }
 
+function setOccupancyFeedback(deviceName, feedback, dismissAfterMs = 0) {
+  const previousTimer = occupancyFeedbackTimers.get(deviceName);
+  if (previousTimer) window.clearTimeout(previousTimer);
+  occupancyFeedbackTimers.delete(deviceName);
+  occupancyFeedback.set(deviceName, feedback);
+  if (dismissAfterMs <= 0) return;
+  const timer = window.setTimeout(() => {
+    if (occupancyFeedback.get(deviceName) === feedback) {
+      occupancyFeedback.delete(deviceName);
+      renderDevices(lastRenderedDevices);
+    }
+    if (occupancyFeedbackTimers.get(deviceName) === timer) {
+      occupancyFeedbackTimers.delete(deviceName);
+    }
+  }, dismissAfterMs);
+  occupancyFeedbackTimers.set(deviceName, timer);
+}
+
 async function releaseOccupancy(deviceName, users) {
   const pids = users.map((user) => user.pid);
   const label = users.length === 1 ? users[0].name : "全部占用程序";
   if (!pids.length || !window.confirm(`确定要结束“${label}”并解除麦克风占用吗？未保存的内容可能丢失。`)) return;
   occupancyBusyDevices.add(deviceName);
-  occupancyFeedback.set(deviceName, { kind: "pending", text: "正在请求程序退出并复查麦克风，通常在 1 秒左右完成…" });
+  setOccupancyFeedback(deviceName, { kind: "pending", text: "正在请求程序退出并复查麦克风，通常在 1 秒左右完成…" });
   renderDevices(lastRenderedDevices);
   try {
     const response = await fetch("/api/microphone-occupancy/release", {
@@ -225,7 +244,7 @@ async function releaseOccupancy(deviceName, users) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "解除失败");
     if (result.remainingPids?.length) {
-      occupancyFeedback.set(deviceName, {
+      setOccupancyFeedback(deviceName, {
         kind: "error",
         text: `解除未成功：仍有 ${result.remainingPids.length} 个程序正在读取麦克风。程序可能拒绝了正常退出请求。`,
       });
@@ -233,22 +252,22 @@ async function releaseOccupancy(deviceName, users) {
       const inputMethodHint = /WeType|微信输入法/i.test(label)
         ? " 微信输入法会自动重新启动，但本机实测发现语音快捷键可能不会同时恢复；如无法再次唤起语音，请切换一次输入法，或在微信输入法的语音设置中关闭再开启免提模式。"
         : "";
-      occupancyFeedback.set(deviceName, {
+      setOccupancyFeedback(deviceName, {
         kind: "success",
         text: `系统已确认：相关程序不再读取此麦克风。程序自己的语音图标可能需要片刻才会复位。${inputMethodHint}`,
         releasedAt: Date.now(),
         releasedNames: users
           .filter((user) => result.releasedPids.includes(user.pid))
           .map((user) => user.name),
-      });
+      }, 10_000);
     } else {
-      occupancyFeedback.set(deviceName, {
+      setOccupancyFeedback(deviceName, {
         kind: "neutral",
         text: "操作前占用已经消失，无需解除。",
       });
     }
   } catch (error) {
-    occupancyFeedback.set(deviceName, { kind: "error", text: `解除失败：${error.message}` });
+    setOccupancyFeedback(deviceName, { kind: "error", text: `解除失败：${error.message}` });
   } finally {
     occupancyBusyDevices.delete(deviceName);
     renderDevices(lastRenderedDevices);
@@ -319,7 +338,7 @@ function microphoneOccupancySection(device) {
       kind: "warning",
       text: `${reoccupied.map((user) => user.name).join("、")} 曾短暂释放麦克风，但现在已重新占用。`,
     };
-    occupancyFeedback.set(device.name, feedback);
+    setOccupancyFeedback(device.name, feedback);
   }
   const recoveryReoccupied = occupancy?.users.filter((user) => {
     const releasedAt = recoveryController?.recentlyReleasedPrograms.get(user.name);
@@ -396,7 +415,9 @@ function createDeviceCard(device) {
 
   const details = createElement("div", "device-card__details");
   const recovery = recoveryController.feedbackByDevice.get(device.name);
-  if (recovery) details.append(recoveryController.resultSection(recovery, device.name));
+  if (recovery?.result?.actionRequired) {
+    details.append(recoveryController.actionSection(recovery, device.name));
+  }
   details.append(audioLinkGroup(device));
   details.append(microphoneOccupancySection(device));
   details.append(speakerOccupancyController.section(device));
