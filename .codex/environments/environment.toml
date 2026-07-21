@@ -33,3 +33,13 @@ fi
 
 cd tools/bluetooth-audio-mode-checker
 exec node app/index.ts --port 4173 --no-open'''
+
+[[actions]]
+name = "codegraph init"
+icon = "tool"
+command = "codegraph init"
+
+[[actions]]
+name = "codegraph sync"
+icon = "tool"
+command = "codegraph sync"
