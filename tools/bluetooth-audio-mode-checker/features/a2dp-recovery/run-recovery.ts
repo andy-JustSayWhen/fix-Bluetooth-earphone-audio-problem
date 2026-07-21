@@ -40,7 +40,9 @@ const protectedProcessNames = new Set([
   "kernel_task",
   "launchd",
 ]);
-const intermediateInputHoldMs = 500;
+const intermediateLinkReleaseTimeoutMs = 500;
+const intermediateLinkPollMs = 50;
+const intermediateLinkRecoveryHoldMs = 1_000;
 
 export type RecoveryRuntime = {
   now: () => number;
@@ -475,6 +477,23 @@ async function waitForRoute(
   return false;
 }
 
+async function waitForIntermediateLinkRelease(
+  name: string,
+  runtime: RecoveryRuntime,
+): Promise<boolean> {
+  let elapsedMs = 0;
+  while (true) {
+    if (runtime.readModeAssessment(name)?.audioLinkType === "tacl") return true;
+    if (elapsedMs >= intermediateLinkReleaseTimeoutMs) return false;
+    const waitMs = Math.min(
+      intermediateLinkPollMs,
+      intermediateLinkReleaseTimeoutMs - elapsedMs,
+    );
+    await runtime.wait(waitMs);
+    elapsedMs += waitMs;
+  }
+}
+
 async function waitForDevice(
   name: string,
   direction: "input" | "output",
@@ -818,8 +837,18 @@ export async function runRecovery(
     }
     reportProgress({ stage: "正在执行处理", message: stage === "链路残留处理" ? "正在解除残留输入绑定并恢复原输入。" : "正在切换输入以重建声音链路。" });
     runtime.setDefaultDevice("input", fallbackInput.name);
-    addStep(name, steps, "临时切换到非蓝牙输入", "成功", `已请求切换到：${fallbackInput.name}；保持 ${intermediateInputHoldMs} 毫秒后恢复原输入`);
-    await runtime.wait(intermediateInputHoldMs);
+    addStep(name, steps, "临时切换到非蓝牙输入", "成功", `已请求切换到：${fallbackInput.name}；最多等待 ${intermediateLinkReleaseTimeoutMs} 毫秒观察目标链路释放`);
+    const linkReleased = await waitForIntermediateLinkRelease(name, runtime);
+    addStep(
+      name,
+      steps,
+      "等待中转期间链路释放",
+      linkReleased ? "成功" : "失败",
+      linkReleased
+        ? `已观察到目标链路转为 tacl；从出现时刻起保持中转输入 ${intermediateLinkRecoveryHoldMs} 毫秒`
+        : `${intermediateLinkReleaseTimeoutMs} 毫秒内未观察到目标链路转为 tacl；不再额外等待，立即恢复原输入`,
+    );
+    if (linkReleased) await runtime.wait(intermediateLinkRecoveryHoldMs);
     runtime.setDefaultDevice("input", originalInput);
     const restored = await waitForRoute("input", originalInput, runtime);
     addStep(name, steps, "恢复点击前输入", restored ? "成功" : "失败", restored ? `${originalInput}；只从此刻开始验证原输入输出组合` : originalInput);

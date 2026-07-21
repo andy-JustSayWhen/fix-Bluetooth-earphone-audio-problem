@@ -433,12 +433,13 @@ test("新鲜占用快照直接路由到占用处理并三次确认完全恢复",
   assert.ok(progress.includes("正在确认稳定"));
 });
 
-test("解除占用后重新匹配链路残留并保持中转输入500毫秒", async () => {
+test("解除占用后重新匹配链路残留，观察到tacl后保持中转输入1秒", async () => {
   let running = true;
   let defaultInput = "蓝牙耳机";
   let rate = 16_000;
   let mode: AudioModeAssessment["mode"] = "HFP_HSP";
-  let intermediateWaits = 0;
+  let intermediateElapsedMs = 0;
+  let recoveryHolds = 0;
   let reconnects = 0;
   const routeChanges: string[] = [];
   const readDevices = () => [
@@ -488,19 +489,26 @@ test("解除占用后重新匹配链路残留并保持中转输入500毫秒", as
       isDefaultOutput: true,
     } as AudioModeAssessment),
     wait: async (milliseconds) => {
-      if (defaultInput === "内置麦克风" && milliseconds === 500) intermediateWaits += 1;
+      if (defaultInput !== "内置麦克风") return;
+      if (milliseconds === 50) {
+        intermediateElapsedMs += milliseconds;
+        if (intermediateElapsedMs >= 450) {
+          mode = "A2DP";
+          rate = 44_100;
+        }
+      }
+      if (milliseconds === 1_000) recoveryHolds += 1;
     },
     setDefaultDevice: (direction, name) => {
       if (direction !== "input") return;
       routeChanges.push(name);
       if (name === "内置麦克风") {
         defaultInput = name;
-        rate = 44_100;
         return;
       }
-      assert.equal(intermediateWaits, 1);
+      assert.equal(intermediateElapsedMs, 450);
+      assert.equal(recoveryHolds, 1);
       defaultInput = name;
-      mode = "A2DP";
     },
     reconnectDevice: () => { reconnects += 1; },
   }));
@@ -512,11 +520,84 @@ test("解除占用后重新匹配链路残留并保持中转输入500毫秒", as
   assert.equal(result.usedReconnect, false);
   assert.equal(reconnects, 0);
   assert.deepEqual(routeChanges, ["内置麦克风", "蓝牙耳机"]);
-  assert.equal(intermediateWaits, 1);
-  assert.equal(result.steps.some((step) => step.stage === "确认中转期间链路释放"), false);
+  assert.equal(intermediateElapsedMs, 450);
+  assert.equal(recoveryHolds, 1);
+  assert.equal(
+    result.steps.find((step) => step.stage === "等待中转期间链路释放")?.status,
+    "成功",
+  );
   assert.ok(
     result.steps.findIndex((step) => step.stage === "重新匹配当前原因") <
       result.steps.findIndex((step) => step.stage === "临时切换到非蓝牙输入"),
+  );
+});
+
+test("中转输入500毫秒内未出现tacl时立即切回并继续蓝牙重连", async () => {
+  let defaultInput = "蓝牙耳机";
+  let rate = 16_000;
+  let mode: AudioModeAssessment["mode"] = "HFP_HSP";
+  let intermediateElapsedMs = 0;
+  let recoveryHolds = 0;
+  let reconnects = 0;
+  const routeChanges: string[] = [];
+  const readDevices = () => [
+    device({
+      sampleRateOutput: rate,
+      actualSampleRateOutput: rate,
+      nominalSampleRateOutput: rate,
+      isDefaultInput: defaultInput === "蓝牙耳机",
+    }),
+    device({
+      id: 2,
+      name: "内置麦克风",
+      uid: "built-in-input",
+      transport: "built-in",
+      inputChannels: 1,
+      outputChannels: 0,
+      sampleRateInput: 48_000,
+      sampleRateOutput: null,
+      actualSampleRateOutput: null,
+      isDefaultInput: defaultInput === "内置麦克风",
+      isDefaultOutput: false,
+      isDefaultSystemOutput: false,
+    }),
+  ];
+
+  const result = await runRecovery({ name: "蓝牙耳机" }, runtime({
+    readDevices,
+    readModeAssessment: () => ({
+      name: "蓝牙耳机",
+      mode,
+      audioLinkType: mode === "HFP_HSP" ? "tsco" : "tacl",
+      isDefaultOutput: true,
+    } as AudioModeAssessment),
+    wait: async (milliseconds) => {
+      if (defaultInput !== "内置麦克风") return;
+      if (milliseconds === 50) intermediateElapsedMs += milliseconds;
+      if (milliseconds === 1_000) recoveryHolds += 1;
+    },
+    setDefaultDevice: (direction, name) => {
+      if (direction !== "input") return;
+      routeChanges.push(name);
+      defaultInput = name;
+    },
+    reconnectDevice: () => {
+      reconnects += 1;
+      mode = "A2DP";
+      rate = 44_100;
+    },
+  }));
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(result.diagnosis.kind, "链路残留类");
+  assert.equal(result.usedReconnect, true);
+  assert.equal(reconnects, 1);
+  assert.deepEqual(routeChanges, ["内置麦克风", "蓝牙耳机"]);
+  assert.equal(intermediateElapsedMs, 500);
+  assert.equal(recoveryHolds, 0);
+  assert.equal(
+    result.steps.find((step) => step.stage === "等待中转期间链路释放")?.status,
+    "失败",
   );
 });
 
