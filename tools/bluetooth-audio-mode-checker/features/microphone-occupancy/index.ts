@@ -30,9 +30,10 @@ export function classifyInputActivities(
       const device = byName.get(name);
       return device !== undefined && isPhysicalInputAssessment(device);
     }))];
-    const confirmedDeviceNames = physicalDeviceNames.filter((name) =>
-      byName.get(name)?.audioLinkType === "tsco"
-    );
+    const confirmedDeviceNames = physicalDeviceNames.filter((name) => {
+      const transport = byName.get(name)?.inputTransport;
+      return transport === "bluetooth" || transport === "bluetooth-le";
+    });
     const inputActivityKind: MicrophoneUser["inputActivityKind"] = confirmedDeviceNames.length > 0
       ? "已确认实体麦克风占用"
       : isSystemAudioCapture(user)

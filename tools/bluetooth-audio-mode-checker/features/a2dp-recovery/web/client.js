@@ -140,23 +140,34 @@ export function createA2dpRecoveryController({
     writeStoredFeedback(stored);
   }
 
-  function reconcileUnsupportedDevices(devices) {
-    const unsupportedNames = new Set(devices
-      .filter((device) => device.a2dpSupport === "UNSUPPORTED")
+  function reconcilePendingDevices(devices) {
+    const deviceByName = new Map(devices.map((device) => [device.name, device]));
+    const ineligibleNames = new Set(devices
+      .filter((device) => !isA2dpRecoveryTarget(device))
       .map((device) => device.name));
-    for (const deviceName of unsupportedNames) removeStoredFeedback(deviceName);
-    if (unsupportedNames.size === 0 || batchQueue.length === 0) return;
+    const stalePendingNames = new Set([...feedbackByDevice.entries()]
+      .filter(([deviceName, feedback]) =>
+        feedback?.result?.actionRequired &&
+        (!deviceByName.has(deviceName) || ineligibleNames.has(deviceName))
+      )
+      .map(([deviceName]) => deviceName));
+    for (const deviceName of new Set([...ineligibleNames, ...stalePendingNames])) {
+      removeStoredFeedback(deviceName);
+    }
+    if (batchQueue.length === 0) return;
     const previousLength = batchQueue.length;
-    const pausedWasUnsupported = batchPausedDevice !== null && unsupportedNames.has(batchPausedDevice);
-    batchQueue = batchQueue.filter((deviceName) => !unsupportedNames.has(deviceName));
+    const pausedWasStale = batchPausedDevice !== null && (
+      ineligibleNames.has(batchPausedDevice) || stalePendingNames.has(batchPausedDevice)
+    );
+    batchQueue = batchQueue.filter((deviceName) => !ineligibleNames.has(deviceName));
     batchCompleted = Math.min(batchTotal, batchCompleted + previousLength - batchQueue.length);
-    if (pausedWasUnsupported) batchPausedDevice = null;
+    if (pausedWasStale) batchPausedDevice = null;
     if (batchQueue.length === 0 && batchPausedDevice === null) {
       batchTotal = 0;
       batchCompleted = 0;
     }
     persistBatchState();
-    if (pausedWasUnsupported && batchQueue.length > 0 && !batchRunning && !batchResumeScheduled) {
+    if (pausedWasStale && batchQueue.length > 0 && !batchRunning && !batchResumeScheduled) {
       batchResumeScheduled = true;
       queueMicrotask(async () => {
         batchResumeScheduled = false;
@@ -166,7 +177,7 @@ export function createA2dpRecoveryController({
   }
 
   function renderAggregateTrigger(devices = getLastRenderedDevices()) {
-    reconcileUnsupportedDevices(devices);
+    reconcilePendingDevices(devices);
     const repairableDevices = devices.filter(isA2dpRecoveryTarget);
     const overview = createElement("div", "recovery-overview");
     overview.append(createElement(

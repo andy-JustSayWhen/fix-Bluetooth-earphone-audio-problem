@@ -248,24 +248,19 @@ function isPhysicalInputDevice(device: RawAudioDevice): boolean {
   );
 }
 
-function confirmedOccupancyUsers(
+function confirmedBluetoothMicrophoneUsers(
   users: MicrophoneUser[],
   devices: RawAudioDevice[],
-  assessments: AudioModeAssessment[],
 ): MicrophoneUser[] {
-  const physicalInputs = new Map(devices
-    .filter(isPhysicalInputDevice)
+  const bluetoothInputs = new Map(devices
+    .filter((device) => isPhysicalInputDevice(device) && isBluetooth(device))
     .map((device) => [device.name, device] as const));
-  const assessmentByName = new Map(assessments.map((assessment) => [assessment.name, assessment] as const));
   return users.flatMap((user) => {
-    const physicalDeviceNames = [...new Set(user.devices.filter((deviceName) => physicalInputs.has(deviceName)))];
-    const confirmedDeviceNames = physicalDeviceNames.filter((deviceName) =>
-      assessmentByName.get(deviceName)?.audioLinkType === "tsco"
-    );
+    const confirmedDeviceNames = [...new Set(user.devices.filter((deviceName) => bluetoothInputs.has(deviceName)))];
     return confirmedDeviceNames.length > 0 ? [{
       ...user,
       inputActivityKind: "已确认实体麦克风占用" as const,
-      physicalDeviceNames,
+      physicalDeviceNames: confirmedDeviceNames,
       confirmedDeviceNames,
     }] : [];
   });
@@ -296,13 +291,34 @@ function diagnoseCause(
   const assessments = currentModeAssessments(runtime, request);
   const targetAssessment = assessments.find((assessment) => assessment.name === name) ??
     runtime.readModeAssessment(name) ?? request.context?.targetAssessment ?? null;
+  const occupancyUsers = confirmedBluetoothMicrophoneUsers(users, devices);
+  const identified = identifyProcesses(occupancyUsers, runtime);
+  if (identified.processes.length > 0) {
+    const currentUsers = occupancyUsers.filter((user) =>
+      identified.processes.some((processInfo) => processInfo.pid === user.pid)
+    );
+    return {
+      diagnosis: {
+        kind: selectCauseRoute(false, true, false, false),
+        confidence: "已确认",
+        summary: "已确认本机进程正在读取实体蓝牙麦克风，先结束对应进程并观察目标是否恢复 A2DP",
+        evidence: currentUsers.flatMap((user) => (user.confirmedDeviceNames ?? []).map((deviceName) =>
+          `${user.name}（进程号 ${user.pid}）正在读取实体蓝牙麦克风 ${deviceName}`
+        )),
+      },
+      processes: identified.processes,
+      routeChoices: [],
+      occupancyUsers: currentUsers,
+    };
+  }
+
   const multiEndpoint = multiEndpointCondition(name, devices, targetAssessment);
   if (multiEndpoint.confirmed) {
     return {
       diagnosis: {
         kind: selectCauseRoute(true, false, false, false),
         confidence: "已确认",
-        summary: "当前输入和输出来自两台不同的蓝牙设备，且目标设备最新链路为 tsco",
+        summary: "当前没有已确认蓝牙麦克风占用；输入和输出来自两台不同的蓝牙设备，且目标设备最新链路为 tsco",
         evidence: [
           `当前输入：${multiEndpoint.input?.name ?? "未知"}`,
           `当前输出：${multiEndpoint.output?.name ?? "未知"}`,
@@ -315,40 +331,19 @@ function diagnoseCause(
     };
   }
 
-  const occupancyUsers = confirmedOccupancyUsers(users, devices, assessments);
-  const identified = identifyProcesses(occupancyUsers, runtime);
-  if (identified.processes.length > 0) {
-    const currentUsers = occupancyUsers.filter((user) =>
-      identified.processes.some((processInfo) => processInfo.pid === user.pid)
-    );
-    return {
-      diagnosis: {
-        kind: selectCauseRoute(false, true, false, false),
-        confidence: "已确认",
-        summary: "已确认本机进程关联实体麦克风端点，且该麦克风所属蓝牙设备最新链路为 tsco",
-        evidence: currentUsers.flatMap((user) => (user.confirmedDeviceNames ?? []).map((deviceName) =>
-          `${user.name}（进程号 ${user.pid}）正在读取实体麦克风 ${deviceName}；该设备最新链路为 tsco`
-        )),
-      },
-      processes: identified.processes,
-      routeChoices: [],
-      occupancyUsers: currentUsers,
-    };
-  }
-
   const target = targetOutput(devices, name);
   if (targetAssessment?.audioLinkType === "tsco") {
     return {
       diagnosis: {
         kind: selectCauseRoute(false, false, true, false),
         confidence: "已确认",
-        summary: "当前没有已确认实体麦克风占用，但目标设备最新链路仍为 tsco",
+        summary: "当前没有已确认蓝牙麦克风占用，但目标设备最新链路仍为 tsco",
         evidence: [
           `目标设备：${name}`,
           "目标设备最新链路：tsco",
           users.length > 0
-            ? "检测到声音输入活动，但没有形成进程、实体麦克风端点和 tsco 三段完整占用证据"
-            : "当前没有声音输入活动形成实体麦克风占用证据",
+            ? "检测到声音输入活动，但没有形成进程与实体蓝牙麦克风端点的完整占用证据"
+            : "当前没有声音输入活动形成实体蓝牙麦克风占用证据",
         ],
       },
       processes: [],
@@ -747,12 +742,22 @@ export async function runRecovery(
     });
   }
 
+  let routeChoiceLiveUsers: MicrophoneUser[] | null = null;
   if (request._confirmedRouteChoice) {
     const { choice, diagnosis } = request._confirmedRouteChoice;
     const latestTarget = currentModeAssessment(runtime, { ...request, context });
     const latestDevices = runtime.readDevices();
     const stillConfirmed = multiEndpointCondition(name, latestDevices, latestTarget).confirmed;
-    if (stillConfirmed) {
+    let occupancyReadFailed = false;
+    try {
+      routeChoiceLiveUsers = await runtime.readMicrophoneUsers();
+    } catch (error) {
+      occupancyReadFailed = true;
+      addStep(name, steps, "复核多端点选择", "失败", `无法复核蓝牙麦克风占用：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const liveBluetoothUsers = confirmedBluetoothMicrophoneUsers(routeChoiceLiveUsers ?? [], latestDevices);
+    const liveBluetoothProcesses = identifyProcesses(liveBluetoothUsers, runtime).processes;
+    if (!occupancyReadFailed && liveBluetoothProcesses.length === 0 && stillConfirmed) {
       const latestChoices = createMultiEndpointRouteChoices(latestDevices, name);
       const latestChoice = latestChoices.find((item) => item.id === choice.id);
       if (!latestChoice) {
@@ -777,7 +782,17 @@ export async function runRecovery(
         sampleRate: modeStable?.rate ?? currentOutputRate(runtime, name),
       });
     }
-    addStep(name, steps, "复核多端点选择", "跳过", "双蓝牙组合与目标 tsco 不再同时成立，旧选择未执行，继续按最新现场匹配原因");
+    if (liveBluetoothProcesses.length > 0) {
+      addStep(
+        name,
+        steps,
+        "复核多端点选择",
+        "跳过",
+        `发现蓝牙麦克风正在被占用，旧选择未执行，先处理：${liveBluetoothProcesses.map(processDescription).join("、")}`,
+      );
+    } else if (!occupancyReadFailed) {
+      addStep(name, steps, "复核多端点选择", "跳过", "双蓝牙组合与目标 tsco 不再同时成立，旧选择未执行，继续按最新现场匹配原因");
+    }
   }
 
   for (const guard of request._approvedRelaunchGuards ?? []) {
@@ -825,7 +840,7 @@ export async function runRecovery(
       return [];
     }
   };
-  let prefetchedUsersForReview: MicrophoneUser[] | null = null;
+  let prefetchedUsersForReview: MicrophoneUser[] | null = routeChoiceLiveUsers;
   const matchCurrentCause = async (): Promise<{ cause: CauseMatch; users: MicrophoneUser[] } | null> => {
     if (state.causeReviewCount >= 4) {
       addStep(name, steps, "原因复查上限", "跳过", "本轮已经完成四次原因复查，不再执行新的原因动作");
@@ -848,7 +863,7 @@ export async function runRecovery(
     const assessments = currentModeAssessments(runtime, { ...request, context });
     const latestTarget = assessments.find((assessment) => assessment.name === name) ?? null;
     const multiEndpoint = multiEndpointCondition(name, devices, latestTarget);
-    const occupancyUsers = confirmedOccupancyUsers(users, devices, assessments);
+    const occupancyUsers = confirmedBluetoothMicrophoneUsers(users, devices);
     detailedLog("info", "a2dp-recovery.cause-gates", {
       deviceName: name,
       causeReviewCount: state.causeReviewCount,
@@ -981,7 +996,7 @@ export async function runRecovery(
     return result("未恢复", diagnosis, recoveryPath, { sampleRate: finalRate, message });
   };
 
-  reportProgress({ stage: "正在定位原因", message: "正在依次检查多端点与 tsco、实体麦克风占用、链路残留和其他证据。" });
+  reportProgress({ stage: "正在定位原因", message: "正在先检查蓝牙麦克风占用；目标未恢复时再检查多端点、链路残留和其他证据。" });
   let matched: { cause: CauseMatch; users: MicrophoneUser[] } | null = null;
   if (!state.initialOccupancyChecked) {
     state.initialOccupancyChecked = true;

@@ -93,16 +93,24 @@ test("读取者无法归属到蓝牙设备时仍必须继续全局占用扫描",
   assert.equal(shouldContinueOccupancyScanning(devices, unassignedUsers), true);
 });
 
-test("只有实体麦克风端点与 tsco 同时成立才确认设备占用", () => {
+test("进程关联实体蓝牙麦克风端点即可确认占用且不要求 tsco", () => {
   const user = [{ pid: 42, name: "语音程序", bundleId: "test.voice", devices: ["REDMI"] }];
-  const [occupied] = attachMicrophoneOccupancyFromUsers([
+  const [occupiedWithTsco] = attachMicrophoneOccupancyFromUsers([
     device({ mode: "HFP_HSP", audioLinkType: "tsco" }),
   ], user);
-  const [notOccupied] = attachMicrophoneOccupancyFromUsers([
+  const [occupiedWithTacl] = attachMicrophoneOccupancyFromUsers([
     device({ mode: "HFP_HSP", audioLinkType: "tacl" }),
   ], user);
 
-  assert.equal(occupied.microphoneOccupancy?.isInUse, true);
+  assert.equal(occupiedWithTsco.microphoneOccupancy?.isInUse, true);
+  assert.equal(occupiedWithTacl.microphoneOccupancy?.isInUse, true);
+});
+
+test("内置输入即使有进程读取也不得归为蓝牙麦克风占用", () => {
+  const [notOccupied] = attachMicrophoneOccupancyFromUsers([
+    device({ inputTransport: "built-in", audioLinkType: "tsco" }),
+  ], [{ pid: 42, name: "语音程序", bundleId: "test.voice", devices: ["REDMI"] }]);
+
   assert.equal(notOccupied.microphoneOccupancy?.isInUse, false);
 });
 

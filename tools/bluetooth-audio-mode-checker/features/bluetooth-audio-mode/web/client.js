@@ -366,7 +366,7 @@ function inputActivityOverview() {
     createElement(
       "p",
       "",
-      "以下活动没有形成“进程关联实体麦克风端点且该设备链路为 tsco”的完整占用证据，不属于任何设备的麦克风占用，也不提供解除按钮。",
+      "以下活动没有形成“进程明确关联实体蓝牙麦克风端点”的完整占用证据，不属于任何蓝牙设备的麦克风占用，也不提供解除按钮。",
     ),
   );
   const list = createElement("div", "input-activity-overview__list");

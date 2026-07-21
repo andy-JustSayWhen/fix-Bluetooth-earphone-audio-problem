@@ -33,8 +33,8 @@ function device(partial: Partial<RawAudioDevice>): RawAudioDevice {
   };
 }
 
-test("原因路由严格按多端点、占用、残留、格式请求的优先级", () => {
-  assert.equal(selectCauseRoute(true, true, true, true), "多端点会话类");
+test("原因路由严格按蓝牙麦克风占用、多端点、残留、格式请求的优先级", () => {
+  assert.equal(selectCauseRoute(true, true, true, true), "麦克风占用类");
   assert.equal(selectCauseRoute(false, true, true, true), "麦克风占用类");
   assert.equal(selectCauseRoute(false, false, true, true), "链路残留类");
   assert.equal(selectCauseRoute(false, false, false, true), "格式请求类");

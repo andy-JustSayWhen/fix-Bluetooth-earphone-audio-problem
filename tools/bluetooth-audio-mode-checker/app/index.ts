@@ -592,7 +592,7 @@ function main(): void {
         const confirmedPids = new Set(confirmedUsers.map((user) => user.pid));
         const requestedPids = [...new Set(body.pids as number[])];
         if (requestedPids.length === 0 || requestedPids.some((pid) => !confirmedPids.has(pid))) {
-          throw new Error("当前没有同时满足实体麦克风端点与 tsco 的占用证据，未结束任何进程");
+          throw new Error("当前没有进程明确关联到该实体蓝牙麦克风，未结束任何进程");
         }
         detailedLog("info", "microphone-occupancy.release-requested", {
           deviceName: body.deviceName,
