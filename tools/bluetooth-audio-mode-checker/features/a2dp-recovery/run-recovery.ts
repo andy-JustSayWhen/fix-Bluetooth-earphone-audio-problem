@@ -20,7 +20,12 @@ import {
   type FormatRequestCause,
   type FormatRequestEvidence,
 } from "./format-request-diagnosis.ts";
-import { createMultiEndpointRouteChoices, selectCauseRoute } from "./recovery-policy.ts";
+import {
+  createMultiEndpointRouteChoices,
+  orderedRouteCandidates,
+  routeDevicePriorityLabel,
+  selectCauseRoute,
+} from "./recovery-policy.ts";
 import type {
   A2dpRecoveryResult,
   RecoveryDiagnosis,
@@ -745,15 +750,29 @@ export async function runRecovery(
   if (request._confirmedRouteChoice) {
     const { choice, diagnosis } = request._confirmedRouteChoice;
     const latestTarget = currentModeAssessment(runtime, { ...request, context });
-    const stillConfirmed = multiEndpointCondition(name, runtime.readDevices(), latestTarget).confirmed;
+    const latestDevices = runtime.readDevices();
+    const stillConfirmed = multiEndpointCondition(name, latestDevices, latestTarget).confirmed;
     if (stillConfirmed) {
-      reportProgress({ stage: "正在执行处理", message: `正在应用已确认组合：${choice.label}` });
-      runtime.setDefaultDevice(choice.direction, choice.deviceName);
-      const changed = await waitForRoute(choice.direction, choice.deviceName, runtime);
-      const routeStable = changed && await verifyStableRouteChoice(choice, runtime);
+      const latestChoices = createMultiEndpointRouteChoices(latestDevices, name);
+      const latestChoice = latestChoices.find((item) => item.id === choice.id);
+      if (!latestChoice) {
+        addStep(name, steps, "复核多端点选择", "失败", "原选择已不可用或已不再属于当前最高可用优先级，已按最新设备重新计算");
+        if (latestChoices.length === 0) return result("未恢复", diagnosis, "多端点路由组合");
+        return result("等待选择", diagnosis, "多端点路由组合", {
+          actionRequired: {
+            kind: "route-choice",
+            prompt: `${diagnosis.summary}。设备候选已经变化，请重新选择希望保留输入还是输出。`,
+            choices: latestChoices,
+          },
+        });
+      }
+      reportProgress({ stage: "正在执行处理", message: `正在应用已确认组合：${latestChoice.label}` });
+      runtime.setDefaultDevice(latestChoice.direction, latestChoice.deviceName);
+      const changed = await waitForRoute(latestChoice.direction, latestChoice.deviceName, runtime);
+      const routeStable = changed && await verifyStableRouteChoice(latestChoice, runtime);
       const modeStable = routeStable ? await verifyStableRecovery(name, runtime, reportProgress, 3) : null;
       const stable = routeStable && modeStable !== null;
-      addStep(name, steps, "应用多端点替代组合", stable ? "成功" : "失败", choice.label);
+      addStep(name, steps, "应用多端点替代组合", stable ? "成功" : "失败", latestChoice.label);
       return result(stable ? "绕过成功" : "未恢复", diagnosis, "多端点路由组合", {
         sampleRate: modeStable?.rate ?? currentOutputRate(runtime, name),
       });
@@ -867,16 +886,37 @@ export async function runRecovery(
   };
 
   const performInputReset = async (stage: "链路残留处理" | "声音链路重建兜底"): Promise<StableRecovery | null> => {
-    const fallbackInput = runtime.readDevices().find((device) =>
-      device.inputChannels > 0 && !isBluetooth(device) && device.name !== originalInput
-    );
-    if (!fallbackInput || !originalInput) {
-      addStep(name, steps, "临时切换到非蓝牙输入", "跳过", "没有可用的非蓝牙中转输入，或点击前输入未知");
+    if (!originalInput) {
+      addStep(name, steps, "临时切换输入", "跳过", "点击前输入未知，无法在处理后恢复原输入");
+      return null;
+    }
+    const candidates = orderedRouteCandidates(runtime.readDevices(), "input", [originalInput]);
+    if (candidates.length === 0) {
+      addStep(name, steps, "临时切换输入", "跳过", "没有可用的中转输入");
       return null;
     }
     reportProgress({ stage: "正在执行处理", message: stage === "链路残留处理" ? "正在解除残留输入绑定并恢复原输入。" : "正在切换输入以重建声音链路。" });
-    runtime.setDefaultDevice("input", fallbackInput.name);
-    addStep(name, steps, "临时切换到非蓝牙输入", "成功", `已请求切换到：${fallbackInput.name}；最多等待 ${intermediateLinkReleaseTimeoutMs} 毫秒观察目标链路释放`);
+    let fallbackInput: RawAudioDevice | null = null;
+    for (const candidate of candidates) {
+      try {
+        runtime.setDefaultDevice("input", candidate.name);
+      } catch {
+        addStep(name, steps, "临时切换输入", "失败", `${routeDevicePriorityLabel(candidate)}候选“${candidate.name}”无法执行切换，继续尝试后续候选`);
+        continue;
+      }
+      const changed = await waitForRoute("input", candidate.name, runtime);
+      if (!changed) {
+        addStep(name, steps, "临时切换输入", "失败", `${routeDevicePriorityLabel(candidate)}候选“${candidate.name}”未成为默认输入，继续尝试后续候选`);
+        continue;
+      }
+      fallbackInput = candidate;
+      break;
+    }
+    if (!fallbackInput) {
+      addStep(name, steps, "临时切换输入", "跳过", "所有中转输入候选均无法完成切换");
+      return null;
+    }
+    addStep(name, steps, "临时切换输入", "成功", `已按“${routeDevicePriorityLabel(fallbackInput)}”优先级切换到：${fallbackInput.name}；最多等待 ${intermediateLinkReleaseTimeoutMs} 毫秒观察目标链路释放`);
     const linkReleased = await waitForIntermediateLinkRelease(name, runtime);
     addStep(
       name,
