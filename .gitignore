@@ -10,6 +10,7 @@ artifacts/
 tmp/
 temp/
 tools/bluetooth-audio-mode-checker/logs/
+.codegraph/
 
 # 本地编辑器和操作系统临时文件
 .idea/
