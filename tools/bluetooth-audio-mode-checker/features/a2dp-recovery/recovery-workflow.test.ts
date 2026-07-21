@@ -386,12 +386,24 @@ test("同名输入和输出记录并存时优先选择默认输出记录", async
   assert.equal(result.usedReconnect, true);
 });
 
-test("新鲜占用快照直接路由到占用处理并三次确认完全恢复", async () => {
+test("新鲜占用快照直接路由到占用处理且稳定确认不重复全量读取", async () => {
   let running = true;
   let rate = 16_000;
+  let deviceReads = 0;
   let microphoneReads = 0;
   let evidenceReads = 0;
   const progress: string[] = [];
+  const readAssessment = () => ({
+    name: "蓝牙耳机",
+    mode: rate > 16_000 ? "A2DP" : "HFP_HSP",
+    audioLinkType: rate > 16_000 ? "tacl" : "tsco",
+    inputTransport: "bluetooth",
+    inputChannels: 1,
+    actualSampleRateOutput: rate,
+    outputChannels: rate > 16_000 ? 2 : 1,
+    isDefaultInput: true,
+    isDefaultOutput: true,
+  } as AudioModeAssessment);
   const result = await runRecovery({
     name: "蓝牙耳机",
     context: {
@@ -406,10 +418,15 @@ test("新鲜占用快照直接路由到占用处理并三次确认完全恢复",
       },
     },
   }, runtime({
-    readDevices: () => [device({
-      sampleRateOutput: rate,
-      isDefaultInput: true,
-    })],
+    readDevices: () => {
+      deviceReads += 1;
+      return [device({
+        sampleRateOutput: rate,
+        isDefaultInput: true,
+      })];
+    },
+    readModeAssessment: readAssessment,
+    readModeAssessments: () => [readAssessment()],
     readMicrophoneUsers: async () => {
       microphoneReads += 1;
       return [];
@@ -427,6 +444,7 @@ test("新鲜占用快照直接路由到占用处理并三次确认完全恢复",
 
   assert.equal(result.outcome, "完全恢复");
   assert.equal(result.diagnosis.kind, "麦克风占用类");
+  assert.equal(deviceReads, 1);
   assert.equal(microphoneReads, 0);
   assert.equal(evidenceReads, 0);
   assert.equal(result.steps.some((step) => step.stage.includes("恢复点击前")), false);

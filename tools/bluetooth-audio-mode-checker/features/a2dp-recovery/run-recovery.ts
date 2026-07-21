@@ -121,6 +121,32 @@ function currentOutputRate(runtime: RecoveryRuntime, name: string): number | nul
   return actualOutputRate(target);
 }
 
+function assessmentOutputRate(assessment: AudioModeAssessment | null): number | null {
+  const rate = assessment?.actualSampleRateOutput;
+  return rate !== null && rate !== undefined && rate > 0 ? rate : null;
+}
+
+function currentRecoveryObservation(
+  runtime: RecoveryRuntime,
+  name: string,
+): {
+  rate: number | null;
+  mode: AudioModeAssessment["mode"] | null;
+  isDefaultOutput: boolean;
+} {
+  const assessment = runtime.readModeAssessment(name);
+  const rateFromAssessment = assessmentOutputRate(assessment);
+  const hasDefaultOutputFact = typeof assessment?.isDefaultOutput === "boolean";
+  const needsDeviceFallback = assessment === null || !hasDefaultOutputFact ||
+    (assessment.isDefaultOutput && rateFromAssessment === null);
+  const target = needsDeviceFallback ? targetOutput(runtime.readDevices(), name) : undefined;
+  return {
+    rate: rateFromAssessment ?? actualOutputRate(target),
+    mode: assessment?.mode ?? null,
+    isDefaultOutput: assessment?.isDefaultOutput === true || target?.isDefaultOutput === true,
+  };
+}
+
 function currentModeAssessment(
   runtime: RecoveryRuntime,
   request: RecoveryRequest,
@@ -385,11 +411,10 @@ async function verifyStableRecovery(
   let lastMode: AudioModeAssessment["mode"] | null = null;
   let progressReported = false;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    lastRate = currentOutputRate(runtime, name);
-    const assessment = runtime.readModeAssessment(name);
-    lastMode = assessment?.mode ?? null;
-    const target = targetOutput(runtime.readDevices(), name);
-    const isDefaultOutput = assessment?.isDefaultOutput === true || target?.isDefaultOutput === true;
+    const observation = currentRecoveryObservation(runtime, name);
+    lastRate = observation.rate;
+    lastMode = observation.mode;
+    const isDefaultOutput = observation.isDefaultOutput;
     const recovered = isDefaultOutput
       ? lastRate !== null && lastRate > 16_000 && lastMode === "A2DP"
       : lastMode !== null && lastMode !== "HFP_HSP";
@@ -593,9 +618,9 @@ export async function runRecovery(
   reportProgress: (progress: RecoveryProgress) => void = () => {},
 ): Promise<A2dpRecoveryResult> {
   const name = request.name;
-  const firstDevices = runtime.readDevices();
-  const firstTarget = targetOutput(firstDevices, name);
   const suppliedContext = request._roundState?.context ?? request.context;
+  const firstDevices = suppliedContext ? [] : runtime.readDevices();
+  const firstTarget = targetOutput(firstDevices, name);
   const context = suppliedContext ?? {
     clickedAt: new Date(runtime.now()).toISOString(),
     defaultInput: currentDefaultName(firstDevices, "input"),
@@ -647,24 +672,29 @@ export async function runRecovery(
       message?: string;
       sampleRate?: number | null;
     } = {},
-  ): A2dpRecoveryResult => makeResult({
-    outcome,
-    recoveryPath,
-    handledCause: handledCause(),
-    sampleRate: options.sampleRate === undefined ? currentOutputRate(runtime, name) : options.sampleRate,
-    releasedPrograms: unique(state.releasedPrograms),
-    remainingPrograms: unique(state.remainingPrograms),
-    guardedPrograms: unique(state.guardedPrograms),
-    diagnosis,
-    steps,
-    usedReconnect: state.reconnectAttempted,
-    actionRequired: options.actionRequired,
-    message: options.message ?? baseMessage(outcome, name, currentOutputRate(runtime, name)),
-    _continuation: options.actionRequired ? {
-      roundState: state,
-      pendingGuards: options.continuationGuards ?? [],
-    } : undefined,
-  });
+  ): A2dpRecoveryResult => {
+    const resolvedSampleRate = options.sampleRate === undefined
+      ? assessmentOutputRate(runtime.readModeAssessment(name)) ?? currentOutputRate(runtime, name)
+      : options.sampleRate;
+    return makeResult({
+      outcome,
+      recoveryPath,
+      handledCause: handledCause(),
+      sampleRate: resolvedSampleRate,
+      releasedPrograms: unique(state.releasedPrograms),
+      remainingPrograms: unique(state.remainingPrograms),
+      guardedPrograms: unique(state.guardedPrograms),
+      diagnosis,
+      steps,
+      usedReconnect: state.reconnectAttempted,
+      actionRequired: options.actionRequired,
+      message: options.message ?? baseMessage(outcome, name, resolvedSampleRate),
+      _continuation: options.actionRequired ? {
+        roundState: state,
+        pendingGuards: options.continuationGuards ?? [],
+      } : undefined,
+    });
+  };
 
   if (!request._roundState) {
     reportProgress({ stage: "正在保存现场", message: "正在保存点击时的输入、输出、模式、每设备链路和进程端点关联。" });
@@ -682,13 +712,13 @@ export async function runRecovery(
     };
     addStep(name, steps, "复核 A2DP 支持能力", "跳过", diagnosis.summary);
     return result("无需修复", diagnosis, "现场复核", {
-      sampleRate: currentOutputRate(runtime, name),
+      sampleRate: assessmentOutputRate(targetAssessment) ?? context.targetSampleRate ?? currentOutputRate(runtime, name),
       message: `${name} 不支持 A2DP，该设备本身无需修复；它的端点和链路事实仍会用于判断其他受影响设备。`,
     });
   }
 
-  const targetRate = currentOutputRate(runtime, name);
   if (targetAssessment?.mode !== "HFP_HSP") {
+    const targetRate = assessmentOutputRate(targetAssessment) ?? currentOutputRate(runtime, name);
     const alreadyRecovered = targetAssessment !== null;
     const skippedRouteChoice = alreadyRecovered && request._confirmedRouteChoice !== undefined;
     const diagnosis: RecoveryDiagnosis = {
@@ -752,9 +782,18 @@ export async function runRecovery(
     }
   }
 
-  const bluetoothInputNames = () => new Set(runtime.readDevices()
-    .filter((device) => isBluetooth(device) && device.inputChannels > 0)
-    .map((device) => device.name));
+  const bluetoothInputNames = () => {
+    const assessmentNames = currentModeAssessments(runtime, { ...request, context })
+      .filter((assessment) =>
+        assessment.inputChannels > 0 &&
+        (assessment.inputTransport === "bluetooth" || assessment.inputTransport === "bluetooth-le")
+      )
+      .map((assessment) => assessment.name);
+    if (assessmentNames.length > 0) return new Set(assessmentNames);
+    return new Set(runtime.readDevices()
+      .filter((device) => isBluetooth(device) && device.inputChannels > 0)
+      .map((device) => device.name));
+  };
   const usersIncludeBluetoothInput = (users: MicrophoneUser[]) => {
     const names = bluetoothInputNames();
     return users.some((user) => user.devices.some((deviceName) => names.has(deviceName)));
