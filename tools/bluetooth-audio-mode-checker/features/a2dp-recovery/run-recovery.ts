@@ -40,6 +40,7 @@ const protectedProcessNames = new Set([
   "kernel_task",
   "launchd",
 ]);
+const intermediateInputHoldMs = 500;
 
 export type RecoveryRuntime = {
   now: () => number;
@@ -815,12 +816,13 @@ export async function runRecovery(
       addStep(name, steps, "临时切换到非蓝牙输入", "跳过", "没有可用的非蓝牙中转输入，或点击前输入未知");
       return null;
     }
-    reportProgress({ stage: "正在执行处理", message: stage === "链路残留处理" ? "正在解除残留输入绑定并立即恢复原输入。" : "正在切换输入以重建声音链路。" });
+    reportProgress({ stage: "正在执行处理", message: stage === "链路残留处理" ? "正在解除残留输入绑定并恢复原输入。" : "正在切换输入以重建声音链路。" });
     runtime.setDefaultDevice("input", fallbackInput.name);
-    addStep(name, steps, "临时切换到非蓝牙输入", "成功", `已请求切换到：${fallbackInput.name}`);
+    addStep(name, steps, "临时切换到非蓝牙输入", "成功", `已请求切换到：${fallbackInput.name}；保持 ${intermediateInputHoldMs} 毫秒后恢复原输入`);
+    await runtime.wait(intermediateInputHoldMs);
     runtime.setDefaultDevice("input", originalInput);
     const restored = await waitForRoute("input", originalInput, runtime);
-    addStep(name, steps, "立即恢复点击前输入", restored ? "成功" : "失败", restored ? `${originalInput}；只从此刻开始验证原输入输出组合` : originalInput);
+    addStep(name, steps, "恢复点击前输入", restored ? "成功" : "失败", restored ? `${originalInput}；只从此刻开始验证原输入输出组合` : originalInput);
     if (!restored) return null;
     const recovery = await verifyStableRecovery(name, runtime, reportProgress);
     const devices = runtime.readDevices();

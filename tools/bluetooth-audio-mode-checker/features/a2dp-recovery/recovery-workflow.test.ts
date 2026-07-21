@@ -433,7 +433,7 @@ test("新鲜占用快照直接路由到占用处理并三次确认完全恢复",
   assert.ok(progress.includes("正在确认稳定"));
 });
 
-test("解除占用后重新匹配链路残留并立即切回原输入后验收", async () => {
+test("解除占用后重新匹配链路残留并保持中转输入500毫秒", async () => {
   let running = true;
   let defaultInput = "蓝牙耳机";
   let rate = 16_000;
@@ -498,7 +498,7 @@ test("解除占用后重新匹配链路残留并立即切回原输入后验收",
         rate = 44_100;
         return;
       }
-      assert.equal(intermediateWaits, 0);
+      assert.equal(intermediateWaits, 1);
       defaultInput = name;
       mode = "A2DP";
     },
@@ -512,6 +512,7 @@ test("解除占用后重新匹配链路残留并立即切回原输入后验收",
   assert.equal(result.usedReconnect, false);
   assert.equal(reconnects, 0);
   assert.deepEqual(routeChanges, ["内置麦克风", "蓝牙耳机"]);
+  assert.equal(intermediateWaits, 1);
   assert.equal(result.steps.some((step) => step.stage === "确认中转期间链路释放"), false);
   assert.ok(
     result.steps.findIndex((step) => step.stage === "重新匹配当前原因") <
