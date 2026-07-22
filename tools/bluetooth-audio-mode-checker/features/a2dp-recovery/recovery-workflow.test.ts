@@ -217,6 +217,38 @@ test("第四步在两次路由复位之后才处理已确认格式请求", async
   assert.ok(h.actions.indexOf("terminate:格式请求软件") > evidenceIndex);
 });
 
+test("第四步按蓝牙地址去重同一物理设备的重复端点", async () => {
+  const h = harness();
+  const processInfo = { pid: 77, name: "格式请求软件", command: "/Applications/FormatApp", startedAt: "Tue Jul 22 09:00:00 2026" };
+  h.addProcess(processInfo);
+  h.devices[0].bluetoothAddress = "50:88:11:07:63:DA";
+  h.devices.push(rawDevice(targetName, "bluetooth", {
+    uid: `${targetName}-duplicate`,
+    bluetoothAddress: "50-88-11-07-63-DA",
+    isDefaultInput: false,
+    isDefaultOutput: false,
+  }));
+  h.runtime.readEvidenceSince = () => ({
+    windowMinutes: 1,
+    queryError: null,
+    rawLines: [],
+    events: [
+      { kind: "format-request", timestamp: "2026-07-22 10:00:00.000000+0800", timestampMs: Date.parse("2026-07-22T10:00:00+08:00"), requesterPid: 77, from: 0, to: 1, raw: "format 0 -> 1" },
+      { kind: "profile", timestamp: "2026-07-22 10:00:00.100000+0800", timestampMs: Date.parse("2026-07-22T10:00:00.100+08:00"), profile: "tsco", raw: "Current profile tsco" },
+    ],
+  });
+  const terminate = h.runtime.terminateProcess;
+  h.runtime.terminateProcess = (item) => {
+    terminate(item);
+    h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+  };
+
+  const result = await runRecovery(request(h), h.runtime);
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(h.actions.includes("terminate:格式请求软件"), true);
+});
+
 test("进程不退出时暂停在线性步骤上，且只返回进程阻止授权", async () => {
   const h = harness();
   const processInfo = { pid: 66, name: "占用软件", command: "/Applications/BusyApp", startedAt: "Tue Jul 22 09:00:00 2026" };

@@ -1,8 +1,12 @@
 import {
   readMicrophoneUsers,
   readMicrophoneUsersAsync,
-  releaseMicrophoneUser,
 } from "../../core/macos-microphone-usage/index.ts";
+import {
+  readRunningProcess,
+  terminateRunningProcess,
+  type RunningProcess,
+} from "../../core/macos-running-apps/index.ts";
 import type {
   ActiveInputSnapshot,
   AudioModeAssessment,
@@ -20,22 +24,25 @@ function isSystemAudioCapture(user: MicrophoneUser): boolean {
   return user.devices.some((name) => /audiotap|audio tap/i.test(name));
 }
 
-function uniquelyMatchedFormatRequestDevice(
+function assignedFormatRequestDevice(
   devices: AudioModeAssessment[],
   user: MicrophoneUser,
 ): string[] {
   if (!user.occupancyEvidenceKinds?.includes("unclosed-format-request")) return [];
   const requestedAt = Date.parse(user.unclosedFormatRequestAt ?? "");
-  if (!Number.isFinite(requestedAt)) return [];
-  const matches = devices.filter((device) => {
-    const observedAt = Date.parse(device.audioLinkTypeObservedAt ?? "");
-    return device.inputChannels > 0 &&
-      (device.inputTransport === "bluetooth" || device.inputTransport === "bluetooth-le") &&
-      device.audioLinkType === "tsco" &&
-      Number.isFinite(observedAt) &&
-      Math.abs(observedAt - requestedAt) <= 2_000;
-  });
-  return matches.length === 1 ? [matches[0].name] : [];
+  if (Number.isFinite(requestedAt)) {
+    const matches = devices.filter((device) => {
+      const observedAt = Date.parse(device.audioLinkTypeObservedAt ?? "");
+      return device.inputChannels > 0 &&
+        (device.inputTransport === "bluetooth" || device.inputTransport === "bluetooth-le") &&
+        device.audioLinkType === "tsco" &&
+        Number.isFinite(observedAt) &&
+        Math.abs(observedAt - requestedAt) <= 2_000;
+    });
+    if (matches.length === 1) return [matches[0].name];
+  }
+  const defaultInput = devices.find((device) => device.isDefaultInput && device.inputChannels > 0);
+  return defaultInput ? [defaultInput.name] : [];
 }
 
 export function classifyInputActivities(
@@ -54,7 +61,7 @@ export function classifyInputActivities(
     });
     const confirmedDeviceNames = [...new Set([
       ...physicalBluetoothDeviceNames,
-      ...uniquelyMatchedFormatRequestDevice(devices, user),
+      ...assignedFormatRequestDevice(devices, user),
     ])];
     const hasUnclosedFormatRequest = user.occupancyEvidenceKinds?.includes("unclosed-format-request") ?? false;
     const inputActivityKind: MicrophoneUser["inputActivityKind"] = confirmedDeviceNames.length > 0 || hasUnclosedFormatRequest
@@ -188,18 +195,49 @@ export type MicrophoneReleaseResult = {
   remainingPids: number[];
 };
 
-export async function releaseMicrophoneUsers(pids: number[]): Promise<MicrophoneReleaseResult> {
-  const activePids = new Set(readMicrophoneUsers().map((user) => user.pid));
-  const requestedPids = [...new Set(pids)].filter((pid) => activePids.has(pid));
-  for (const pid of requestedPids) {
-    if (!activePids.has(pid)) continue;
-    releaseMicrophoneUser(pid);
+export type MicrophoneReleaseRuntime = {
+  readProcess: (pid: number) => RunningProcess | null;
+  terminateProcess: (processInfo: RunningProcess) => void;
+  wait: (milliseconds: number) => Promise<void>;
+};
+
+const systemReleaseRuntime: MicrophoneReleaseRuntime = {
+  readProcess: readRunningProcess,
+  terminateProcess: terminateRunningProcess,
+  wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+};
+
+function isConfirmedReleaseUser(user: MicrophoneUser): boolean {
+  return user.inputActivityKind === "已确认实体麦克风占用" && (
+    (user.confirmedDeviceNames?.length ?? 0) > 0 ||
+    (user.occupancyEvidenceKinds?.includes("unclosed-format-request") ?? false)
+  );
+}
+
+export async function releaseMicrophoneUsers(
+  users: MicrophoneUser[],
+  pids: number[],
+  runtime: MicrophoneReleaseRuntime = systemReleaseRuntime,
+): Promise<MicrophoneReleaseResult> {
+  const confirmedPids = new Set(users.filter(isConfirmedReleaseUser).map((user) => user.pid));
+  const expectedProcesses = new Map<number, RunningProcess>();
+  for (const pid of [...new Set(pids)]) {
+    if (!confirmedPids.has(pid)) continue;
+    const processInfo = runtime.readProcess(pid);
+    if (processInfo) expectedProcesses.set(pid, processInfo);
   }
+  const requestedPids = [...expectedProcesses.keys()];
+  for (const processInfo of expectedProcesses.values()) runtime.terminateProcess(processInfo);
+
   let remainingPids = requestedPids;
-  for (let attempt = 0; attempt < 15 && remainingPids.length > 0; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const stillUsingInput = new Set(readMicrophoneUsers().map((user) => user.pid));
-    remainingPids = requestedPids.filter((pid) => stillUsingInput.has(pid));
+  for (let attempt = 0; attempt < 20 && remainingPids.length > 0; attempt += 1) {
+    await runtime.wait(100);
+    remainingPids = requestedPids.filter((pid) => {
+      const expected = expectedProcesses.get(pid);
+      const current = runtime.readProcess(pid);
+      return expected !== undefined && current !== null &&
+        current.startedAt === expected.startedAt && current.command === expected.command;
+    });
   }
   return {
     requestedPids,

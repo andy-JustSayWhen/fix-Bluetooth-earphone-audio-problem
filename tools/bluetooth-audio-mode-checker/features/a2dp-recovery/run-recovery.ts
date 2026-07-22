@@ -113,6 +113,16 @@ function targetOutput(devices: RawAudioDevice[], name: string): RawAudioDevice |
     .sort((left, right) => Number(right.isDefaultOutput) - Number(left.isDefaultOutput))[0] ?? null;
 }
 
+function uniqueBluetoothDeviceNames(devices: RawAudioDevice[]): string[] {
+  const byPhysicalIdentity = new Map<string, string>();
+  for (const device of devices) {
+    const address = device.bluetoothAddress?.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
+    const identity = address ? `address:${address}` : `name:${device.name}`;
+    if (!byPhysicalIdentity.has(identity)) byPhysicalIdentity.set(identity, device.name);
+  }
+  return [...byPhysicalIdentity.values()];
+}
+
 function currentObservation(runtime: RecoveryRuntime, request: RecoveryRequest) {
   const assessment = currentAssessment(runtime, request);
   const output = targetOutput(runtime.readDevices(), request.name);
@@ -607,9 +617,9 @@ export async function runRecovery(
     reportProgress({ stage: "正在检查占用", message: "正在检查仍有效的格式请求。" });
     const evidence = runtime.readEvidenceSince(Date.parse(context.clickedAt));
     const devices = runtime.readDevices();
-    const lowRateBluetoothNames = devices.filter((device) =>
+    const lowRateBluetoothNames = uniqueBluetoothDeviceNames(devices.filter((device) =>
       isBluetooth(device) && device.outputChannels > 0 && (device.actualSampleRateOutput ?? device.sampleRateOutput ?? Infinity) <= 16_000
-    ).map((device) => device.name);
+    ));
     const cause = diagnoseFormatRequestCause(evidence, request.name, lowRateBluetoothNames, runtime.readProcess);
     if (cause.confidence === "已确认" && cause.requester) {
       const action = await processStep(request, state, runtime, reportProgress, "格式请求类", [cause.requester], 5);

@@ -233,7 +233,7 @@ async function releaseOccupancy(deviceName, users) {
   const label = users.length === 1 ? users[0].name : "全部占用程序";
   if (!pids.length || !window.confirm(`确定要结束“${label}”并解除麦克风占用吗？未保存的内容可能丢失。`)) return;
   occupancyBusyDevices.add(deviceName);
-  setOccupancyFeedback(deviceName, { kind: "pending", text: "正在请求程序退出并复查麦克风，通常在 1 秒左右完成…" });
+  setOccupancyFeedback(deviceName, { kind: "pending", text: "正在请求程序退出并复查占用，通常在 1 秒左右完成…" });
   renderDevices(lastRenderedDevices);
   try {
     const response = await fetch("/api/microphone-occupancy/release", {
@@ -246,7 +246,7 @@ async function releaseOccupancy(deviceName, users) {
     if (result.remainingPids?.length) {
       setOccupancyFeedback(deviceName, {
         kind: "error",
-        text: `解除未成功：仍有 ${result.remainingPids.length} 个程序正在读取麦克风。程序可能拒绝了正常退出请求。`,
+        text: `解除未成功：仍有 ${result.remainingPids.length} 个程序保持当前占用。程序可能拒绝了正常退出请求。`,
       });
     } else if (result.releasedPids?.length) {
       const inputMethodHint = /WeType|微信输入法/i.test(label)
@@ -254,7 +254,7 @@ async function releaseOccupancy(deviceName, users) {
         : "";
       setOccupancyFeedback(deviceName, {
         kind: "success",
-        text: `系统已确认：相关程序不再读取此麦克风。程序自己的语音图标可能需要片刻才会复位。${inputMethodHint}`,
+        text: `系统已确认：相关旧进程已经退出，当前占用已解除。程序自己的语音图标可能需要片刻才会复位。${inputMethodHint}`,
         releasedAt: Date.now(),
         releasedNames: users
           .filter((user) => result.releasedPids.includes(user.pid))
@@ -380,44 +380,6 @@ function inputActivityOverview() {
       createElement("span", "", user.inputActivityKind === "系统声音采集"
         ? `系统声音采集 · ${user.bundleId || `进程 ${user.pid}`}`
         : `未确认麦克风占用 · ${user.bundleId || `进程 ${user.pid}`}`),
-    );
-    list.append(row);
-  }
-  section.append(list);
-  return section;
-}
-
-function formatRequestOccupancyOverview() {
-  const users = lastMicrophoneUsers.filter((user) =>
-    user.inputActivityKind === "已确认实体麦克风占用" &&
-    user.occupancyEvidenceKinds?.includes("unclosed-format-request") &&
-    (user.confirmedDeviceNames?.length ?? 0) === 0
-  );
-  if (users.length === 0) return null;
-  const section = createElement("section", "format-request-occupancy-overview");
-  const heading = createElement("div", "format-request-occupancy-overview__heading");
-  heading.append(
-    createElement("strong", "", "麦克风占用"),
-    createElement("span", "occupancy-status is-busy", "正在占用"),
-  );
-  section.append(
-    heading,
-    createElement(
-      "p",
-      "",
-      "以下存活进程最后一次格式请求为 0→1，且没有后续 1→0，已立即计入麦克风占用。当前没有足够证据将它归属到某个具体蓝牙麦克风；一键修复会先结束该进程并观察是否恢复 A2DP。",
-    ),
-  );
-  const list = createElement("div", "format-request-occupancy-overview__list");
-  for (const user of users) {
-    const requestedAt = new Date(user.unclosedFormatRequestAt ?? "");
-    const requestedAtText = Number.isNaN(requestedAt.getTime())
-      ? "请求时间无法读取"
-      : `请求于 ${requestedAt.toLocaleTimeString("zh-CN", { hour12: false })}`;
-    const row = createElement("div", "format-request-occupancy-overview__item");
-    row.append(
-      createElement("strong", "", user.name),
-      createElement("span", "", `进程 ${user.pid} · 最后一次格式请求未释放 · ${requestedAtText}`),
     );
     list.append(row);
   }
@@ -630,8 +592,6 @@ function renderDevices(devices) {
     return;
   }
   const fragment = document.createDocumentFragment();
-  const formatRequestOccupancy = formatRequestOccupancyOverview();
-  if (formatRequestOccupancy) fragment.append(formatRequestOccupancy);
   const activityOverview = inputActivityOverview();
   if (activityOverview) fragment.append(activityOverview);
   for (const device of devices) fragment.append(createDeviceCard(device));

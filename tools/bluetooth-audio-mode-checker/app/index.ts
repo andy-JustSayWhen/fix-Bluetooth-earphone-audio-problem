@@ -591,6 +591,7 @@ function main(): void {
         if (typeof body.deviceName !== "string" || body.deviceName.length === 0) {
           throw new Error("麦克风设备无效");
         }
+        const deviceName = body.deviceName;
         if (!Array.isArray(body.pids) || !body.pids.every(Number.isInteger)) {
           throw new Error("占用程序列表无效");
         }
@@ -600,15 +601,15 @@ function main(): void {
         const activities = classifyInputActivities(cachedState.devices, liveUsers);
         const confirmedUsers = activities.filter((user) =>
           user.inputActivityKind === "已确认实体麦克风占用" &&
-          user.confirmedDeviceNames?.includes(body.deviceName as string)
+          user.confirmedDeviceNames?.includes(deviceName)
         );
         const confirmedPids = new Set(confirmedUsers.map((user) => user.pid));
         const requestedPids = [...new Set(body.pids as number[])];
         if (requestedPids.length === 0 || requestedPids.some((pid) => !confirmedPids.has(pid))) {
-          throw new Error("当前没有进程明确关联到该实体蓝牙麦克风，未结束任何进程");
+          throw new Error("当前没有仍有效且已确认的占用或格式请求，未结束任何进程");
         }
         detailedLog("info", "microphone-occupancy.release-requested", {
-          deviceName: body.deviceName,
+          deviceName,
           pids: requestedPids,
           evidence: confirmedUsers.map((user) => ({
             pid: user.pid,
@@ -616,9 +617,11 @@ function main(): void {
             physicalDeviceNames: user.physicalDeviceNames,
             confirmedDeviceNames: user.confirmedDeviceNames,
             inputActivityKind: user.inputActivityKind,
+            occupancyEvidenceKinds: user.occupancyEvidenceKinds,
+            unclosedFormatRequestAt: user.unclosedFormatRequestAt,
           })),
         });
-        const result = await releaseMicrophoneUsers(requestedPids);
+        const result = await releaseMicrophoneUsers(confirmedUsers, requestedPids);
         detailedLog("info", "microphone-occupancy.release-completed", { result });
         scheduleOccupancyScan(0, "manual-release-completed");
         scheduleStateRefresh();
