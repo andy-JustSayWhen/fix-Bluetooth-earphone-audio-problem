@@ -50,8 +50,7 @@ const routePollMs = 100;
 const linkReleaseTimeoutMs = 500;
 const linkPollMs = 50;
 const linkHoldMs = 1_000;
-const stableEntryTimeoutMs = 5_000;
-const stableHoldMs = 3_000;
+const stableObservationMs = 3_000;
 const stablePollMs = 500;
 
 export type RecoveryRuntime = {
@@ -179,26 +178,20 @@ async function verifyStableRecovery(
   runtime: RecoveryRuntime,
   reportProgress: (progress: RecoveryProgress) => void,
 ): Promise<StableRecovery | null> {
-  const entryDeadline = runtime.now() + stableEntryTimeoutMs;
-  let a2dpSince: number | null = null;
+  const deadline = runtime.now() + stableObservationMs;
+  let sawA2dp = false;
+  let leftA2dp = false;
+  reportProgress({ stage: "正在确认稳定", message: "正在观察目标是否连续保持 A2DP 3 秒。" });
   while (true) {
     const observation = currentObservation(runtime, request);
-    const observedAt = runtime.now();
-    if (observation.mode === "A2DP") {
-      if (a2dpSince === null) {
-        a2dpSince = observedAt;
-        reportProgress({ stage: "正在确认稳定", message: "已恢复 A2DP，正在确认连续保持 3 秒。" });
-      }
-      if (observedAt - a2dpSince >= stableHoldMs) {
-        return { rate: observation.rate, mode: observation.mode };
-      }
-    } else {
-      a2dpSince = null;
-      if (observedAt >= entryDeadline) return null;
+    if (observation.mode === "A2DP") sawA2dp = true;
+    else if (sawA2dp) leftA2dp = true;
+    const remaining = deadline - runtime.now();
+    if (remaining <= 0) {
+      return sawA2dp && !leftA2dp && observation.mode === "A2DP"
+        ? { rate: observation.rate, mode: observation.mode }
+        : null;
     }
-
-    const observationDeadline = a2dpSince === null ? entryDeadline : a2dpSince + stableHoldMs;
-    const remaining = observationDeadline - runtime.now();
     if (remaining > 0) await runtime.wait(Math.min(stablePollMs, remaining));
   }
 }
@@ -587,20 +580,6 @@ export async function runRecovery(
     return result(request, state, runtime, "无需修复", diagnosis, false);
   }
 
-  const finishIfAlreadyRecovered = async (): Promise<A2dpRecoveryResult | null> => {
-    const current = currentAssessment(runtime, request);
-    if (current?.mode === "HFP_HSP") return null;
-    if (!current) {
-      return result(request, state, runtime, "未恢复", makeDiagnosis("证据不足", "执行下一动作前目标设备已不可用"), false);
-    }
-    const stable = await verifyStableRecovery(request, runtime, reportProgress);
-    return stable
-      ? result(request, state, runtime, "完全恢复", makeDiagnosis("证据不足", "执行下一动作前目标已自行稳定恢复"), false)
-      : result(request, state, runtime, "未恢复", makeDiagnosis("证据不足", "目标已不在 HFP/HSP，但未满足稳定恢复条件"), false);
-  };
-
-  let alreadyRecovered = await finishIfAlreadyRecovered();
-  if (alreadyRecovered) return alreadyRecovered;
   reportProgress({ stage: "正在检查占用", message: "正在检查实时蓝牙麦克风占用。" });
   let microphoneRelease: RecoveryMicrophoneReleaseResult | null = null;
   try {
@@ -627,18 +606,12 @@ export async function runRecovery(
     }
   }
 
-  alreadyRecovered = await finishIfAlreadyRecovered();
-  if (alreadyRecovered) return alreadyRecovered;
   let stable = await runInputReset(request, state, runtime, reportProgress, "只切换默认输入");
   if (stable) return result(request, state, runtime, "完全恢复", makeDiagnosis("声音链路类", "输入路由复位后稳定恢复"), false);
 
-  alreadyRecovered = await finishIfAlreadyRecovered();
-  if (alreadyRecovered) return alreadyRecovered;
   stable = await runDualRouteReset(request, state, runtime, reportProgress);
   if (stable) return result(request, state, runtime, "完全恢复", makeDiagnosis("声音链路类", "输入输出路由复位后稳定恢复"), false);
 
-  alreadyRecovered = await finishIfAlreadyRecovered();
-  if (alreadyRecovered) return alreadyRecovered;
   reportProgress({ stage: "正在检查占用", message: "正在检查仍有效的格式请求。" });
   const formatEvidenceStart = recoveryEvidenceStart(context, runtime.readFormatRequestUsers(), runtime.now());
   const formatEvidence = runtime.readEvidenceSince(formatEvidenceStart);
@@ -654,8 +627,6 @@ export async function runRecovery(
     addStep(request.name, state.steps, "检查格式请求", formatCause.confidence === "高度疑似" ? "失败" : "跳过", formatCause.gaps.join("；"));
   }
 
-  alreadyRecovered = await finishIfAlreadyRecovered();
-  if (alreadyRecovered) return alreadyRecovered;
   const currentDevices = runtime.readDevices();
   const input = currentDevices.find((device) => device.isDefaultInput && device.inputChannels > 0);
   const output = currentDevices.find((device) => device.isDefaultOutput && device.outputChannels > 0);
@@ -685,8 +656,6 @@ export async function runRecovery(
     addStep(request.name, state.steps, "检查不同蓝牙输入输出", "跳过", "当前输入输出不是两台不同蓝牙设备");
   }
 
-  alreadyRecovered = await finishIfAlreadyRecovered();
-  if (alreadyRecovered) return alreadyRecovered;
   stable = await rebuildAudioChain(request, state, runtime, reportProgress);
   if (stable) return result(request, state, runtime, "完全恢复", makeDiagnosis("声音链路类", "完整声音链路重建后稳定恢复"), true);
   return result(request, state, runtime, "未恢复", makeDiagnosis("声音链路类", "固定处理顺序执行完毕仍未恢复"), true);

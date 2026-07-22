@@ -161,7 +161,7 @@ test("第一步先结束实时蓝牙麦克风占用，恢复后立即停止", as
   assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
 });
 
-test("A2DP 连续保持时间中断后从零重新计算", async () => {
+test("单步三秒内曾离开 A2DP 则直接执行下一步", async () => {
   const h = harness();
   const processInfo = { pid: 88, name: "会议软件", command: "/Applications/Meeting", startedAt: "Tue Jul 22 09:00:00 2026" };
   h.addProcess(processInfo);
@@ -184,8 +184,9 @@ test("A2DP 连续保持时间中断后从零重新计算", async () => {
   const result = await runRecovery(request(h), h.runtime);
 
   assert.equal(result.outcome, "完全恢复");
-  assert.equal(h.actions.filter((item) => item === "wait:500").length, 9);
-  assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
+  const firstRouteIndex = h.actions.findIndex((item) => item.startsWith("route:"));
+  assert.equal(h.actions.slice(0, firstRouteIndex).filter((item) => item === "wait:500").length, 6);
+  assert.equal(firstRouteIndex >= 0, true);
 });
 
 test("修复子进程通过主服务复用统一麦克风解除能力", async () => {
@@ -250,7 +251,7 @@ test("旧进程退出后同命令新进程未形成占用时不再处理", async
   assert.equal(h.actions.filter((item) => item === "terminate:语音软件").length, 1);
 });
 
-test("任何后续动作前发现目标自行恢复时立即停止", async () => {
+test("步骤跳过后不增加自行恢复观察旁路", async () => {
   const h = harness();
   h.runtime.releaseBluetoothMicrophoneOccupancy = async () => {
     h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
@@ -258,7 +259,8 @@ test("任何后续动作前发现目标自行恢复时立即停止", async () =>
   };
   const result = await runRecovery(request(h), h.runtime);
   assert.equal(result.outcome, "完全恢复");
-  assert.equal(h.actions.some((item) => item.startsWith("route:") || item.startsWith("service:")), false);
+  assert.equal(h.actions.some((item) => item.startsWith("route:")), true);
+  assert.equal(h.actions.some((item) => item.startsWith("service:")), false);
 });
 
 test("第二步严格执行输入 A 到非蓝牙 C 再回 A", async () => {
