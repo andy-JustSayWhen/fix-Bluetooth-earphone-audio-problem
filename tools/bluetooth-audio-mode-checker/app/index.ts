@@ -30,11 +30,9 @@ import {
   recoveryWebAssetsDirectory,
   startFormatRequestOccupancyMonitor,
   type RecoveryContinuation,
-  type RecoveryDiagnosis,
   type RecoveryProgress,
   type RecoveryRequestContext,
   type RecoveryRoundState,
-  type RecoveryRouteChoice,
 } from "../features/a2dp-recovery/index.ts";
 import {
   attachSpeakerOccupancy,
@@ -200,16 +198,6 @@ function main(): void {
     continuation: RecoveryContinuation;
     expiresAt: number;
   }>();
-  const pendingRouteChoices = new Map<string, {
-    inputName: string;
-    outputName: string;
-    choices: RecoveryRouteChoice[];
-    diagnosis: RecoveryDiagnosis;
-    context: RecoveryRequestContext;
-    roundState: RecoveryRoundState;
-    expiresAt: number;
-  }>();
-
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
     microphoneUsers: latestMicrophoneUsers,
@@ -715,14 +703,10 @@ function main(): void {
         if (request.headers.origin && request.headers.origin !== expectedOrigin) throw new Error("请求来源不正确");
         const body = await readJsonBody(request) as {
           name?: unknown;
-          routeChoiceId?: unknown;
           authorizeRelaunchBlock?: unknown;
           continueAfterOccupancyEnded?: unknown;
         };
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
-        if (body.routeChoiceId !== undefined && (typeof body.routeChoiceId !== "string" || body.routeChoiceId.length > 512)) {
-          throw new Error("输入输出组合无效");
-        }
         if (body.authorizeRelaunchBlock !== undefined && typeof body.authorizeRelaunchBlock !== "boolean") {
           throw new Error("授权信息无效");
         }
@@ -730,7 +714,6 @@ function main(): void {
           throw new Error("继续处理信息无效");
         }
         const continuationActions = [
-          body.routeChoiceId !== undefined,
           body.authorizeRelaunchBlock === true,
           body.continueAfterOccupancyEnded === true,
         ].filter(Boolean).length;
@@ -741,8 +724,7 @@ function main(): void {
           deviceName: body.name,
           continuation: body.authorizeRelaunchBlock === true
             ? "relaunch-authorization"
-            : body.continueAfterOccupancyEnded === true ? "occupancy-ended"
-            : typeof body.routeChoiceId === "string" ? "route-choice" : "new-round",
+            : body.continueAfterOccupancyEnded === true ? "occupancy-ended" : "new-round",
         });
         const currentState = cachedState ?? readAudioModeState();
         const currentDevice = currentState.devices.find((device) => device.name === body.name);
@@ -755,7 +737,6 @@ function main(): void {
         let recoveryContext: RecoveryRequestContext;
         let roundState: RecoveryRoundState | undefined;
         let approvedRelaunchGuards: RecoveryContinuation["pendingGuards"] | undefined;
-        let confirmedRouteChoice: { choice: RecoveryRouteChoice; diagnosis: RecoveryDiagnosis } | undefined;
 
         if (body.authorizeRelaunchBlock === true || body.continueAfterOccupancyEnded === true) {
           const pending = pendingRelaunchAuthorizations.get(body.name);
@@ -776,24 +757,8 @@ function main(): void {
             ? pending.continuation.pendingGuards
             : [];
           pendingRelaunchAuthorizations.delete(body.name);
-        } else if (typeof body.routeChoiceId === "string") {
-          const pending = pendingRouteChoices.get(body.name);
-          if (!pending || pending.expiresAt < Date.now()) {
-            pendingRouteChoices.delete(body.name);
-            throw new Error("当前没有仍然有效的多端点组合选择，请重新点击一键修复");
-          }
-          if (currentInputName !== pending.inputName || currentOutputName !== pending.outputName) {
-            pendingRouteChoices.delete(body.name);
-            throw new Error("当前输入输出已变化，请重新点击一键修复后再选择");
-          }
-          const choice = pending.choices.find((item) => item.id === body.routeChoiceId);
-          if (!choice) throw new Error("所选输入输出组合不在已确认范围内");
-          confirmedRouteChoice = { choice, diagnosis: pending.diagnosis };
-          recoveryContext = pending.context;
-          roundState = pending.roundState;
         } else {
           pendingRelaunchAuthorizations.delete(body.name);
-          pendingRouteChoices.delete(body.name);
           const clickedAt = new Date().toISOString();
           recoveryContext = {
             clickedAt,
@@ -810,9 +775,7 @@ function main(): void {
         }
         const result = await recoverA2dp({
           name: body.name,
-          routeChoiceId: body.routeChoiceId as string | undefined,
           authorizeRelaunchBlock: body.authorizeRelaunchBlock as boolean | undefined,
-          _confirmedRouteChoice: confirmedRouteChoice,
           _roundState: roundState,
           _approvedRelaunchGuards: approvedRelaunchGuards,
           context: recoveryContext,
@@ -838,20 +801,6 @@ function main(): void {
           });
         } else {
           pendingRelaunchAuthorizations.delete(body.name);
-        }
-        if (result.actionRequired?.kind === "route-choice") {
-          if (!continuation) throw new Error("修复流程没有保存多端点选择所需的处理记录");
-          pendingRouteChoices.set(body.name, {
-            inputName: currentInputName ?? "",
-            outputName: currentOutputName ?? "",
-            choices: result.actionRequired.choices,
-            diagnosis: result.diagnosis,
-            context: continuation.roundState.context,
-            roundState: continuation.roundState,
-            expiresAt: Date.now() + 30 * 60 * 1_000,
-          });
-        } else if (confirmedRouteChoice) {
-          pendingRouteChoices.delete(body.name);
         }
         detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.returned", { deviceName: body.name, result });
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });

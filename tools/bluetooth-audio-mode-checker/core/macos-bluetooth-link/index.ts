@@ -8,10 +8,12 @@ import type { BluetoothLinkSnapshot, BluetoothLinkType } from "../../shared/audi
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const toolRoot = join(moduleDirectory, "..", "..");
 const sourcePath = join(moduleDirectory, "reconnect-device.m");
+const connectSourcePath = join(moduleDirectory, "connect-device.m");
 const disconnectScoSourcePath = join(moduleDirectory, "disconnect-sco.m");
 const disconnectSourcePath = join(moduleDirectory, "disconnect-device.m");
 const buildDirectory = join(toolRoot, ".build", "bluetooth-link");
 const executablePath = join(buildDirectory, "reconnect-device");
+const connectExecutablePath = join(buildDirectory, "connect-device");
 const disconnectScoExecutablePath = join(buildDirectory, "disconnect-sco");
 const disconnectExecutablePath = join(buildDirectory, "disconnect-device");
 const linkLogPredicate = [
@@ -54,6 +56,20 @@ export function reconnectBluetoothDeviceAsync(name: string): Promise<void> {
       else resolve();
     });
   });
+}
+
+export function connectBluetoothDevice(name: string): void {
+  if (modificationTime(connectExecutablePath) < modificationTime(connectSourcePath)) {
+    mkdirSync(buildDirectory, { recursive: true });
+    execFileSync("/usr/bin/clang", [
+      "-fobjc-arc",
+      connectSourcePath,
+      "-framework", "Foundation",
+      "-framework", "IOBluetooth",
+      "-o", connectExecutablePath,
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+  }
+  execFileSync(connectExecutablePath, [name], { encoding: "utf8", timeout: 18_000 });
 }
 
 export function disconnectBluetoothDevice(name: string): void {

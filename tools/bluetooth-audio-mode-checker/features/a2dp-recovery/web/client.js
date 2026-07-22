@@ -1,7 +1,7 @@
 export function shouldContinueAfterOccupancyEnded(feedback, microphoneUsers, occupancyCapturedAt) {
   const action = feedback?.result?.actionRequired;
   if (action?.kind !== "relaunch-authorization" || action.cause !== "麦克风占用类") return false;
-  if (action.occupancyEvidence === "unclosed-format-request" || action.occupancyEvidence === "mixed") return false;
+  if (action.occupancyEvidence !== "physical-bluetooth-microphone") return false;
   const capturedAt = Date.parse(occupancyCapturedAt);
   const recordedAt = Date.parse(feedback.recordedAt ?? "");
   if (!Number.isFinite(capturedAt) || !Number.isFinite(recordedAt) || capturedAt <= recordedAt) return false;
@@ -72,22 +72,17 @@ export function createA2dpRecoveryController({
   }
 
   const storedFeedback = readStoredFeedback();
-  let removedLegacyInspection = false;
+  let removedInvalidFeedback = false;
   for (const [deviceName, feedback] of Object.entries(storedFeedback)) {
-    const obsoleteCompleted = !feedback?.result?.actionRequired;
-    const obsoleteInspection = feedback?.source === "inspection";
-    const obsoleteIneligibleTarget = feedback?.result?.diagnosis?.summary === "目标当前不是可处理的低采样率默认输出";
-    const obsoleteUnmarkedInspection = feedback?.result?.recoveryPath === "现场复核" &&
-      !feedback.result?.actionRequired &&
-      feedback.result?.diagnosis?.summary === "尚不能确认具体应用拒绝了当前双蓝牙组合";
-    const obsoleteAuthorization = feedback?.result?.actionRequired?.kind === "relaunch-authorization" &&
-      !["still-running", "restarted"].includes(feedback.result.actionRequired.triggerState);
-    if (obsoleteCompleted || obsoleteInspection || obsoleteIneligibleTarget || obsoleteUnmarkedInspection || obsoleteAuthorization) {
+    const action = feedback?.result?.actionRequired;
+    const invalid = action?.kind !== "relaunch-authorization" ||
+      !["still-running", "restarted"].includes(action.triggerState);
+    if (invalid) {
       delete storedFeedback[deviceName];
-      removedLegacyInspection = true;
+      removedInvalidFeedback = true;
     }
   }
-  if (removedLegacyInspection) writeStoredFeedback(storedFeedback);
+  if (removedInvalidFeedback) writeStoredFeedback(storedFeedback);
   const feedbackByDevice = new Map(Object.entries(storedFeedback));
   const runningDevices = new Set();
   const progressByDevice = new Map();
@@ -247,26 +242,21 @@ export function createA2dpRecoveryController({
   async function recover(device, action = {}) {
     if (runningDevices.has(device.name)) return;
     runningDevices.add(device.name);
-    const choosingRoute = Boolean(action.routeChoiceId);
     const authorizingRelaunchBlock = action.authorizeRelaunchBlock === true;
     const continuingAfterOccupancyEnded = action.continueAfterOccupancyEnded === true;
     progressByDevice.set(
       device.name,
-      choosingRoute
-        ? "正在切换输入输出…"
-        : authorizingRelaunchBlock
+      authorizingRelaunchBlock
           ? "正在复核授权…"
           : continuingAfterOccupancyEnded ? "正在按最新现场继续…" : "正在保存现场…",
     );
     setFeedback(device.name, {
       kind: "running",
-      text: choosingRoute
-        ? "正在按你的选择切换输入输出。"
-        : authorizingRelaunchBlock
+      text: authorizingRelaunchBlock
           ? "正在沿用原修复回合，重新确认所列进程仍在读取麦克风。"
           : continuingAfterOccupancyEnded
             ? "较新的占用快照确认相关进程已停止读取，正在撤销过时授权并沿用原回合继续。"
-            : "正在保存点击现场，然后依次检查多端点与 tsco、实体麦克风占用和链路残留。",
+            : "正在保存点击现场，然后按固定顺序执行修复。",
     }, false);
     renderAggregateTrigger();
     try {
@@ -373,22 +363,6 @@ export function createA2dpRecoveryController({
     section.setAttribute("aria-live", "polite");
     const result = feedback.result;
     section.append(createElement("strong", "recovery-title", "需要你选择"));
-    if (result.actionRequired?.kind === "route-choice") {
-      const actions = createElement("div", "recovery-actions");
-      actions.append(createElement("p", "recovery-action-prompt", result.actionRequired.prompt));
-      for (const choice of result.actionRequired.choices) {
-        const button = createElement("button", "recovery-action", choice.label);
-        button.type = "button";
-        button.addEventListener("click", () => {
-          const device = getLastRenderedDevices().find((item) => item.name === deviceName);
-          if (device) recoverAndResumeBatch(device, {
-            routeChoiceId: choice.id,
-          });
-        });
-        actions.append(button);
-      }
-      section.append(actions);
-    }
     if (result.actionRequired?.kind === "relaunch-authorization") {
       const actions = createElement("div", "recovery-actions");
       const processNames = [...new Set((result.actionRequired.processNames ?? [])
@@ -450,8 +424,5 @@ export function createA2dpRecoveryController({
     actionSection,
     handleProgress,
     reconcilePendingAuthorizations,
-    getPendingRouteChoice: () => [...feedbackByDevice.values()]
-      .map((feedback) => feedback?.result)
-      .find((result) => result?.actionRequired?.kind === "route-choice") ?? null,
   };
 }

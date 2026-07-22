@@ -31,7 +31,6 @@ export type {
   RecoveryRequestContext,
   RecoveryContinuation,
   RecoveryRoundState,
-  RecoveryRouteChoice,
   RecoveryStep,
   RelaunchGuardRequest,
 } from "./types.ts";
@@ -74,7 +73,7 @@ export async function retainCurrentMicrophoneGuards(
     detailedLog("warn", "a2dp-recovery.authorization-recheck-failed", { error });
   }
   const needsFormatEvidence = microphoneGuards.some((guard) =>
-    guard.occupancyEvidence === "unclosed-format-request" || guard.occupancyEvidence === "mixed"
+    guard.occupancyEvidence === "unclosed-format-request"
   );
   let unclosedCommands = new Set<string>();
   if (needsFormatEvidence) {

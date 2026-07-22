@@ -1,23 +1,13 @@
-import type {
-  AudioModeAssessment,
-  MicrophoneUser,
-} from "../../shared/audio-device-types/index.ts";
+import type { AudioModeAssessment, MicrophoneUser } from "../../shared/audio-device-types/index.ts";
 import type { FormatRequestEvent } from "./format-request-diagnosis.ts";
 
-export type RecoveryOutcome =
-  | "无需修复"
-  | "完全恢复"
-  | "绕过成功"
-  | "原组合复发"
-  | "未恢复"
-  | "等待选择"
-  | "等待授权";
+export type RecoveryOutcome = "无需修复" | "完全恢复" | "未恢复" | "等待授权";
 
 export type RecoveryCauseKind =
   | "麦克风占用类"
-  | "链路残留类"
-  | "多端点会话类"
   | "格式请求类"
+  | "多端点会话类"
+  | "声音链路类"
   | "证据不足";
 
 export type RecoveryStep = {
@@ -34,31 +24,17 @@ export type RecoveryDiagnosis = {
   evidence: string[];
 };
 
-export type RecoveryRouteChoice = {
-  id: string;
-  direction: "input" | "output";
-  deviceName: string;
-  label: string;
-  preserves: "输入" | "输出";
+export type RecoveryActionRequired = {
+  kind: "relaunch-authorization";
+  prompt: string;
+  processNames: string[];
+  cause: "麦克风占用类" | "格式请求类";
+  triggerState: "still-running" | "restarted";
+  occupancyEvidence?: "physical-bluetooth-microphone" | "unclosed-format-request";
 };
 
-export type RecoveryActionRequired =
-  | {
-      kind: "route-choice";
-      prompt: string;
-      choices: RecoveryRouteChoice[];
-    }
-  | {
-      kind: "relaunch-authorization";
-      prompt: string;
-      processNames: string[];
-      cause: "麦克风占用类" | "格式请求类";
-      triggerState: "still-running" | "restarted";
-      occupancyEvidence?: "physical-bluetooth-microphone" | "unclosed-format-request" | "mixed";
-    };
-
 export type RecoveryProgress = {
-  stage: "正在保存现场" | "正在定位原因" | "正在执行处理" | "正在确认稳定";
+  stage: "正在保存现场" | "正在检查占用" | "正在切换声音设备" | "正在重建声音链路" | "正在确认稳定";
   message: string;
 };
 
@@ -69,10 +45,7 @@ export type RecoveryRequestContext = {
   targetSampleRate: number | null;
   targetAssessment: AudioModeAssessment | null;
   deviceAssessments?: AudioModeAssessment[];
-  occupancySnapshot?: {
-    capturedAt: string;
-    users: MicrophoneUser[];
-  };
+  occupancySnapshot?: { capturedAt: string; users: MicrophoneUser[] };
 };
 
 export type RecoveryProcessAttempt = {
@@ -89,16 +62,9 @@ export type RecoveryProcessAttempt = {
 
 export type RecoveryRoundState = {
   context: RecoveryRequestContext;
-  initialOccupancyChecked: boolean;
-  causeReviewCount: number;
+  nextStep: 1 | 2 | 3 | 4 | 5 | 6;
   processAttempts: RecoveryProcessAttempt[];
-  linkResidualAttempted: boolean;
-  fallbackInputAttempted: boolean;
-  reconnectAttempted: boolean;
-  initialEvidenceRead: boolean;
-  evidenceSinceMs: number | null;
   latestFormatRequests?: FormatRequestEvent[];
-  releasedBluetoothInputPrograms: string[];
   releasedPrograms: string[];
   remainingPrograms: string[];
   guardedPrograms: string[];
@@ -110,7 +76,7 @@ export type RelaunchGuardRequest = {
   command: string;
   processName: string;
   microphoneDeviceName?: string;
-  occupancyEvidence?: "physical-bluetooth-microphone" | "unclosed-format-request" | "mixed";
+  occupancyEvidence?: "physical-bluetooth-microphone" | "unclosed-format-request";
 };
 
 export type RecoveryContinuation = {
@@ -121,12 +87,7 @@ export type RecoveryContinuation = {
 export type RecoveryRequest = {
   name: string;
   context?: RecoveryRequestContext;
-  routeChoiceId?: string;
   authorizeRelaunchBlock?: boolean;
-  _confirmedRouteChoice?: {
-    choice: RecoveryRouteChoice;
-    diagnosis: RecoveryDiagnosis;
-  };
   _roundState?: RecoveryRoundState;
   _approvedRelaunchGuards?: RelaunchGuardRequest[];
 };
@@ -134,7 +95,7 @@ export type RecoveryRequest = {
 export type A2dpRecoveryResult = {
   ok: boolean;
   outcome: RecoveryOutcome;
-  recoveryPath: "现场复核" | "原因对应处理" | "多端点路由组合" | "声音链路重建兜底";
+  recoveryPath: "现场复核" | "固定处理顺序";
   handledCause: boolean;
   sampleRate: number | null;
   releasedPrograms: string[];
@@ -142,7 +103,7 @@ export type A2dpRecoveryResult = {
   guardedPrograms?: string[];
   diagnosis: RecoveryDiagnosis;
   steps: RecoveryStep[];
-  usedReconnect: boolean;
+  rebuiltAudioChain: boolean;
   actionRequired?: RecoveryActionRequired;
   message: string;
   _continuation?: RecoveryContinuation;

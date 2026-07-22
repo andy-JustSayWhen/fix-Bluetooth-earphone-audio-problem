@@ -505,11 +505,6 @@ function showRouteGuidance(routes) {
   routeMessage.textContent = risk || "选择其他设备后会立即写入系统。";
 }
 
-function showConfirmedRouteConflict(result) {
-  routeMessage.className = "route-message is-warning";
-  routeMessage.textContent = `已确认：${result.diagnosis.summary}。请在目标输出设备卡片中选择保留输入或保留输出。`;
-}
-
 function updatePendingRouteMessage(routes) {
   if (!pendingRouteChange) return false;
   const activeRoute = routes[pendingRouteChange.direction].find((route) => route.isDefault);
@@ -604,11 +599,6 @@ function renderRealtimeState(result) {
   }
 
   renderState(result, { preserveRouteMessage: true });
-  const pendingRouteChoice = recoveryController.getPendingRouteChoice();
-  if (pendingRouteChoice) {
-    showConfirmedRouteConflict(pendingRouteChoice);
-    return;
-  }
   if (observation.unstable) {
     routeMessage.className = "route-message is-warning is-unstable";
     routeMessage.textContent = "检测到当前双蓝牙组合正在反复断连或切换模式。页面会继续实时显示每次变化；目标进入 HFP 时可点击一键修复。";
