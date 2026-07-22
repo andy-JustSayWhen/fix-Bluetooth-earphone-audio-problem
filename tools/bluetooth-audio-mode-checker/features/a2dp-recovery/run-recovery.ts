@@ -140,8 +140,12 @@ function addStep(name: string, steps: RecoveryStep[], stage: string, status: Rec
   });
 }
 
-function processDescription(processInfo: RunningProcess): string {
-  return `${processInfo.name}（进程号 ${processInfo.pid}）`;
+function processDisplayName(processInfo: RunningProcess, cause?: "麦克风占用类" | "格式请求类"): string {
+  return cause === "格式请求类" ? `${processInfo.name}（格式请求）` : processInfo.name;
+}
+
+function processDescription(processInfo: RunningProcess, cause?: "麦克风占用类" | "格式请求类"): string {
+  return `${processDisplayName(processInfo, cause)}（进程号 ${processInfo.pid}）`;
 }
 
 function physicalBluetoothUsers(users: MicrophoneUser[], devices: RawAudioDevice[]): MicrophoneUser[] {
@@ -329,7 +333,7 @@ async function processStep(
     addStep(request.name, state.steps, `处理${cause}`, "失败", "证据指向受保护系统进程，未结束进程");
     return null;
   }
-  reportProgress({ stage: "正在检查占用", message: `正在请求${safe.map((item) => item.name).join("、")}正常退出。` });
+  reportProgress({ stage: "正在检查占用", message: `正在请求${safe.map((item) => processDisplayName(item, cause)).join("、")}正常退出。` });
   const remaining = await terminateAndWait(safe, runtime);
   const released = safe.filter((item) => !remaining.some((current) => current.pid === item.pid));
   state.releasedPrograms.push(...released.map((item) => item.name));
@@ -346,7 +350,9 @@ async function processStep(
     authorizedAttempted: false,
   })));
   addStep(request.name, state.steps, `处理${cause}`, remaining.length === 0 ? "成功" : "失败",
-    remaining.length === 0 ? `已确认退出：${released.map(processDescription).join("、")}` : `仍未退出：${remaining.map(processDescription).join("、")}`);
+    remaining.length === 0
+      ? `已确认退出：${released.map((item) => processDescription(item, cause)).join("、")}`
+      : `仍未退出：${remaining.map((item) => processDescription(item, cause)).join("、")}`);
 
   const restarted = released.flatMap((item) => runtime.readProcessesByCommand(item.command));
   const needsAuthorization = [...new Map([...remaining, ...restarted].map((item) => [item.command, item] as const)).values()];
@@ -359,7 +365,7 @@ async function processStep(
       microphoneDeviceName,
       occupancyEvidence: cause === "麦克风占用类" ? "physical-bluetooth-microphone" : "unclosed-format-request",
     }));
-    const diagnosis = makeDiagnosis(cause, `${cause}进程未退出或重新启动`, needsAuthorization.map(processDescription));
+    const diagnosis = makeDiagnosis(cause, `${cause}进程未退出或重新启动`, needsAuthorization.map((item) => processDescription(item, cause)));
     return result(request, state, runtime, "等待授权", diagnosis, false, {
       actionRequired: {
         kind: "relaunch-authorization",
@@ -624,7 +630,7 @@ export async function runRecovery(
     if (cause.confidence === "已确认" && cause.requester) {
       const action = await processStep(request, state, runtime, reportProgress, "格式请求类", [cause.requester], 5);
       if (action && "outcome" in action) return action;
-      if (action) return result(request, state, runtime, "完全恢复", makeDiagnosis("格式请求类", "结束格式请求进程后稳定恢复", [processDescription(cause.requester)]), false);
+      if (action) return result(request, state, runtime, "完全恢复", makeDiagnosis("格式请求类", "结束格式请求进程后稳定恢复", [processDescription(cause.requester, "格式请求类")]), false);
     } else {
       addStep(request.name, state.steps, "检查格式请求", cause.confidence === "高度疑似" ? "失败" : "跳过", cause.gaps.join("；"));
     }

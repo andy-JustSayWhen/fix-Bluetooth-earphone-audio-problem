@@ -228,9 +228,15 @@ function setOccupancyFeedback(deviceName, feedback, dismissAfterMs = 0) {
   occupancyFeedbackTimers.set(deviceName, timer);
 }
 
+function occupancyUserLabel(user) {
+  return user.occupancyEvidenceKinds?.includes("unclosed-format-request")
+    ? `${user.name}（格式请求）`
+    : user.name;
+}
+
 async function releaseOccupancy(deviceName, users) {
   const pids = users.map((user) => user.pid);
-  const label = users.length === 1 ? users[0].name : "全部占用程序";
+  const label = users.length === 1 ? occupancyUserLabel(users[0]) : "全部占用程序";
   if (!pids.length || !window.confirm(`确定要结束“${label}”并解除麦克风占用吗？未保存的内容可能丢失。`)) return;
   occupancyBusyDevices.add(deviceName);
   setOccupancyFeedback(deviceName, { kind: "pending", text: "正在请求程序退出并复查占用，通常在 1 秒左右完成…" });
@@ -299,12 +305,12 @@ function microphoneOccupancySection(device) {
         ? `${user.bundleId || `进程 ${user.pid}`} · 最后一次格式请求未释放`
         : user.bundleId || `进程 ${user.pid}`;
       copy.append(
-        createElement("strong", "", user.name),
+        createElement("strong", "", occupancyUserLabel(user)),
         createElement("span", "", occupancyReason),
       );
       const close = createElement("button", "occupancy-close", "×");
       close.type = "button";
-      close.title = `结束 ${user.name} 并解除占用`;
+      close.title = `结束 ${occupancyUserLabel(user)} 并解除占用`;
       close.setAttribute("aria-label", close.title);
       close.disabled = occupancyBusyDevices.has(device.name);
       close.addEventListener("click", () => releaseOccupancy(device.name, [user]));
@@ -339,7 +345,7 @@ function microphoneOccupancySection(device) {
   if (reoccupied.length > 0) {
     feedback = {
       kind: "warning",
-      text: `${reoccupied.map((user) => user.name).join("、")} 曾短暂释放麦克风，但现在已重新占用。`,
+      text: `${reoccupied.map(occupancyUserLabel).join("、")} 曾短暂释放麦克风，但现在已重新占用。`,
     };
     setOccupancyFeedback(device.name, feedback);
   }
@@ -351,7 +357,7 @@ function microphoneOccupancySection(device) {
     section.append(createElement(
       "p",
       "occupancy-feedback is-warning",
-      `${recoveryReoccupied.map((user) => user.name).join("、")} 在一键修复中曾释放麦克风，但现在已重新占用。`,
+      `${recoveryReoccupied.map(occupancyUserLabel).join("、")} 在一键修复中曾释放麦克风，但现在已重新占用。`,
     ));
   }
   if (feedback) section.append(createElement("p", `occupancy-feedback is-${feedback.kind}`, feedback.text));

@@ -189,6 +189,7 @@ test("第三步先切输入输出，再先恢复输出 B、最后恢复输入 A"
 
 test("第四步在两次路由复位之后才处理已确认格式请求", async () => {
   const h = harness();
+  const progressMessages: string[] = [];
   const processInfo = { pid: 77, name: "格式请求软件", command: "/Applications/FormatApp", startedAt: "Tue Jul 22 09:00:00 2026" };
   h.addProcess(processInfo);
   h.runtime.readEvidenceSince = () => {
@@ -208,8 +209,10 @@ test("第四步在两次路由复位之后才处理已确认格式请求", async
     terminate(item);
     h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
   };
-  const result = await runRecovery(request(h), h.runtime);
+  const result = await runRecovery(request(h), h.runtime, (progress) => progressMessages.push(progress.message));
   assert.equal(result.outcome, "完全恢复");
+  assert.ok(progressMessages.some((message) => message.includes("格式请求软件（格式请求）")));
+  assert.ok(result.diagnosis.evidence.some((item) => item.includes("格式请求软件（格式请求）")));
   const evidenceIndex = h.actions.indexOf("evidence:format");
   const routeActions = h.actions.filter((item) => item.startsWith("route:"));
   assert.equal(routeActions.length, 6);

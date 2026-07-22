@@ -367,18 +367,21 @@ export function createA2dpRecoveryController({
       const actions = createElement("div", "recovery-actions");
       const processNames = [...new Set((result.actionRequired.processNames ?? [])
         .filter((name) => typeof name === "string" && name.length > 0))];
-      const processLabel = processNames.length > 0 ? processNames.join("、") : "名称无法确认的进程";
+      const processDisplayNames = result.actionRequired.occupancyEvidence === "unclosed-format-request"
+        ? processNames.map((name) => `${name}（格式请求）`)
+        : processNames;
+      const processLabel = processDisplayNames.length > 0 ? processDisplayNames.join("、") : "名称无法确认的进程";
       actions.append(createElement("p", "recovery-action-prompt", `涉及进程：${processLabel}`));
       actions.append(createElement("p", "recovery-action-prompt", result.actionRequired.prompt));
       const authorize = createElement(
         "button",
         "recovery-action is-danger",
-        result.actionRequired.triggerState === "still-running" && processNames.length === 1
-          ? `授权本次开机持续阻止 ${processNames[0]} 运行`
+        result.actionRequired.triggerState === "still-running" && processDisplayNames.length === 1
+          ? `授权本次开机持续阻止 ${processDisplayNames[0]} 运行`
           : result.actionRequired.triggerState === "still-running"
             ? "授权本次开机持续阻止上述进程运行"
-            : processNames.length === 1
-              ? `授权本次开机阻止 ${processNames[0]} 自动拉起`
+            : processDisplayNames.length === 1
+              ? `授权本次开机阻止 ${processDisplayNames[0]} 自动拉起`
               : "授权本次开机阻止上述进程自动拉起",
       );
       authorize.type = "button";
