@@ -291,16 +291,29 @@ test("旧进程退出后同命令新进程未形成占用时不再处理", async
   assert.equal(h.actions.filter((item) => item === "terminate:语音软件").length, 1);
 });
 
-test("步骤跳过后不增加自行恢复观察旁路", async () => {
+test("点击使语音占用消失后先等待自行恢复，不再执行修复动作", async () => {
   const h = harness();
   h.runtime.releaseBluetoothMicrophoneOccupancy = async () => {
-    h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
     return { users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [], protectedPids: [] };
   };
+  const originalWait = h.runtime.wait;
+  let waitCount = 0;
+  h.runtime.wait = async (milliseconds) => {
+    await originalWait(milliseconds);
+    waitCount += 1;
+    if (waitCount === 1) h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+  };
+
   const result = await runRecovery(request(h), h.runtime);
-  assert.equal(result.outcome, "完全恢复");
-  assert.equal(h.actions.some((item) => item.startsWith("route:")), true);
+
+  assert.equal(result.outcome, "无需修复");
+  assert.equal(h.actions.filter((item) => item === "wait:500").length, 7);
+  assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
+  assert.equal(h.actions.some((item) => item.startsWith("terminate:")), false);
   assert.equal(h.actions.some((item) => item.startsWith("service:")), false);
+  assert.equal(result.steps.some((step) =>
+    step.stage === "等待点击后的自行恢复" && step.status === "成功"
+  ), true);
 });
 
 test("第二步严格执行输入 A 到非蓝牙 C 再回 A", async () => {

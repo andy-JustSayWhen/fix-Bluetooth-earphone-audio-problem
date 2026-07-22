@@ -608,6 +608,25 @@ export async function runRecovery(
     }
   }
 
+  if (!microphoneRelease || microphoneRelease.processes.length === 0) {
+    const stableWithoutAction = await verifyStableRecovery(request, runtime, reportProgress);
+    addStep(
+      request.name,
+      state.steps,
+      "等待点击后的自行恢复",
+      stableWithoutAction ? "成功" : "跳过",
+      stableWithoutAction
+        ? "目标已自行连续保持 A2DP 3 秒，未执行修复动作"
+        : "目标未在观察窗内自行稳定恢复，继续固定处理顺序",
+    );
+    if (stableWithoutAction) {
+      return result(request, state, runtime, "无需修复", makeDiagnosis(
+        "证据不足",
+        "点击后目标自行稳定恢复，未执行修复动作",
+      ), false);
+    }
+  }
+
   let stable = await runInputReset(request, state, runtime, reportProgress, "只切换默认输入");
   if (stable) return result(request, state, runtime, "完全恢复", makeDiagnosis("声音链路类", "输入路由复位后稳定恢复"), false);
 
