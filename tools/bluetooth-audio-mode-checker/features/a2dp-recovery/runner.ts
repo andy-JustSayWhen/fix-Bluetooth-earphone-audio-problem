@@ -1,5 +1,5 @@
 import { runRecovery, systemRuntime } from "./run-recovery.ts";
-import type { RecoveryProgress, RecoveryRequest } from "./types.ts";
+import type { RecoveryMicrophoneReleaseResult, RecoveryProgress, RecoveryRequest } from "./types.ts";
 import type { AudioModeAssessment, MicrophoneUser } from "../../shared/audio-device-types/index.ts";
 
 const encodedRequest = process.argv[2];
@@ -25,6 +25,11 @@ let latestFormatRequestUsers: MicrophoneUser[] = [];
 let initialEvidenceReceived = false;
 let resolveInitialEvidence: (() => void) | null = null;
 const initialEvidence = new Promise<void>((resolve) => { resolveInitialEvidence = resolve; });
+let releaseRequestId = 0;
+const pendingReleases = new Map<number, {
+  resolve: (result: RecoveryMicrophoneReleaseResult) => void;
+  reject: (error: Error) => void;
+}>();
 let pendingInput = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk: string) => {
@@ -37,6 +42,9 @@ process.stdin.on("data", (chunk: string) => {
         type?: string;
         assessments?: AudioModeAssessment[];
         formatRequestUsers?: MicrophoneUser[];
+        requestId?: number;
+        result?: RecoveryMicrophoneReleaseResult;
+        error?: string;
       };
       if (message.type === "live-evidence") {
         latestAssessments = message.assessments ?? [];
@@ -44,6 +52,14 @@ process.stdin.on("data", (chunk: string) => {
         if (!initialEvidenceReceived) {
           initialEvidenceReceived = true;
           resolveInitialEvidence?.();
+        }
+      } else if (message.type === "microphone-release-result" && Number.isInteger(message.requestId)) {
+        const pending = pendingReleases.get(message.requestId as number);
+        if (pending) {
+          pendingReleases.delete(message.requestId as number);
+          if (message.error) pending.reject(new Error(message.error));
+          else if (message.result) pending.resolve(message.result);
+          else pending.reject(new Error("麦克风解除没有返回结果"));
         }
       }
     } catch {
@@ -60,6 +76,15 @@ initialEvidence.then(() => {
     readModeAssessment: (name) => latestAssessments.find((assessment) => assessment.name === name) ?? null,
     readModeAssessments: () => latestAssessments,
     readFormatRequestUsers: () => latestFormatRequestUsers,
+    releaseBluetoothMicrophoneOccupancy: (deviceName) => new Promise((resolve, reject) => {
+      releaseRequestId += 1;
+      pendingReleases.set(releaseRequestId, { resolve, reject });
+      process.stdout.write(`${JSON.stringify({
+        type: "release-bluetooth-microphone-occupancy",
+        requestId: releaseRequestId,
+        deviceName,
+      })}\n`);
+    }),
   }, writeProgress);
 }).then(
   (result) => {

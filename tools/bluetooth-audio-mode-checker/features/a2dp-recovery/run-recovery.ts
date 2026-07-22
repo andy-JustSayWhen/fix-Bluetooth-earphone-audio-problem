@@ -2,7 +2,6 @@ import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { setDefaultAudioDevice } from "../../core/macos-audio-route/index.ts";
 import { connectBluetoothDevice } from "../../core/macos-bluetooth-link/index.ts";
 import { readBluetoothPower, setBluetoothPower } from "../../core/macos-bluetooth-control/index.ts";
-import { readMicrophoneUsersAsync } from "../../core/macos-microphone-usage/index.ts";
 import {
   readRunningProcess,
   terminateRunningProcess,
@@ -26,6 +25,7 @@ import type {
   A2dpRecoveryResult,
   RecoveryDiagnosis,
   RecoveryProgress,
+  RecoveryMicrophoneReleaseResult,
   RecoveryRequest,
   RecoveryRequestContext,
   RecoveryStep,
@@ -47,7 +47,7 @@ export type RecoveryRuntime = {
   now: () => number;
   wait: (milliseconds: number) => Promise<void>;
   readDevices: () => RawAudioDevice[];
-  readMicrophoneUsers: () => Promise<MicrophoneUser[]>;
+  releaseBluetoothMicrophoneOccupancy: (deviceName: string) => Promise<RecoveryMicrophoneReleaseResult>;
   readFormatRequestUsers: () => MicrophoneUser[];
   readProcess: (pid: number) => RunningProcess | null;
   terminateProcess: (processInfo: RunningProcess) => void;
@@ -66,7 +66,9 @@ export const systemRuntime: RecoveryRuntime = {
   now: Date.now,
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   readDevices: () => readAudioDevices().devices,
-  readMicrophoneUsers: () => readMicrophoneUsersAsync(2_000),
+  releaseBluetoothMicrophoneOccupancy: async () => ({
+    users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [],
+  }),
   readFormatRequestUsers: () => [],
   readProcess: readRunningProcess,
   terminateProcess: terminateRunningProcess,
@@ -142,11 +144,10 @@ function recoveryEvidenceStart(
 
 function currentObservation(runtime: RecoveryRuntime, request: RecoveryRequest) {
   const assessment = currentAssessment(runtime, request);
-  const output = targetOutput(runtime.readDevices(), request.name);
   return {
     mode: assessment?.mode ?? null,
-    rate: assessment?.actualSampleRateOutput ?? output?.actualSampleRateOutput ?? null,
-    isDefaultOutput: assessment?.isDefaultOutput ?? output?.isDefaultOutput ?? false,
+    rate: assessment?.actualSampleRateOutput ?? null,
+    isDefaultOutput: assessment?.isDefaultOutput ?? false,
   };
 }
 
@@ -165,27 +166,13 @@ function processDescription(processInfo: RunningProcess, cause?: "麦克风占�
   return `${processDisplayName(processInfo, cause)}（进程号 ${processInfo.pid}）`;
 }
 
-function physicalBluetoothUsers(users: MicrophoneUser[], devices: RawAudioDevice[]): MicrophoneUser[] {
-  const names = new Set(devices.filter((device) => isBluetooth(device) && device.inputChannels > 0).map((device) => device.name));
-  return users.filter((user) =>
-    user.inputActivityKind === "已确认实体麦克风占用" &&
-    user.devices.some((deviceName) => names.has(deviceName))
-  );
-}
-
-function identifiedProcesses(users: MicrophoneUser[], runtime: RecoveryRuntime): RunningProcess[] {
-  return [...new Map(users
-    .map((user) => runtime.readProcess(user.pid))
-    .filter((item): item is RunningProcess => item !== null)
-    .map((item) => [item.pid, item] as const)).values()];
-}
-
 async function verifyStableRecovery(
   request: RecoveryRequest,
   runtime: RecoveryRuntime,
   reportProgress: (progress: RecoveryProgress) => void,
   attempts = 10,
 ): Promise<StableRecovery | null> {
+  const deadline = runtime.now() + 5_000;
   let consecutive = 0;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const observation = currentObservation(runtime, request);
@@ -199,7 +186,9 @@ async function verifyStableRecovery(
     if (consecutive >= 3 && observation.mode !== null) {
       return { rate: observation.rate, mode: observation.mode };
     }
-    if (attempt < attempts - 1) await runtime.wait(500);
+    const remaining = deadline - runtime.now();
+    if (attempt >= attempts - 1 || remaining <= 0) break;
+    await runtime.wait(Math.min(500, remaining));
   }
   return null;
 }
@@ -209,11 +198,13 @@ async function waitForRoute(
   name: string,
   runtime: RecoveryRuntime,
 ): Promise<boolean> {
-  for (let elapsed = 0; elapsed <= routeTimeoutMs; elapsed += routePollMs) {
+  const deadline = runtime.now() + routeTimeoutMs;
+  while (true) {
     if (currentDefaultName(runtime.readDevices(), direction) === name) return true;
-    if (elapsed < routeTimeoutMs) await runtime.wait(routePollMs);
+    const remaining = deadline - runtime.now();
+    if (remaining <= 0) return false;
+    await runtime.wait(Math.min(routePollMs, remaining));
   }
-  return false;
 }
 
 async function setAndConfirmRoute(
@@ -226,11 +217,13 @@ async function setAndConfirmRoute(
 }
 
 async function waitForLinkRelease(name: string, runtime: RecoveryRuntime): Promise<boolean> {
-  for (let elapsed = 0; elapsed <= linkReleaseTimeoutMs; elapsed += linkPollMs) {
+  const deadline = runtime.now() + linkReleaseTimeoutMs;
+  while (true) {
     if (runtime.readModeAssessment(name)?.audioLinkType === "tacl") return true;
-    if (elapsed < linkReleaseTimeoutMs) await runtime.wait(linkPollMs);
+    const remaining = deadline - runtime.now();
+    if (remaining <= 0) return false;
+    await runtime.wait(Math.min(linkPollMs, remaining));
   }
-  return false;
 }
 
 function nonBluetoothCandidates(
@@ -284,18 +277,17 @@ async function restoreRoutes(
 async function terminateAndWait(processes: RunningProcess[], runtime: RecoveryRuntime): Promise<RunningProcess[]> {
   const safe = processes.filter((processInfo) => !protectedProcessNames.has(processInfo.name));
   for (const processInfo of safe) runtime.terminateProcess(processInfo);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const deadline = runtime.now() + 2_000;
+  while (true) {
     const remaining = safe.filter((expected) => {
       const current = runtime.readProcess(expected.pid);
       return current?.command === expected.command && current.startedAt === expected.startedAt;
     });
     if (remaining.length === 0) return [];
-    if (attempt < 19) await runtime.wait(100);
+    const remainingTime = deadline - runtime.now();
+    if (remainingTime <= 0) return remaining;
+    await runtime.wait(Math.min(100, remainingTime));
   }
-  return safe.filter((expected) => {
-    const current = runtime.readProcess(expected.pid);
-    return current?.command === expected.command && current.startedAt === expected.startedAt;
-  });
 }
 
 function processIdentity(processInfo: RunningProcess): string {
@@ -442,11 +434,13 @@ async function runDualRouteReset(
 }
 
 async function waitForBluetoothPower(expected: boolean, runtime: RecoveryRuntime): Promise<boolean> {
-  for (let elapsed = 0; elapsed <= 5_000; elapsed += 100) {
+  const deadline = runtime.now() + 5_000;
+  while (true) {
     try { if (runtime.readBluetoothPower() === expected) return true; } catch { /* continue */ }
-    if (elapsed < 5_000) await runtime.wait(100);
+    const remaining = deadline - runtime.now();
+    if (remaining <= 0) return false;
+    await runtime.wait(Math.min(100, remaining));
   }
-  return false;
 }
 
 async function waitForNewServicePid(
@@ -454,20 +448,24 @@ async function waitForNewServicePid(
   previousPid: number | null,
   runtime: RecoveryRuntime,
 ): Promise<number | null> {
-  for (let elapsed = 0; elapsed <= 5_000; elapsed += 100) {
+  const deadline = runtime.now() + 5_000;
+  while (true) {
     const current = runtime.readServicePid(service);
     if (current !== null && current !== previousPid) return current;
-    if (elapsed < 5_000) await runtime.wait(100);
+    const remaining = deadline - runtime.now();
+    if (remaining <= 0) return null;
+    await runtime.wait(Math.min(100, remaining));
   }
-  return null;
 }
 
 async function waitForTargetEndpoint(name: string, runtime: RecoveryRuntime): Promise<boolean> {
-  for (let elapsed = 0; elapsed <= 3_000; elapsed += 100) {
+  const deadline = runtime.now() + 3_000;
+  while (true) {
     if (runtime.readDevices().some((device) => device.name === name && (device.inputChannels > 0 || device.outputChannels > 0))) return true;
-    if (elapsed < 3_000) await runtime.wait(100);
+    const remaining = deadline - runtime.now();
+    if (remaining <= 0) return false;
+    await runtime.wait(Math.min(100, remaining));
   }
-  return false;
 }
 
 async function rebuildAudioChain(
@@ -562,15 +560,43 @@ export async function runRecovery(
   let alreadyRecovered = await finishIfAlreadyRecovered();
   if (alreadyRecovered) return alreadyRecovered;
   reportProgress({ stage: "正在检查占用", message: "正在检查实时蓝牙麦克风占用。" });
-  let users: MicrophoneUser[] = [];
-  try { users = await runtime.readMicrophoneUsers(); }
-  catch (error) { addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "失败", error instanceof Error ? error.message : String(error)); }
-  const confirmedUsers = physicalBluetoothUsers(users, runtime.readDevices());
-  const microphoneProcesses = identifiedProcesses(confirmedUsers, runtime);
-  if (microphoneProcesses.length === 0) addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "跳过", "没有已确认占用进程");
-  else {
-    const stable = await processStep(request, state, runtime, reportProgress, "麦克风占用类", microphoneProcesses);
-    if (stable) return result(request, state, runtime, "完全恢复", makeDiagnosis("麦克风占用类", "结束占用进程后稳定恢复", microphoneProcesses.map(processDescription)), false);
+  let microphoneRelease: RecoveryMicrophoneReleaseResult | null = null;
+  try {
+    microphoneRelease = await runtime.releaseBluetoothMicrophoneOccupancy(request.name);
+  } catch (error) {
+    addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "失败", error instanceof Error ? error.message : String(error));
+  }
+  if (microphoneRelease && microphoneRelease.requestedPids.length === 0) {
+    addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "跳过", "没有已确认占用进程");
+  } else if (microphoneRelease) {
+    for (const processInfo of microphoneRelease.processes) {
+      state.attemptedProcessIdentities.add(processIdentity(processInfo));
+    }
+    const releasedProcesses = microphoneRelease.processes.filter((processInfo) =>
+      microphoneRelease?.releasedPids.includes(processInfo.pid)
+    );
+    const remainingProcesses = microphoneRelease.processes.filter((processInfo) =>
+      microphoneRelease?.remainingPids.includes(processInfo.pid)
+    );
+    state.releasedPrograms.push(...releasedProcesses.map((item) => item.name));
+    state.remainingPrograms.push(...remainingProcesses.map((item) => item.name));
+    addStep(
+      request.name,
+      state.steps,
+      "处理麦克风占用类",
+      remainingProcesses.length === 0 ? "成功" : "失败",
+      remainingProcesses.length === 0
+        ? `已确认退出：${releasedProcesses.map((item) => processDescription(item, "麦克风占用类")).join("、")}`
+        : `仍未退出：${remainingProcesses.map((item) => processDescription(item, "麦克风占用类")).join("、")}`,
+    );
+    const stableAfterRelease = await verifyStableRecovery(request, runtime, reportProgress);
+    if (stableAfterRelease) {
+      return result(request, state, runtime, "完全恢复", makeDiagnosis(
+        "麦克风占用类",
+        "结束占用进程后稳定恢复",
+        microphoneRelease.processes.map((item) => processDescription(item)),
+      ), false);
+    }
   }
 
   alreadyRecovered = await finishIfAlreadyRecovered();

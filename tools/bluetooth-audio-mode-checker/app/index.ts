@@ -18,10 +18,10 @@ import {
   attachEmptyMicrophoneOccupancy,
   attachMicrophoneOccupancyFromUsers,
   classifyInputActivities,
+  confirmAndReleaseMicrophoneOccupancy,
   mergeMicrophoneUsers,
   mergeMicrophoneOccupancy,
   readAllMicrophoneUsersAsync,
-  releaseMicrophoneUsers,
   shouldContinueOccupancyScanning,
   shouldStartOccupancyScanForInputActivity,
 } from "../features/microphone-occupancy/index.ts";
@@ -202,6 +202,21 @@ function main(): void {
     latestRawMicrophoneUsers,
     latestFormatRequestUsers,
   );
+  const releaseConfirmedMicrophoneOccupancy = async (
+    deviceName: string,
+    requestedPids: number[] | null,
+    evidenceScope: "全部已确认占用" | "实体端点占用",
+  ) => {
+    if (cachedState === null) throw new Error("当前没有可用的设备与链路状态");
+    latestRawMicrophoneUsers = await readAllMicrophoneUsersAsync();
+    return confirmAndReleaseMicrophoneOccupancy(
+      cachedState.devices,
+      currentMicrophoneUsers(),
+      deviceName,
+      requestedPids,
+      evidenceScope,
+    );
+  };
   const broadcastState = () => {
     const payload = statePayload();
     if (payload === null) return;
@@ -590,34 +605,32 @@ function main(): void {
         if (!Array.isArray(body.pids) || !body.pids.every(Number.isInteger)) {
           throw new Error("占用程序列表无效");
         }
-        if (cachedState === null) throw new Error("当前没有可用的设备与链路状态");
-        latestRawMicrophoneUsers = await readAllMicrophoneUsersAsync();
-        const liveUsers = currentMicrophoneUsers();
-        const activities = classifyInputActivities(cachedState.devices, liveUsers);
-        const confirmedUsers = activities.filter((user) =>
-          user.inputActivityKind === "已确认实体麦克风占用" &&
-          user.confirmedDeviceNames?.includes(deviceName)
-        );
-        const confirmedPids = new Set(confirmedUsers.map((user) => user.pid));
         const requestedPids = [...new Set(body.pids as number[])];
-        if (requestedPids.length === 0 || requestedPids.some((pid) => !confirmedPids.has(pid))) {
-          throw new Error("当前没有仍有效且已确认的占用或格式请求，未结束任何进程");
-        }
+        if (requestedPids.length === 0) throw new Error("占用程序列表无效");
         detailedLog("info", "microphone-occupancy.release-requested", {
           deviceName,
           pids: requestedPids,
-          evidence: confirmedUsers.map((user) => ({
-            pid: user.pid,
-            processName: user.name,
-            physicalDeviceNames: user.physicalDeviceNames,
-            confirmedDeviceNames: user.confirmedDeviceNames,
-            inputActivityKind: user.inputActivityKind,
-            occupancyEvidenceKinds: user.occupancyEvidenceKinds,
-            unclosedFormatRequestAt: user.unclosedFormatRequestAt,
-          })),
         });
-        const result = await releaseMicrophoneUsers(confirmedUsers, requestedPids);
-        detailedLog("info", "microphone-occupancy.release-completed", { result });
+        const release = await releaseConfirmedMicrophoneOccupancy(
+          deviceName,
+          requestedPids,
+          "全部已确认占用",
+        );
+        const evidence = release.users.map((user) => ({
+          pid: user.pid,
+          processName: user.name,
+          physicalDeviceNames: user.physicalDeviceNames,
+          confirmedDeviceNames: user.confirmedDeviceNames,
+          inputActivityKind: user.inputActivityKind,
+          occupancyEvidenceKinds: user.occupancyEvidenceKinds,
+          unclosedFormatRequestAt: user.unclosedFormatRequestAt,
+        }));
+        const result = {
+          requestedPids: release.requestedPids,
+          releasedPids: release.releasedPids,
+          remainingPids: release.remainingPids,
+        };
+        detailedLog("info", "microphone-occupancy.release-completed", { evidence, result });
         scheduleOccupancyScan(0, "manual-release-completed");
         scheduleStateRefresh();
         response.writeHead(200, {
@@ -713,7 +726,22 @@ function main(): void {
           context: { clickedAt },
         }, (progress) => broadcastRecoveryProgress(body.name as string, progress),
         () => cachedState?.devices ?? [],
-        () => latestFormatRequestUsers);
+        () => latestFormatRequestUsers,
+        async (deviceName) => {
+          const release = await releaseConfirmedMicrophoneOccupancy(
+            deviceName,
+            null,
+            "实体端点占用",
+          );
+          detailedLog("info", "a2dp-recovery.microphone-release", {
+            deviceName,
+            requestedPids: release.requestedPids,
+            releasedPids: release.releasedPids,
+            remainingPids: release.remainingPids,
+            users: release.users,
+          });
+          return release;
+        });
         scheduleOccupancyScan(0, "a2dp-recovery-completed");
         scheduleStateRefresh();
         detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.returned", { deviceName: body.name, result });

@@ -714,6 +714,17 @@ test("多端点处理只能由用户点击一键修复发起", () => {
   assert.doesNotMatch(source, /routeChoiceId|route-choice/);
 });
 
+test("单独解除和一键修复第一步由应用入口复用同一解除能力", () => {
+  const appSource = readFileSync(new URL("../../app/index.ts", import.meta.url), "utf8");
+  const recoverySource = readFileSync(new URL("../a2dp-recovery/run-recovery.ts", import.meta.url), "utf8");
+
+  assert.equal((appSource.match(/releaseConfirmedMicrophoneOccupancy\(/g) ?? []).length, 2);
+  assert.match(appSource, /"全部已确认占用"/);
+  assert.match(appSource, /"实体端点占用"/);
+  assert.doesNotMatch(recoverySource, /physicalBluetoothUsers|identifiedProcesses|readMicrophoneUsers/);
+  assert.match(recoverySource, /releaseBluetoothMicrophoneOccupancy\(request\.name\)/);
+});
+
 test("单独解除占用显示阶段并在完成后主动多次复查", () => {
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
 

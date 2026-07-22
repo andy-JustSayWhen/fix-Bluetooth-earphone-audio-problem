@@ -195,13 +195,20 @@ export type MicrophoneReleaseResult = {
   remainingPids: number[];
 };
 
+export type ConfirmedMicrophoneReleaseResult = MicrophoneReleaseResult & {
+  users: MicrophoneUser[];
+  processes: RunningProcess[];
+};
+
 export type MicrophoneReleaseRuntime = {
+  now?: () => number;
   readProcess: (pid: number) => RunningProcess | null;
   terminateProcess: (processInfo: RunningProcess) => void;
   wait: (milliseconds: number) => Promise<void>;
 };
 
 const systemReleaseRuntime: MicrophoneReleaseRuntime = {
+  now: Date.now,
   readProcess: readRunningProcess,
   terminateProcess: terminateRunningProcess,
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -214,11 +221,11 @@ function isConfirmedReleaseUser(user: MicrophoneUser): boolean {
   );
 }
 
-export async function releaseMicrophoneUsers(
+async function releaseMicrophoneUsersDetailed(
   users: MicrophoneUser[],
   pids: number[],
-  runtime: MicrophoneReleaseRuntime = systemReleaseRuntime,
-): Promise<MicrophoneReleaseResult> {
+  runtime: MicrophoneReleaseRuntime,
+): Promise<ConfirmedMicrophoneReleaseResult> {
   const confirmedPids = new Set(users.filter(isConfirmedReleaseUser).map((user) => user.pid));
   const expectedProcesses = new Map<number, RunningProcess>();
   for (const pid of [...new Set(pids)]) {
@@ -226,12 +233,17 @@ export async function releaseMicrophoneUsers(
     const processInfo = runtime.readProcess(pid);
     if (processInfo) expectedProcesses.set(pid, processInfo);
   }
+  const processes = [...expectedProcesses.values()];
   const requestedPids = [...expectedProcesses.keys()];
-  for (const processInfo of expectedProcesses.values()) runtime.terminateProcess(processInfo);
+  for (const processInfo of processes) runtime.terminateProcess(processInfo);
 
   let remainingPids = requestedPids;
+  const now = runtime.now ?? Date.now;
+  const deadline = now() + 2_000;
   for (let attempt = 0; attempt < 20 && remainingPids.length > 0; attempt += 1) {
-    await runtime.wait(100);
+    const remainingTime = deadline - now();
+    if (remainingTime <= 0) break;
+    await runtime.wait(Math.min(100, remainingTime));
     remainingPids = requestedPids.filter((pid) => {
       const expected = expectedProcesses.get(pid);
       const current = runtime.readProcess(pid);
@@ -240,8 +252,45 @@ export async function releaseMicrophoneUsers(
     });
   }
   return {
+    users: users.filter((user) => requestedPids.includes(user.pid)),
+    processes,
     requestedPids,
     releasedPids: requestedPids.filter((pid) => !remainingPids.includes(pid)),
     remainingPids,
+  };
+}
+
+export async function confirmAndReleaseMicrophoneOccupancy(
+  devices: AudioModeAssessment[],
+  users: MicrophoneUser[],
+  deviceName: string,
+  requestedPids: number[] | null,
+  evidenceScope: "全部已确认占用" | "实体端点占用",
+  runtime: MicrophoneReleaseRuntime = systemReleaseRuntime,
+): Promise<ConfirmedMicrophoneReleaseResult> {
+  const activities = classifyInputActivities(devices, users);
+  const confirmedUsers = activities.filter((user) =>
+    user.inputActivityKind === "已确认实体麦克风占用" &&
+    user.confirmedDeviceNames?.includes(deviceName) &&
+    (evidenceScope === "全部已确认占用" || user.physicalDeviceNames?.includes(deviceName))
+  );
+  const confirmedPids = new Set(confirmedUsers.map((user) => user.pid));
+  const selectedPids = requestedPids === null ? [...confirmedPids] : [...new Set(requestedPids)];
+  if (selectedPids.some((pid) => !confirmedPids.has(pid))) {
+    throw new Error("当前没有仍有效且已确认的占用或格式请求，未结束任何进程");
+  }
+  return releaseMicrophoneUsersDetailed(confirmedUsers, selectedPids, runtime);
+}
+
+export async function releaseMicrophoneUsers(
+  users: MicrophoneUser[],
+  pids: number[],
+  runtime: MicrophoneReleaseRuntime = systemReleaseRuntime,
+): Promise<MicrophoneReleaseResult> {
+  const result = await releaseMicrophoneUsersDetailed(users, pids, runtime);
+  return {
+    requestedPids: result.requestedPids,
+    releasedPids: result.releasedPids,
+    remainingPids: result.remainingPids,
   };
 }

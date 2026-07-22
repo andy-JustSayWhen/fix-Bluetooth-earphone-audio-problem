@@ -6,6 +6,7 @@ import {
   attachEmptyMicrophoneOccupancy,
   attachMicrophoneOccupancyFromUsers,
   classifyInputActivities,
+  confirmAndReleaseMicrophoneOccupancy,
   mergeMicrophoneOccupancy,
   mergeMicrophoneUsers,
   releaseMicrophoneUsers,
@@ -263,6 +264,74 @@ test("未闭合格式请求没有实体麦克风端点时仍可结束对应进�
 
   assert.deepEqual(terminated, [42]);
   assert.deepEqual(result, { requestedPids: [42], releasedPids: [42], remainingPids: [] });
+});
+
+test("一键修复第一步复用统一解除能力但只处理实体端点占用", async () => {
+  const users: MicrophoneUser[] = [
+    { pid: 42, name: "语音程序", bundleId: "test.voice", devices: ["REDMI"] },
+    {
+      pid: 43,
+      name: "格式请求程序",
+      bundleId: "test.format",
+      devices: [],
+      occupancyEvidenceKinds: ["unclosed-format-request"],
+      unclosedFormatRequestAt: "2026-07-22 18:15:25.975704+0800",
+    },
+  ];
+  const processes = new Map([
+    [42, { pid: 42, name: "语音程序", command: "/Applications/Voice", startedAt: "Wed Jul 22 16:00:00 2026" }],
+    [43, { pid: 43, name: "格式请求程序", command: "/Applications/Format", startedAt: "Wed Jul 22 16:00:00 2026" }],
+  ]);
+  const terminated: number[] = [];
+  const result = await confirmAndReleaseMicrophoneOccupancy(
+    [device({ mode: "HFP_HSP", audioLinkType: "tsco" })],
+    users,
+    "REDMI",
+    null,
+    "实体端点占用",
+    {
+      readProcess: (pid) => processes.get(pid) ?? null,
+      terminateProcess: (processInfo) => { terminated.push(processInfo.pid); processes.delete(processInfo.pid); },
+      wait: async () => {},
+    },
+  );
+
+  assert.deepEqual(terminated, [42]);
+  assert.deepEqual(result.requestedPids, [42]);
+  assert.deepEqual(result.users.map((user) => user.pid), [42]);
+});
+
+test("页面单独解除通过同一能力处理格式请求占用", async () => {
+  const formatUser: MicrophoneUser = {
+    pid: 43,
+    name: "格式请求程序",
+    bundleId: "test.format",
+    devices: [],
+    occupancyEvidenceKinds: ["unclosed-format-request"],
+    unclosedFormatRequestAt: "2026-07-22 18:15:25.975704+0800",
+  };
+  const processInfo = {
+    pid: 43,
+    name: "格式请求程序",
+    command: "/Applications/Format",
+    startedAt: "Wed Jul 22 16:00:00 2026",
+  };
+  let running = true;
+  const result = await confirmAndReleaseMicrophoneOccupancy(
+    [device({ mode: "HFP_HSP", audioLinkType: "tsco" })],
+    [formatUser],
+    "REDMI",
+    [43],
+    "全部已确认占用",
+    {
+      readProcess: (pid) => running && pid === 43 ? processInfo : null,
+      terminateProcess: () => { running = false; },
+      wait: async () => {},
+    },
+  );
+
+  assert.deepEqual(result.releasedPids, [43]);
+  assert.deepEqual(result.users.map((user) => user.pid), [43]);
 });
 
 test("默认输入从空闲变为运行时触发一次占用扫描", () => {

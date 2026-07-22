@@ -1,3 +1,6 @@
+import type { RunningProcess } from "../../core/macos-running-apps/index.ts";
+import type { MicrophoneUser } from "../../shared/audio-device-types/index.ts";
+
 export type RecoveryOutcome = "无需修复" | "完全恢复" | "未恢复";
 
 export type RecoveryCauseKind =
@@ -32,6 +35,14 @@ export type RecoveryRequestContext = {
 export type RecoveryRequest = {
   name: string;
   context?: RecoveryRequestContext;
+};
+
+export type RecoveryMicrophoneReleaseResult = {
+  users: MicrophoneUser[];
+  processes: RunningProcess[];
+  requestedPids: number[];
+  releasedPids: number[];
+  remainingPids: number[];
 };
 
 export type A2dpRecoveryResult = {

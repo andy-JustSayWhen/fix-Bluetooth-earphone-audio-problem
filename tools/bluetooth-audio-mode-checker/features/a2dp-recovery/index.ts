@@ -7,6 +7,7 @@ import type { AudioModeAssessment, MicrophoneUser } from "../../shared/audio-dev
 export { startFormatRequestOccupancyMonitor } from "./format-request-diagnosis.ts";
 import type {
   A2dpRecoveryResult,
+  RecoveryMicrophoneReleaseResult,
   RecoveryProgress,
   RecoveryRequest,
 } from "./types.ts";
@@ -14,6 +15,7 @@ import type {
 export type {
   A2dpRecoveryResult,
   RecoveryDiagnosis,
+  RecoveryMicrophoneReleaseResult,
   RecoveryOutcome,
   RecoveryProgress,
   RecoveryRequest,
@@ -30,6 +32,9 @@ export async function recoverA2dp(
   onProgress: (progress: RecoveryProgress) => void = () => {},
   readModeAssessments: () => AudioModeAssessment[] = () => [],
   readFormatRequestUsers: () => MicrophoneUser[] = () => [],
+  releaseBluetoothMicrophoneOccupancy: (deviceName: string) => Promise<RecoveryMicrophoneReleaseResult> = async () => ({
+    users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [],
+  }),
 ): Promise<A2dpRecoveryResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [runnerPath, JSON.stringify(request)], {
@@ -65,9 +70,28 @@ export async function recoverA2dp(
         try {
           const message = JSON.parse(line) as
             | { type: "progress"; progress: RecoveryProgress }
-            | { type: "result"; result: A2dpRecoveryResult };
+            | { type: "result"; result: A2dpRecoveryResult }
+            | { type: "release-bluetooth-microphone-occupancy"; requestId: number; deviceName: string };
           if (message.type === "progress") onProgress(message.progress);
-          else result = message.result;
+          else if (message.type === "result") result = message.result;
+          else if (message.type === "release-bluetooth-microphone-occupancy") {
+            void releaseBluetoothMicrophoneOccupancy(message.deviceName).then(
+              (releaseResult) => {
+                if (!child.stdin.destroyed) child.stdin.write(`${JSON.stringify({
+                  type: "microphone-release-result",
+                  requestId: message.requestId,
+                  result: releaseResult,
+                })}\n`);
+              },
+              (error) => {
+                if (!child.stdin.destroyed) child.stdin.write(`${JSON.stringify({
+                  type: "microphone-release-result",
+                  requestId: message.requestId,
+                  error: error instanceof Error ? error.message : String(error),
+                })}\n`);
+              },
+            );
+          }
         } catch {
           stderr += `无法读取工作进度：${line}\n`;
         }

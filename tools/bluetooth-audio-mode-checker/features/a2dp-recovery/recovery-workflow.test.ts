@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { recoverA2dp } from "./index.ts";
 import { runRecovery, type RecoveryRuntime } from "./run-recovery.ts";
 import type { AudioModeAssessment, MicrophoneUser, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 import type { RunningProcess } from "../../core/macos-running-apps/index.ts";
@@ -64,11 +65,34 @@ function harness(): Harness {
     ["bluetoothd", 10], ["bluetoothuserd", 20], ["coreaudiod", 30], ["audioaccessoryd", 40], ["audiomxd", 50],
   ]);
   let bluetoothPower = true;
+  let nowMs = Date.parse("2026-07-22T10:00:00+08:00");
   const runtime: RecoveryRuntime = {
-    now: () => Date.parse("2026-07-22T10:00:00+08:00"),
-    wait: async (milliseconds) => { actions.push(`wait:${milliseconds}`); },
+    now: () => nowMs,
+    wait: async (milliseconds) => { nowMs += milliseconds; actions.push(`wait:${milliseconds}`); },
     readDevices: () => devices,
-    readMicrophoneUsers: async () => users,
+    releaseBluetoothMicrophoneOccupancy: async (deviceName) => {
+      const confirmedUsers = users.filter((user) =>
+        user.inputActivityKind === "已确认实体麦克风占用" && user.devices.includes(deviceName)
+      );
+      const expectedProcesses = confirmedUsers
+        .map((user) => processes.get(user.pid))
+        .filter((item): item is RunningProcess => item !== undefined);
+      for (const processInfo of expectedProcesses) runtime.terminateProcess(processInfo);
+      const requestedPids = expectedProcesses.map((item) => item.pid);
+      const remainingPids = expectedProcesses
+        .filter((expected) => {
+          const current = runtime.readProcess(expected.pid);
+          return current?.command === expected.command && current.startedAt === expected.startedAt;
+        })
+        .map((item) => item.pid);
+      return {
+        users: confirmedUsers,
+        processes: expectedProcesses,
+        requestedPids,
+        releasedPids: requestedPids.filter((pid) => !remainingPids.includes(pid)),
+        remainingPids,
+      };
+    },
     readFormatRequestUsers: () => [],
     readProcess: (pid) => processes.get(pid) ?? null,
     terminateProcess: (processInfo) => { actions.push(`terminate:${processInfo.name}`); processes.delete(processInfo.pid); },
@@ -135,6 +159,48 @@ test("第一步先结束实时蓝牙麦克风占用，恢复后立即停止", as
   assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
 });
 
+test("修复子进程通过主服务复用统一麦克风解除能力", async () => {
+  let currentAssessment = assessment();
+  let releaseCalls = 0;
+  const processInfo = {
+    pid: 88,
+    name: "会议软件",
+    command: "/Applications/Meeting",
+    startedAt: "Tue Jul 22 09:00:00 2026",
+  };
+  const result = await recoverA2dp(
+    { name: targetName, context: { clickedAt: "2026-07-22T10:00:00+08:00" } },
+    () => {},
+    () => [currentAssessment],
+    () => [],
+    async (deviceName) => {
+      assert.equal(deviceName, targetName);
+      releaseCalls += 1;
+      currentAssessment = assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 });
+      return {
+        users: [{
+          pid: 88,
+          name: "会议软件",
+          bundleId: "test.meeting",
+          devices: [targetName],
+          inputActivityKind: "已确认实体麦克风占用",
+          physicalDeviceNames: [targetName],
+          confirmedDeviceNames: [targetName],
+        }],
+        processes: [processInfo],
+        requestedPids: [88],
+        releasedPids: [88],
+        remainingPids: [],
+      };
+    },
+  );
+
+  assert.equal(releaseCalls, 1);
+  assert.equal(result.outcome, "完全恢复");
+  assert.deepEqual(result.releasedPrograms, ["会议软件"]);
+  assert.equal(result.steps.some((step) => step.stage === "处理麦克风占用类"), true);
+});
+
 test("旧进程退出后同命令新进程未形成占用时不再处理", async () => {
   const h = harness();
   const oldProcess = { pid: 88, name: "语音软件", command: "/Applications/VoiceApp", startedAt: "Tue Jul 22 09:00:00 2026" };
@@ -156,9 +222,9 @@ test("旧进程退出后同命令新进程未形成占用时不再处理", async
 
 test("任何后续动作前发现目标自行恢复时立即停止", async () => {
   const h = harness();
-  h.runtime.readMicrophoneUsers = async () => {
+  h.runtime.releaseBluetoothMicrophoneOccupancy = async () => {
     h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
-    return [];
+    return { users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [] };
   };
   const result = await runRecovery(request(h), h.runtime);
   assert.equal(result.outcome, "完全恢复");
