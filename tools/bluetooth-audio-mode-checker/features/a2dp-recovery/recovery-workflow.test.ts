@@ -684,6 +684,63 @@ test("目标为 tsco 时仍先把未闭合 0 -> 1 计入麦克风占用并结束
   assert.equal(result.steps.some((step) => step.stage === "临时切换输入"), false);
 });
 
+test("页面实时快照中的旧未闭合 0→1 不受十分钟日志窗口限制", async () => {
+  const oldProcess = { ...processInfo, startedAt: "Sun Jul 19 09:00:00 2026" };
+  let running = true;
+  let mode: AudioModeAssessment["mode"] = "HFP_HSP";
+  let rate = 16_000;
+  let terminations = 0;
+  const result = await runRecovery({
+    name: "蓝牙耳机",
+    context: {
+      clickedAt: new Date(now).toISOString(),
+      defaultInput: "蓝牙耳机",
+      defaultOutput: "蓝牙耳机",
+      targetSampleRate: 16_000,
+      targetAssessment: null,
+      occupancySnapshot: {
+        capturedAt: new Date(now - 500).toISOString(),
+        users: [{
+          pid: oldProcess.pid,
+          name: oldProcess.name,
+          bundleId: "",
+          devices: [],
+          inputActivityKind: "已确认实体麦克风占用",
+          occupancyEvidenceKinds: ["unclosed-format-request"],
+          unclosedFormatRequestAt: "2026-07-19 09:30:00.000000+0800",
+        }],
+      },
+    },
+  }, runtime({
+    readDevices: () => [device({
+      sampleRateOutput: rate,
+      actualSampleRateOutput: rate,
+      nominalSampleRateOutput: rate,
+      isDefaultInput: true,
+    })],
+    readProcess: () => running ? oldProcess : null,
+    readEvidence: () => emptyEvidence,
+    readModeAssessment: () => ({
+      name: "蓝牙耳机",
+      mode,
+      audioLinkType: mode === "HFP_HSP" ? "tsco" : "tacl",
+      actualSampleRateOutput: rate,
+      isDefaultOutput: true,
+    } as AudioModeAssessment),
+    terminateProcess: () => {
+      terminations += 1;
+      running = false;
+      mode = "A2DP";
+      rate = 44_100;
+    },
+  }));
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(result.diagnosis.kind, "麦克风占用类");
+  assert.equal(terminations, 1);
+  assert.equal(result.steps.some((step) => step.stage === "临时切换输入"), false);
+});
+
 test("未闭合请求进程未退出时保持占用状态并进入授权", async () => {
   let terminations = 0;
   const request = "2026-07-19 09:59:59.000000+0800 localhost coreaudiod[1]: [ 30114 ]BTUnifiedAudioDevice: kBluetoothAudioDevicePropertyFormat request 0 ->1";
