@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseBluetoothLinkLine } from "./index.ts";
+import { formatBluetoothLinkLogStart, parseBluetoothLinkLine } from "./index.ts";
+
+test("链路历史查询起点保留本地时间且精确到秒", () => {
+  const localTime = new Date(2026, 6, 20, 3, 4, 40).getTime();
+  assert.equal(formatBluetoothLinkLogStart(localTime), "2026-07-20 03:04:40");
+});
 
 test("解析设备当前 tsco 链路并按蓝牙地址归属", () => {
   const result = parseBluetoothLinkLine(

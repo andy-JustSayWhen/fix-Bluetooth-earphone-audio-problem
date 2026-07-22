@@ -102,6 +102,32 @@ export function parseBluetoothLinkLine(line: string): BluetoothLinkSnapshot | nu
   };
 }
 
+function systemBootTimeMs(): number {
+  try {
+    const output = execFileSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
+      encoding: "utf8",
+      timeout: 1_000,
+    });
+    const seconds = Number(output.match(/sec\s*=\s*(\d+)/)?.[1]);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : Date.now() - 24 * 60 * 60_000;
+  } catch {
+    return Date.now() - 24 * 60 * 60_000;
+  }
+}
+
+export function formatBluetoothLinkLogStart(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    "-", pad(date.getMonth() + 1),
+    "-", pad(date.getDate()),
+    " ", pad(date.getHours()),
+    ":", pad(date.getMinutes()),
+    ":", pad(date.getSeconds()),
+  ].join("");
+}
+
 function consumeLogOutput(
   child: ReturnType<typeof spawn>,
   onSnapshot: (snapshot: BluetoothLinkSnapshot) => void,
@@ -126,7 +152,7 @@ export function startBluetoothLinkMonitor(
   const historical = spawn("/usr/bin/log", [
     "show",
     "--style", "compact",
-    "--last", "10m",
+    "--start", formatBluetoothLinkLogStart(systemBootTimeMs()),
     "--predicate", linkLogPredicate,
   ], { stdio: ["ignore", "pipe", "ignore"] });
   const stream = spawn("/usr/bin/log", [
