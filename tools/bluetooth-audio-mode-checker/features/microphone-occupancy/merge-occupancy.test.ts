@@ -146,6 +146,70 @@ test("同一存活进程最后一次未闭合 0→1 必须计入麦克风占用"
   assert.deepEqual(activity.confirmedDeviceNames, []);
 });
 
+test("未闭合 0→1 前后两秒内只有一台设备进入 tsco 时归入该设备卡片", () => {
+  const requestAt = "2026-07-22 14:30:51.382631+0800";
+  const users = [{
+    pid: 49268,
+    name: "WeType",
+    bundleId: "",
+    devices: [],
+    occupancyEvidenceKinds: ["unclosed-format-request" as const],
+    unclosedFormatRequestAt: requestAt,
+  }];
+  const devices = [
+    device({
+      name: "REDMI Buds 6 Pro 电竞版",
+      mode: "HFP_HSP",
+      audioLinkType: "tsco",
+      audioLinkTypeObservedAt: "2026-07-22T06:30:51.452Z",
+    }),
+    device({
+      name: "Redmi电脑音箱-3899",
+      mode: "HFP_HSP",
+      audioLinkType: "tsco",
+      audioLinkTypeObservedAt: "2026-07-22T06:30:49.185Z",
+    }),
+  ];
+
+  const activities = classifyInputActivities(devices, users);
+  const occupied = attachMicrophoneOccupancyFromUsers(devices, users);
+
+  assert.deepEqual(activities[0].confirmedDeviceNames, ["REDMI Buds 6 Pro 电竞版"]);
+  assert.equal(occupied[0].microphoneOccupancy?.isInUse, true);
+  assert.equal(occupied[1].microphoneOccupancy?.isInUse, false);
+});
+
+test("两台设备都在请求前后两秒进入 tsco 时保留为页面级占用", () => {
+  const users = [{
+    pid: 49268,
+    name: "WeType",
+    bundleId: "",
+    devices: [],
+    occupancyEvidenceKinds: ["unclosed-format-request" as const],
+    unclosedFormatRequestAt: "2026-07-22 14:30:51.382631+0800",
+  }];
+  const devices = [
+    device({
+      name: "设备 A",
+      mode: "HFP_HSP",
+      audioLinkType: "tsco",
+      audioLinkTypeObservedAt: "2026-07-22T06:30:51.300Z",
+    }),
+    device({
+      name: "设备 B",
+      mode: "HFP_HSP",
+      audioLinkType: "tsco",
+      audioLinkTypeObservedAt: "2026-07-22T06:30:51.500Z",
+    }),
+  ];
+
+  const [activity] = classifyInputActivities(devices, users);
+  const occupied = attachMicrophoneOccupancyFromUsers(devices, users);
+
+  assert.deepEqual(activity.confirmedDeviceNames, []);
+  assert.equal(occupied.some((item) => item.microphoneOccupancy?.isInUse), false);
+});
+
 test("实体端点和未闭合格式请求属于同一进程时合并为一条占用", () => {
   const [user] = mergeMicrophoneUsers(
     [{ pid: 42, name: "语音程序", bundleId: "test.voice", devices: ["REDMI"] }],

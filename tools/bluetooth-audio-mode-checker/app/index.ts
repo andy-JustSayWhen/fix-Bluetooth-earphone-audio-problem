@@ -607,7 +607,8 @@ function main(): void {
           throw new Error("占用程序列表无效");
         }
         if (cachedState === null) throw new Error("当前没有可用的设备与链路状态");
-        const liveUsers = await readAllMicrophoneUsersAsync();
+        latestRawMicrophoneUsers = await readAllMicrophoneUsersAsync();
+        const liveUsers = currentMicrophoneUsers();
         const activities = classifyInputActivities(cachedState.devices, liveUsers);
         const confirmedUsers = activities.filter((user) =>
           user.inputActivityKind === "已确认实体麦克风占用" &&

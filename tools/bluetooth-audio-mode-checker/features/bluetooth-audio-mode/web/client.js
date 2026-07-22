@@ -295,9 +295,12 @@ function microphoneOccupancySection(device) {
     for (const user of occupancy.users) {
       const row = createElement("div", "occupancy-user");
       const copy = createElement("div", "");
+      const occupancyReason = user.occupancyEvidenceKinds?.includes("unclosed-format-request")
+        ? `${user.bundleId || `进程 ${user.pid}`} · 最后一次格式请求未释放`
+        : user.bundleId || `进程 ${user.pid}`;
       copy.append(
         createElement("strong", "", user.name),
-        createElement("span", "", user.bundleId || `进程 ${user.pid}`),
+        createElement("span", "", occupancyReason),
       );
       const close = createElement("button", "occupancy-close", "×");
       close.type = "button";
@@ -387,7 +390,8 @@ function inputActivityOverview() {
 function formatRequestOccupancyOverview() {
   const users = lastMicrophoneUsers.filter((user) =>
     user.inputActivityKind === "已确认实体麦克风占用" &&
-    user.occupancyEvidenceKinds?.includes("unclosed-format-request")
+    user.occupancyEvidenceKinds?.includes("unclosed-format-request") &&
+    (user.confirmedDeviceNames?.length ?? 0) === 0
   );
   if (users.length === 0) return null;
   const section = createElement("section", "format-request-occupancy-overview");

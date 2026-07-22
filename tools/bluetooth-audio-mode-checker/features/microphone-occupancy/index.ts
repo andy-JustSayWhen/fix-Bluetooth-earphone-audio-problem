@@ -20,6 +20,24 @@ function isSystemAudioCapture(user: MicrophoneUser): boolean {
   return user.devices.some((name) => /audiotap|audio tap/i.test(name));
 }
 
+function uniquelyMatchedFormatRequestDevice(
+  devices: AudioModeAssessment[],
+  user: MicrophoneUser,
+): string[] {
+  if (!user.occupancyEvidenceKinds?.includes("unclosed-format-request")) return [];
+  const requestedAt = Date.parse(user.unclosedFormatRequestAt ?? "");
+  if (!Number.isFinite(requestedAt)) return [];
+  const matches = devices.filter((device) => {
+    const observedAt = Date.parse(device.audioLinkTypeObservedAt ?? "");
+    return device.inputChannels > 0 &&
+      (device.inputTransport === "bluetooth" || device.inputTransport === "bluetooth-le") &&
+      device.audioLinkType === "tsco" &&
+      Number.isFinite(observedAt) &&
+      Math.abs(observedAt - requestedAt) <= 2_000;
+  });
+  return matches.length === 1 ? [matches[0].name] : [];
+}
+
 export function classifyInputActivities(
   devices: AudioModeAssessment[],
   users: MicrophoneUser[],
@@ -30,10 +48,14 @@ export function classifyInputActivities(
       const device = byName.get(name);
       return device !== undefined && isPhysicalInputAssessment(device);
     }))];
-    const confirmedDeviceNames = physicalDeviceNames.filter((name) => {
+    const physicalBluetoothDeviceNames = physicalDeviceNames.filter((name) => {
       const transport = byName.get(name)?.inputTransport;
       return transport === "bluetooth" || transport === "bluetooth-le";
     });
+    const confirmedDeviceNames = [...new Set([
+      ...physicalBluetoothDeviceNames,
+      ...uniquelyMatchedFormatRequestDevice(devices, user),
+    ])];
     const hasUnclosedFormatRequest = user.occupancyEvidenceKinds?.includes("unclosed-format-request") ?? false;
     const inputActivityKind: MicrophoneUser["inputActivityKind"] = confirmedDeviceNames.length > 0 || hasUnclosedFormatRequest
       ? "已确认实体麦克风占用"
