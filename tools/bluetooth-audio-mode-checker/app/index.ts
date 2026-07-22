@@ -16,7 +16,6 @@ import {
 } from "../features/bluetooth-audio-mode/index.ts";
 import {
   attachEmptyMicrophoneOccupancy,
-  confirmAndReleaseMicrophoneOccupancy,
   mergeMicrophoneUsers,
   shouldContinueOccupancyScanning,
   shouldStartOccupancyScanForInputActivity,
@@ -34,6 +33,7 @@ import {
   speakerOccupancyWebAssetsDirectory,
   startSpeakerOccupancyMonitor,
 } from "../features/speaker-occupancy/index.ts";
+import { releaseCurrentMicrophoneOccupancy } from "./microphone-release.ts";
 import {
   composeMicrophoneOccupancyState,
   composeSpeakerOccupancyState,
@@ -251,14 +251,15 @@ function main(): void {
     evidenceScope: "全部已确认占用" | "实体端点占用",
   ) => {
     if (cachedState === null) throw new Error("当前没有可用的设备与链路状态");
-    latestRawMicrophoneUsers = await readAllMicrophoneUsersAsync();
-    return confirmAndReleaseMicrophoneOccupancy(
-      cachedState.devices,
-      currentMicrophoneUsers(),
+    const result = await releaseCurrentMicrophoneOccupancy({
+      devices: cachedState.devices,
+      formatRequestUsers: latestFormatRequestUsers,
       deviceName,
       requestedPids,
       evidenceScope,
-    );
+    });
+    latestRawMicrophoneUsers = result.physicalUsers;
+    return result.release;
   };
   const broadcastState = () => {
     const payload = statePayload();
