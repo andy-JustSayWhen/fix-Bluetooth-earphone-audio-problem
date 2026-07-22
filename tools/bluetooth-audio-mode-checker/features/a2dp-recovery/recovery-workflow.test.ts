@@ -161,7 +161,7 @@ test("第一步先结束实时蓝牙麦克风占用，恢复后立即停止", as
   assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
 });
 
-test("单步三秒内曾离开 A2DP 则直接执行下一步", async () => {
+test("单步稳定窗内离开 A2DP 则立即执行下一步", async () => {
   const h = harness();
   const processInfo = { pid: 88, name: "会议软件", command: "/Applications/Meeting", startedAt: "Tue Jul 22 09:00:00 2026" };
   h.addProcess(processInfo);
@@ -185,11 +185,11 @@ test("单步三秒内曾离开 A2DP 则直接执行下一步", async () => {
 
   assert.equal(result.outcome, "完全恢复");
   const firstRouteIndex = h.actions.findIndex((item) => item.startsWith("route:"));
-  assert.equal(h.actions.slice(0, firstRouteIndex).filter((item) => item === "wait:500").length, 6);
+  assert.equal(h.actions.slice(0, firstRouteIndex).filter((item) => item === "wait:500").length, 2);
   assert.equal(firstRouteIndex >= 0, true);
 });
 
-test("单步首次观察不是 A2DP 即使随后恢复也进入下一步", async () => {
+test("单步首次观察尚未同步时从首次进入 A2DP 起连续三秒后成功", async () => {
   const h = harness();
   const processInfo = { pid: 88, name: "会议软件", command: "/Applications/Meeting", startedAt: "Tue Jul 22 09:00:00 2026" };
   h.addProcess(processInfo);
@@ -208,6 +208,22 @@ test("单步首次观察不是 A2DP 即使随后恢复也进入下一步", async
   const result = await runRecovery(request(h), h.runtime);
 
   assert.equal(result.outcome, "完全恢复");
+  const firstRouteIndex = h.actions.findIndex((item) => item.startsWith("route:"));
+  assert.equal(h.actions.filter((item) => item === "wait:500").length, 7);
+  assert.equal(firstRouteIndex, -1);
+});
+
+test("单步三秒内始终未进入 A2DP 则执行下一步", async () => {
+  const h = harness();
+  const processInfo = { pid: 88, name: "会议软件", command: "/Applications/Meeting", startedAt: "Tue Jul 22 09:00:00 2026" };
+  h.addProcess(processInfo);
+  h.setUsers([{ pid: 88, name: "会议软件", bundleId: "", devices: [targetName], inputActivityKind: "已确认实体麦克风占用" }]);
+  let active = true;
+  h.runtime.terminateProcess = () => { active = false; };
+  h.runtime.readProcess = (pid) => active && pid === processInfo.pid ? processInfo : null;
+
+  await runRecovery(request(h), h.runtime);
+
   const firstRouteIndex = h.actions.findIndex((item) => item.startsWith("route:"));
   assert.equal(h.actions.slice(0, firstRouteIndex).filter((item) => item === "wait:500").length, 6);
   assert.equal(firstRouteIndex >= 0, true);
@@ -362,9 +378,20 @@ test("第四步在两次路由复位之后才处理已确认格式请求", async
     };
   };
   const terminate = h.runtime.terminateProcess;
+  const originalWait = h.runtime.wait;
+  let formatProcessTerminated = false;
+  let waitsAfterFormatExit = 0;
   h.runtime.terminateProcess = (item) => {
     terminate(item);
-    h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+    formatProcessTerminated = true;
+  };
+  h.runtime.wait = async (milliseconds) => {
+    await originalWait(milliseconds);
+    if (!formatProcessTerminated || milliseconds !== 500) return;
+    waitsAfterFormatExit += 1;
+    if (waitsAfterFormatExit === 1) {
+      h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+    }
   };
   const result = await runRecovery(request(h), h.runtime, (progress) => progressMessages.push(progress.message));
   assert.equal(result.outcome, "完全恢复");
@@ -375,6 +402,7 @@ test("第四步在两次路由复位之后才处理已确认格式请求", async
   assert.equal(routeActions.length, 6);
   assert.ok(evidenceIndex > h.actions.lastIndexOf(`route:input:${targetName}`));
   assert.ok(h.actions.indexOf("terminate:格式请求软件") > evidenceIndex);
+  assert.equal(h.actions.some((item) => item.startsWith("service:")), false);
 });
 
 test("第四步按实时格式请求时间回查点击前仍未闭合的请求", async () => {

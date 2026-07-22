@@ -178,19 +178,23 @@ async function verifyStableRecovery(
   runtime: RecoveryRuntime,
   reportProgress: (progress: RecoveryProgress) => void,
 ): Promise<StableRecovery | null> {
-  const deadline = runtime.now() + stableObservationMs;
-  let remainedA2dp = true;
-  reportProgress({ stage: "正在确认稳定", message: "正在观察目标是否连续保持 A2DP 3 秒。" });
+  const entryDeadline = runtime.now() + stableObservationMs;
+  let stableStartedAt: number | null = null;
+  reportProgress({ stage: "正在确认稳定", message: "正在等待目标进入 A2DP 并连续保持 3 秒。" });
   while (true) {
     const observation = currentObservation(runtime, request);
-    if (observation.mode !== "A2DP") remainedA2dp = false;
-    const remaining = deadline - runtime.now();
-    if (remaining <= 0) {
-      return remainedA2dp && observation.mode === "A2DP"
-        ? { rate: observation.rate, mode: observation.mode }
-        : null;
+    const observedAt = runtime.now();
+    if (observation.mode === "A2DP") {
+      stableStartedAt ??= observedAt;
+      const stableRemaining = stableObservationMs - (observedAt - stableStartedAt);
+      if (stableRemaining <= 0) return { rate: observation.rate, mode: observation.mode };
+      await runtime.wait(Math.min(stablePollMs, stableRemaining));
+      continue;
     }
-    if (remaining > 0) await runtime.wait(Math.min(stablePollMs, remaining));
+    if (stableStartedAt !== null) return null;
+    const entryRemaining = entryDeadline - observedAt;
+    if (entryRemaining <= 0) return null;
+    await runtime.wait(Math.min(stablePollMs, entryRemaining));
   }
 }
 
