@@ -7,6 +7,11 @@ import { readRunningProcess } from "../../core/macos-running-apps/index.ts";
 import type { AudioModeAssessment } from "../../shared/audio-device-types/index.ts";
 import type { MicrophoneUser } from "../../shared/audio-device-types/index.ts";
 import type { RunningProcess } from "../../core/macos-running-apps/index.ts";
+import {
+  findUnclosedFormatRequests,
+  readRecentSystemAudioEvidence,
+  type FormatRequestEvidence,
+} from "./format-request-diagnosis.ts";
 import type {
   A2dpRecoveryResult,
   RecoveryProgress,
@@ -56,24 +61,40 @@ export async function retainCurrentMicrophoneGuards(
   guards: RelaunchGuardRequest[],
   readConfirmedUsers: () => Promise<MicrophoneUser[]> = () => readMicrophoneUsersAsync(2_000),
   readProcess: (pid: number) => RunningProcess | null = readRunningProcess,
+  readEvidence: () => FormatRequestEvidence = () => readRecentSystemAudioEvidence(10),
 ): Promise<RelaunchGuardRequest[]> {
   const microphoneGuards = guards.filter((guard) => guard.cause === "麦克风占用类");
   if (microphoneGuards.length === 0) return guards;
+  let currentUsers: MicrophoneUser[] = [];
   try {
-    const currentUsers = await readConfirmedUsers();
-    return guards.filter((guard) => {
-      if (guard.cause !== "麦克风占用类") return true;
-      return currentUsers.some((user) => {
-        const command = readProcess(user.pid)?.command;
-        return command === guard.command &&
-          user.inputActivityKind === "已确认实体麦克风占用" &&
-          (!guard.microphoneDeviceName || user.confirmedDeviceNames?.includes(guard.microphoneDeviceName));
-      });
-    });
+    currentUsers = await readConfirmedUsers();
   } catch (error) {
     detailedLog("warn", "a2dp-recovery.authorization-recheck-failed", { error });
-    return guards.filter((guard) => guard.cause !== "麦克风占用类");
   }
+  const needsFormatEvidence = microphoneGuards.some((guard) =>
+    guard.occupancyEvidence === "unclosed-format-request" || guard.occupancyEvidence === "mixed"
+  );
+  let unclosedCommands = new Set<string>();
+  if (needsFormatEvidence) {
+    try {
+      const evidence = readEvidence();
+      if (evidence.queryError) throw new Error(evidence.queryError);
+      unclosedCommands = new Set(findUnclosedFormatRequests(evidence, readProcess)
+        .map((item) => item.requester.command));
+    } catch (error) {
+      detailedLog("warn", "a2dp-recovery.format-authorization-recheck-failed", { error });
+    }
+  }
+  return guards.filter((guard) => {
+    if (guard.cause !== "麦克风占用类") return true;
+    const physicalOccupancyStillConfirmed = currentUsers.some((user) => {
+      const command = readProcess(user.pid)?.command;
+      return command === guard.command &&
+        user.inputActivityKind === "已确认实体麦克风占用" &&
+        (!guard.microphoneDeviceName || user.confirmedDeviceNames?.includes(guard.microphoneDeviceName));
+    });
+    return physicalOccupancyStillConfirmed || unclosedCommands.has(guard.command);
+  });
 }
 
 export async function recoverA2dp(

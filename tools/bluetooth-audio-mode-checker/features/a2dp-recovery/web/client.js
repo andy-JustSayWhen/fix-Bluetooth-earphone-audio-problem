@@ -1,6 +1,7 @@
 export function shouldContinueAfterOccupancyEnded(feedback, microphoneUsers, occupancyCapturedAt) {
   const action = feedback?.result?.actionRequired;
   if (action?.kind !== "relaunch-authorization" || action.cause !== "麦克风占用类") return false;
+  if (action.occupancyEvidence === "unclosed-format-request" || action.occupancyEvidence === "mixed") return false;
   const capturedAt = Date.parse(occupancyCapturedAt);
   const recordedAt = Date.parse(feedback.recordedAt ?? "");
   if (!Number.isFinite(capturedAt) || !Number.isFinite(recordedAt) || capturedAt <= recordedAt) return false;

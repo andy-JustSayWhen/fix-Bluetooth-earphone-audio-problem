@@ -50,6 +50,11 @@ export type FormatRequestCause = {
   gaps: string[];
 };
 
+export type UnclosedFormatRequest = {
+  request: FormatRequestEvent;
+  requester: RunningProcess;
+};
+
 export type LinkResidualCause = {
   confidence: "高度疑似" | "无法确认";
   startIo: StartIoEvent | null;
@@ -319,6 +324,26 @@ export function diagnoseFormatRequestCause(
     requestCount,
     gaps,
   };
+}
+
+export function findUnclosedFormatRequests(
+  evidence: FormatRequestEvidence,
+  processReader: (pid: number) => RunningProcess | null = readRunningProcess,
+): UnclosedFormatRequest[] {
+  const latestByPid = new Map<number, FormatRequestEvent>();
+  for (const event of evidence.events) {
+    if (event.kind === "format-request") latestByPid.set(event.requesterPid, event);
+  }
+  return [...latestByPid.values()]
+    .filter((event) => event.from === 0 && event.to === 1)
+    .flatMap((request) => {
+      const requester = processReader(request.requesterPid);
+      if (!requester) return [];
+      const startedAt = Date.parse(requester.startedAt);
+      if (!Number.isFinite(startedAt) || startedAt > request.timestampMs + 1_000) return [];
+      return [{ request, requester }];
+    })
+    .sort((left, right) => right.request.timestampMs - left.request.timestampMs);
 }
 
 export function diagnoseLinkResidualCause(

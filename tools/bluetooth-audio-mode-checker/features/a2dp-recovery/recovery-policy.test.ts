@@ -10,6 +10,7 @@ import {
   selectCauseRoute,
 } from "./recovery-policy.ts";
 import { retainCurrentMicrophoneGuards } from "./index.ts";
+import { parseSystemAudioLog, type FormatRequestEvidence } from "./format-request-diagnosis.ts";
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -198,6 +199,35 @@ test("麦克风占用授权必须仍对应同一个实体麦克风", async () =>
   );
 
   assert.deepEqual(result, []);
+});
+
+test("未闭合 0 -> 1 仍成立时保留麦克风占用授权", async () => {
+  const guard = {
+    cause: "麦克风占用类" as const,
+    command: "/Applications/WeType.app/Contents/MacOS/WeType",
+    processName: "WeType",
+    occupancyEvidence: "unclosed-format-request" as const,
+  };
+  const line = "2026-07-18 12:47:04.276197+0800 localhost coreaudiod[90589]: [ 30114 ]BTUnifiedAudioDevice: kBluetoothAudioDevicePropertyFormat request 0 ->1";
+  const evidence: FormatRequestEvidence = {
+    windowMinutes: 10,
+    events: parseSystemAudioLog(line),
+    rawLines: [line],
+    queryError: null,
+  };
+  const result = await retainCurrentMicrophoneGuards(
+    [guard],
+    async () => [],
+    (pid) => pid === 30114 ? {
+      pid,
+      name: "WeType",
+      command: guard.command,
+      startedAt: "Sat Jul 18 09:00:00 2026",
+    } : null,
+    () => evidence,
+  );
+
+  assert.deepEqual(result, [guard]);
 });
 
 test("授权前占用读取失败时不得启动麦克风进程阻止任务", async () => {

@@ -15,6 +15,7 @@ import type {
 } from "../../shared/audio-device-types/index.ts";
 import {
   diagnoseFormatRequestCause,
+  findUnclosedFormatRequests,
   readRecentSystemAudioEvidence,
   readSystemAudioEvidenceSince,
   type FormatRequestCause,
@@ -99,6 +100,10 @@ type StableRecovery = {
 
 function isBluetooth(device: RawAudioDevice): boolean {
   return device.transport === "bluetooth" || device.transport === "bluetooth-le";
+}
+
+function uniqueValues<T>(items: T[]): T[] {
+  return [...new Set(items)];
 }
 
 function targetOutput(devices: RawAudioDevice[], name: string): RawAudioDevice | undefined {
@@ -262,8 +267,70 @@ function confirmedBluetoothMicrophoneUsers(
       inputActivityKind: "已确认实体麦克风占用" as const,
       physicalDeviceNames: confirmedDeviceNames,
       confirmedDeviceNames,
+      occupancyEvidenceKinds: ["physical-bluetooth-microphone" as const],
     }] : [];
   });
+}
+
+function unclosedFormatRequestUsers(
+  evidence: FormatRequestEvidence | null,
+  runtime: RecoveryRuntime,
+): MicrophoneUser[] {
+  if (!evidence || evidence.queryError) return [];
+  return findUnclosedFormatRequests(evidence, runtime.readProcess).map(({ request, requester }) => ({
+    pid: requester.pid,
+    name: requester.name,
+    bundleId: "",
+    devices: [],
+    inputActivityKind: "已确认实体麦克风占用" as const,
+    physicalDeviceNames: [],
+    confirmedDeviceNames: [],
+    occupancyEvidenceKinds: ["unclosed-format-request" as const],
+    unclosedFormatRequestAt: request.timestamp,
+  }));
+}
+
+function mergeConfirmedOccupancyUsers(...groups: MicrophoneUser[][]): MicrophoneUser[] {
+  const byPid = new Map<number, MicrophoneUser>();
+  for (const user of groups.flat()) {
+    const current = byPid.get(user.pid);
+    if (!current) {
+      byPid.set(user.pid, user);
+      continue;
+    }
+    byPid.set(user.pid, {
+      ...current,
+      devices: uniqueValues([...current.devices, ...user.devices]),
+      physicalDeviceNames: uniqueValues([...(current.physicalDeviceNames ?? []), ...(user.physicalDeviceNames ?? [])]),
+      confirmedDeviceNames: uniqueValues([...(current.confirmedDeviceNames ?? []), ...(user.confirmedDeviceNames ?? [])]),
+      occupancyEvidenceKinds: uniqueValues([
+        ...(current.occupancyEvidenceKinds ?? []),
+        ...(user.occupancyEvidenceKinds ?? []),
+      ]),
+      unclosedFormatRequestAt: user.unclosedFormatRequestAt ?? current.unclosedFormatRequestAt,
+    });
+  }
+  return [...byPid.values()];
+}
+
+function retainLatestFormatRequests(
+  state: RecoveryRoundState,
+  evidence: FormatRequestEvidence,
+): FormatRequestEvidence {
+  const latestByPid = new Map<number, Extract<FormatRequestEvidence["events"][number], { kind: "format-request" }>>();
+  for (const event of [...(state.latestFormatRequests ?? []), ...evidence.events]) {
+    if (event.kind !== "format-request") continue;
+    const current = latestByPid.get(event.requesterPid);
+    if (!current || event.timestampMs >= current.timestampMs) latestByPid.set(event.requesterPid, event);
+  }
+  state.latestFormatRequests = [...latestByPid.values()];
+  return {
+    ...evidence,
+    events: [
+      ...state.latestFormatRequests,
+      ...evidence.events.filter((event) => event.kind !== "format-request"),
+    ].sort((left, right) => left.timestampMs - right.timestampMs),
+  };
 }
 
 function multiEndpointCondition(
@@ -291,7 +358,9 @@ function diagnoseCause(
   const assessments = currentModeAssessments(runtime, request);
   const targetAssessment = assessments.find((assessment) => assessment.name === name) ??
     runtime.readModeAssessment(name) ?? request.context?.targetAssessment ?? null;
-  const occupancyUsers = confirmedBluetoothMicrophoneUsers(users, devices);
+  const physicalOccupancyUsers = confirmedBluetoothMicrophoneUsers(users, devices);
+  const formatRequestOccupancyUsers = unclosedFormatRequestUsers(evidence, runtime);
+  const occupancyUsers = mergeConfirmedOccupancyUsers(physicalOccupancyUsers, formatRequestOccupancyUsers);
   const identified = identifyProcesses(occupancyUsers, runtime);
   if (identified.processes.length > 0) {
     const currentUsers = occupancyUsers.filter((user) =>
@@ -301,10 +370,15 @@ function diagnoseCause(
       diagnosis: {
         kind: selectCauseRoute(false, true, false, false),
         confidence: "已确认",
-        summary: "已确认本机进程正在读取实体蓝牙麦克风，先结束对应进程并观察目标是否恢复 A2DP",
-        evidence: currentUsers.flatMap((user) => (user.confirmedDeviceNames ?? []).map((deviceName) =>
-          `${user.name}（进程号 ${user.pid}）正在读取实体蓝牙麦克风 ${deviceName}`
-        )),
+        summary: "已确认本机进程正在读取实体蓝牙麦克风或存在未闭合的 0 -> 1，先结束对应进程并观察目标是否恢复 A2DP",
+        evidence: currentUsers.flatMap((user) => [
+          ...(user.confirmedDeviceNames ?? []).map((deviceName) =>
+            `${user.name}（进程号 ${user.pid}）正在读取实体蓝牙麦克风 ${deviceName}`
+          ),
+          ...(user.occupancyEvidenceKinds?.includes("unclosed-format-request")
+            ? [`${user.name}（进程号 ${user.pid}）在 ${user.unclosedFormatRequestAt ?? "未知时间"} 提交 0 -> 1，之后没有对应 1 -> 0`]
+            : []),
+        ]),
       },
       processes: identified.processes,
       routeChoices: [],
@@ -743,6 +817,7 @@ export async function runRecovery(
   }
 
   let routeChoiceLiveUsers: MicrophoneUser[] | null = null;
+  let routeChoiceLiveEvidence: FormatRequestEvidence | null = null;
   if (request._confirmedRouteChoice) {
     const { choice, diagnosis } = request._confirmedRouteChoice;
     const latestTarget = currentModeAssessment(runtime, { ...request, context });
@@ -757,7 +832,20 @@ export async function runRecovery(
     }
     const liveBluetoothUsers = confirmedBluetoothMicrophoneUsers(routeChoiceLiveUsers ?? [], latestDevices);
     const liveBluetoothProcesses = identifyProcesses(liveBluetoothUsers, runtime).processes;
-    if (!occupancyReadFailed && liveBluetoothProcesses.length === 0 && stillConfirmed) {
+    let liveFormatProcesses: RunningProcess[] = [];
+    if (!occupancyReadFailed && liveBluetoothProcesses.length === 0) {
+      try {
+        routeChoiceLiveEvidence = retainLatestFormatRequests(state, runtime.readEvidence());
+        state.initialEvidenceRead = true;
+        if (routeChoiceLiveEvidence.queryError) throw new Error(routeChoiceLiveEvidence.queryError);
+        liveFormatProcesses = findUnclosedFormatRequests(routeChoiceLiveEvidence, runtime.readProcess)
+          .map((item) => item.requester);
+      } catch (error) {
+        occupancyReadFailed = true;
+        addStep(name, steps, "复核多端点选择", "失败", `无法复核未闭合 0 -> 1：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (!occupancyReadFailed && liveBluetoothProcesses.length === 0 && liveFormatProcesses.length === 0 && stillConfirmed) {
       const latestChoices = createMultiEndpointRouteChoices(latestDevices, name);
       const latestChoice = latestChoices.find((item) => item.id === choice.id);
       if (!latestChoice) {
@@ -782,13 +870,15 @@ export async function runRecovery(
         sampleRate: modeStable?.rate ?? currentOutputRate(runtime, name),
       });
     }
-    if (liveBluetoothProcesses.length > 0) {
+    const liveOccupancyProcesses = [...new Map([...liveBluetoothProcesses, ...liveFormatProcesses]
+      .map((processInfo) => [processInfo.pid, processInfo] as const)).values()];
+    if (liveOccupancyProcesses.length > 0) {
       addStep(
         name,
         steps,
         "复核多端点选择",
         "跳过",
-        `发现蓝牙麦克风正在被占用，旧选择未执行，先处理：${liveBluetoothProcesses.map(processDescription).join("、")}`,
+        `发现麦克风占用仍成立，旧选择未执行，先处理：${liveOccupancyProcesses.map(processDescription).join("、")}`,
       );
     } else if (!occupancyReadFailed) {
       addStep(name, steps, "复核多端点选择", "跳过", "双蓝牙组合与目标 tsco 不再同时成立，旧选择未执行，继续按最新现场匹配原因");
@@ -841,6 +931,7 @@ export async function runRecovery(
     }
   };
   let prefetchedUsersForReview: MicrophoneUser[] | null = routeChoiceLiveUsers;
+  let prefetchedEvidenceForReview: FormatRequestEvidence | null = routeChoiceLiveEvidence;
   const matchCurrentCause = async (): Promise<{ cause: CauseMatch; users: MicrophoneUser[] } | null> => {
     if (state.causeReviewCount >= 4) {
       addStep(name, steps, "原因复查上限", "跳过", "本轮已经完成四次原因复查，不再执行新的原因动作");
@@ -852,18 +943,26 @@ export async function runRecovery(
     prefetchedUsersForReview = null;
     const devices = runtime.readDevices();
     let cause = diagnoseCause(name, devices, users, null, runtime, { ...request, context });
-    if (cause.diagnosis.kind === "证据不足") {
-      const evidence = state.evidenceSinceMs !== null
-        ? runtime.readEvidenceSince(state.evidenceSinceMs)
-        : !state.initialEvidenceRead ? runtime.readEvidence() : null;
+    let evidenceForCause: FormatRequestEvidence | null = null;
+    if (cause.diagnosis.kind !== "麦克风占用类") {
+      evidenceForCause = state.evidenceSinceMs !== null
+        ? (state.latestFormatRequests?.length ?? 0) > 0
+          ? runtime.readEvidenceSince(state.evidenceSinceMs)
+          : runtime.readEvidence()
+        : prefetchedEvidenceForReview ?? (!state.initialEvidenceRead ? runtime.readEvidence() : null);
+      prefetchedEvidenceForReview = null;
+      if (evidenceForCause) evidenceForCause = retainLatestFormatRequests(state, evidenceForCause);
       if (state.evidenceSinceMs !== null) state.evidenceSinceMs = null;
       else if (!state.initialEvidenceRead) state.initialEvidenceRead = true;
-      cause = diagnoseCause(name, devices, users, evidence, runtime, { ...request, context });
+      cause = diagnoseCause(name, devices, users, evidenceForCause, runtime, { ...request, context });
+    } else {
+      prefetchedEvidenceForReview = null;
     }
     const assessments = currentModeAssessments(runtime, { ...request, context });
     const latestTarget = assessments.find((assessment) => assessment.name === name) ?? null;
     const multiEndpoint = multiEndpointCondition(name, devices, latestTarget);
     const occupancyUsers = confirmedBluetoothMicrophoneUsers(users, devices);
+    const unclosedRequests = unclosedFormatRequestUsers(evidenceForCause, runtime);
     detailedLog("info", "a2dp-recovery.cause-gates", {
       deviceName: name,
       causeReviewCount: state.causeReviewCount,
@@ -893,6 +992,11 @@ export async function runRecovery(
         pid: user.pid,
         processName: user.name,
         microphoneDeviceNames: user.confirmedDeviceNames ?? [],
+      })),
+      unclosedFormatRequestOccupancy: unclosedRequests.map((user) => ({
+        pid: user.pid,
+        processName: user.name,
+        requestedAt: user.unclosedFormatRequestAt ?? null,
       })),
       selectedCause: cause.diagnosis.kind,
     });
@@ -1037,14 +1141,25 @@ export async function runRecovery(
         attempt.cause === processCause && attempt.command === processInfo.command && attempt.automaticAttempted && !attempt.authorizedAttempted
       ));
       if (repeatedProcesses.length > 0) {
-        const pendingGuards = [...new Map(repeatedProcesses.map((processInfo) => [processInfo.command, {
-          cause: processCause,
-          command: processInfo.command,
-          processName: processInfo.name,
-          microphoneDeviceName: processCause === "麦克风占用类"
-            ? users.find((user) => user.pid === processInfo.pid)?.confirmedDeviceNames?.[0]
-            : undefined,
-        }] as const)).values()];
+        const pendingGuards = [...new Map(repeatedProcesses.map((processInfo) => {
+          const occupancyUser = users.find((user) => user.pid === processInfo.pid);
+          const evidenceKinds = occupancyUser?.occupancyEvidenceKinds ?? [];
+          const occupancyEvidence = evidenceKinds.includes("physical-bluetooth-microphone") &&
+              evidenceKinds.includes("unclosed-format-request")
+            ? "mixed" as const
+            : evidenceKinds.includes("unclosed-format-request")
+              ? "unclosed-format-request" as const
+              : "physical-bluetooth-microphone" as const;
+          return [processInfo.command, {
+            cause: processCause,
+            command: processInfo.command,
+            processName: processInfo.name,
+            microphoneDeviceName: processCause === "麦克风占用类"
+              ? occupancyUser?.confirmedDeviceNames?.[0]
+              : undefined,
+            occupancyEvidence: processCause === "麦克风占用类" ? occupancyEvidence : undefined,
+          }] as const;
+        })).values()];
         const processNames = unique(pendingGuards.map((guard) => guard.processName));
         const neverExited = repeatedProcesses.some((processInfo) => state.processAttempts.some((attempt) =>
           attempt.cause === processCause &&
@@ -1053,8 +1168,14 @@ export async function runRecovery(
           attempt.automaticProcessPid === processInfo.pid &&
           attempt.automaticProcessStartedAt === processInfo.startedAt
         ));
+        const hasUnclosedFormatRequest = processCause === "麦克风占用类" && users.some((user) =>
+          repeatedProcesses.some((processInfo) => processInfo.pid === user.pid) &&
+          user.occupancyEvidenceKinds?.includes("unclosed-format-request")
+        );
         const trigger = processCause === "格式请求类"
           ? neverExited ? "未能退出且仍在触发声音格式请求" : "退出后再次触发声音格式请求"
+          : hasUnclosedFormatRequest
+            ? neverExited ? "未能退出且仍存在未闭合的 0 -> 1" : "退出后再次提交未闭合的 0 -> 1"
           : neverExited ? "未能退出且仍在读取麦克风" : "退出后再次读取麦克风";
         addStep(name, steps, "检测持续或再次触发", "失败", `${trigger}：${repeatedProcesses.map(processDescription).join("、")}`);
         return result("等待授权", cause.diagnosis, "原因对应处理", {
@@ -1062,6 +1183,12 @@ export async function runRecovery(
             kind: "relaunch-authorization",
             cause: processCause,
             triggerState: neverExited ? "still-running" : "restarted",
+            occupancyEvidence: processCause === "麦克风占用类"
+              ? pendingGuards.some((guard) => guard.occupancyEvidence === "mixed") ||
+                  new Set(pendingGuards.map((guard) => guard.occupancyEvidence)).size > 1
+                ? "mixed"
+                : pendingGuards[0]?.occupancyEvidence
+              : undefined,
             prompt: `以下进程${trigger}：${processNames.join("、")}。${neverExited
               ? "是否授权工具仅在本次开机期间持续阻止它运行并继续处理？"
               : "是否授权工具仅在本次开机期间阻止它自动拉起并继续处理？"}不会修改登录项、删除应用或改变下次开机配置。`,

@@ -103,6 +103,8 @@ export type MicrophoneUser = {
     | "未确认麦克风占用的输入活动";
   physicalDeviceNames?: string[];
   confirmedDeviceNames?: string[];
+  occupancyEvidenceKinds?: Array<"physical-bluetooth-microphone" | "unclosed-format-request">;
+  unclosedFormatRequestAt?: string;
 };
 
 export type MicrophoneOccupancy = {

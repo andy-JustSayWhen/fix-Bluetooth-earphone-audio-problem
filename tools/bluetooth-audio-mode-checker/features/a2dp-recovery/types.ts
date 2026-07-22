@@ -2,6 +2,7 @@ import type {
   AudioModeAssessment,
   MicrophoneUser,
 } from "../../shared/audio-device-types/index.ts";
+import type { FormatRequestEvent } from "./format-request-diagnosis.ts";
 
 export type RecoveryOutcome =
   | "无需修复"
@@ -53,6 +54,7 @@ export type RecoveryActionRequired =
       processNames: string[];
       cause: "麦克风占用类" | "格式请求类";
       triggerState: "still-running" | "restarted";
+      occupancyEvidence?: "physical-bluetooth-microphone" | "unclosed-format-request" | "mixed";
     };
 
 export type RecoveryProgress = {
@@ -95,6 +97,7 @@ export type RecoveryRoundState = {
   reconnectAttempted: boolean;
   initialEvidenceRead: boolean;
   evidenceSinceMs: number | null;
+  latestFormatRequests?: FormatRequestEvent[];
   releasedBluetoothInputPrograms: string[];
   releasedPrograms: string[];
   remainingPrograms: string[];
@@ -107,6 +110,7 @@ export type RelaunchGuardRequest = {
   command: string;
   processName: string;
   microphoneDeviceName?: string;
+  occupancyEvidence?: "physical-bluetooth-microphone" | "unclosed-format-request" | "mixed";
 };
 
 export type RecoveryContinuation = {

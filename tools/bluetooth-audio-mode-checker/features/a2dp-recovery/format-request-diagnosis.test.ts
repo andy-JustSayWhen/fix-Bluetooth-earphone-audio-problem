@@ -4,6 +4,7 @@ import {
   diagnoseFormatRequestCause,
   diagnoseLinkResidualCause,
   diagnoseMultiEndpointCause,
+  findUnclosedFormatRequests,
   formatSystemLogStart,
   parseSystemAudioLog,
   type FormatRequestEvidence,
@@ -137,6 +138,37 @@ test("已有反向格式请求时不把旧的 0 -> 1 当作当前原因", () => 
   );
   assert.equal(cause.confidence, "无法确认");
   assert.equal(cause.request, null);
+});
+
+test("同一存活进程最后一次为 0 -> 1 时识别为未闭合格式请求", () => {
+  const otherPidReverse = "2026-07-18 12:47:05.000000+0800 localhost coreaudiod[90589]: [ 99999 ]BTUnifiedAudioDevice: kBluetoothAudioDevicePropertyFormat request 1 ->0";
+  const requests = findUnclosedFormatRequests(
+    evidence(`${requestLine}\n${otherPidReverse}`),
+    (pid) => pid === processInfo.pid ? processInfo : null,
+  );
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].requester.name, "WeType");
+  assert.equal(requests[0].request.from, 0);
+  assert.equal(requests[0].request.to, 1);
+});
+
+test("同一进程后续 1 -> 0 会闭合格式请求", () => {
+  const reverseLine = "2026-07-18 12:47:05.000000+0800 localhost coreaudiod[90589]: [ 30114 ]BTUnifiedAudioDevice: kBluetoothAudioDevicePropertyFormat request 1 ->0";
+  assert.deepEqual(
+    findUnclosedFormatRequests(evidence(`${requestLine}\n${reverseLine}`), () => processInfo),
+    [],
+  );
+});
+
+test("进程号已被后来启动的程序复用时不计入未闭合请求", () => {
+  assert.deepEqual(
+    findUnclosedFormatRequests(evidence(requestLine), () => ({
+      ...processInfo,
+      startedAt: "Sat Jul 18 13:00:00 2026",
+    })),
+    [],
+  );
 });
 
 test("输入启动进入 tsco 且没有后续 tacl 时标记链路残留", () => {
