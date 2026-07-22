@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detailedLog } from "../../core/detailed-logging/index.ts";
-import type { AudioModeAssessment } from "../../shared/audio-device-types/index.ts";
+import type { AudioModeAssessment, MicrophoneUser } from "../../shared/audio-device-types/index.ts";
 
 export { startFormatRequestOccupancyMonitor } from "./format-request-diagnosis.ts";
 import type {
@@ -28,8 +28,8 @@ const runnerPath = join(moduleDirectory, "runner.ts");
 export async function recoverA2dp(
   request: RecoveryRequest,
   onProgress: (progress: RecoveryProgress) => void = () => {},
-  readModeAssessments: () => AudioModeAssessment[] = () =>
-    request.context?.deviceAssessments ?? (request.context?.targetAssessment ? [request.context.targetAssessment] : []),
+  readModeAssessments: () => AudioModeAssessment[] = () => [],
+  readFormatRequestUsers: () => MicrophoneUser[] = () => [],
 ): Promise<A2dpRecoveryResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [runnerPath, JSON.stringify(request)], {
@@ -44,7 +44,8 @@ export async function recoverA2dp(
     const syncModeAssessments = () => {
       if (child.stdin.destroyed) return;
       const assessments = readModeAssessments();
-      const message = JSON.stringify({ type: "mode-assessments", assessments });
+      const formatRequestUsers = readFormatRequestUsers();
+      const message = JSON.stringify({ type: "live-evidence", assessments, formatRequestUsers });
       if (message === lastModeMessage) return;
       lastModeMessage = message;
       child.stdin.write(`${message}\n`);

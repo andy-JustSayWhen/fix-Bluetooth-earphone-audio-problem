@@ -1,5 +1,3 @@
-import type { AudioModeAssessment, MicrophoneUser } from "../../shared/audio-device-types/index.ts";
-
 export type RecoveryOutcome = "无需修复" | "完全恢复" | "未恢复";
 
 export type RecoveryCauseKind =
@@ -23,18 +21,12 @@ export type RecoveryDiagnosis = {
 };
 
 export type RecoveryProgress = {
-  stage: "正在保存现场" | "正在检查占用" | "正在切换声音设备" | "正在重建声音链路" | "正在确认稳定";
+  stage: "正在检查占用" | "正在切换声音设备" | "正在重建声音链路" | "正在确认稳定";
   message: string;
 };
 
 export type RecoveryRequestContext = {
   clickedAt: string;
-  defaultInput: string | null;
-  defaultOutput: string | null;
-  targetSampleRate: number | null;
-  targetAssessment: AudioModeAssessment | null;
-  deviceAssessments?: AudioModeAssessment[];
-  occupancySnapshot?: { capturedAt: string; users: MicrophoneUser[] };
 };
 
 export type RecoveryRequest = {

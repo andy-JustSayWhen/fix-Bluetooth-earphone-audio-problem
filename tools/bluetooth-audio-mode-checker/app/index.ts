@@ -30,7 +30,6 @@ import {
   recoveryWebAssetsDirectory,
   startFormatRequestOccupancyMonitor,
   type RecoveryProgress,
-  type RecoveryRequestContext,
 } from "../features/a2dp-recovery/index.ts";
 import {
   attachSpeakerOccupancy,
@@ -709,31 +708,12 @@ function main(): void {
           clickedAt,
         });
         if (cachedState === null || Date.now() - fullStateUpdatedAtMs > 2_000) refreshState();
-        const currentState = cachedState ?? readAudioModeState();
-        const currentDevice = currentState.devices.find((device) => device.name === body.name);
-        const currentInputName = currentState.routes.input.find((route) => route.isDefault)?.name ?? null;
-        const currentOutputName = currentState.routes.output.find((route) => route.isDefault)?.name ?? null;
-        const allOccupancyUsers = [...new Map((latestOccupancyCapturedAt
-          ? latestMicrophoneUsers ?? []
-          : currentState.devices.flatMap((device) => device.microphoneOccupancy?.users ?? []))
-          .map((user) => [user.pid, user] as const)).values()];
-        const recoveryContext: RecoveryRequestContext = {
-          clickedAt,
-          defaultInput: currentInputName,
-          defaultOutput: currentOutputName,
-          targetSampleRate: currentDevice?.actualSampleRateOutput ?? null,
-          targetAssessment: currentDevice ?? null,
-          deviceAssessments: currentState.devices,
-          occupancySnapshot: latestOccupancyCapturedAt ? {
-            capturedAt: latestOccupancyCapturedAt,
-            users: allOccupancyUsers,
-          } : undefined,
-        };
         const result = await recoverA2dp({
           name: body.name,
-          context: recoveryContext,
+          context: { clickedAt },
         }, (progress) => broadcastRecoveryProgress(body.name as string, progress),
-        () => cachedState?.devices ?? []);
+        () => cachedState?.devices ?? [],
+        () => latestFormatRequestUsers);
         scheduleOccupancyScan(0, "a2dp-recovery-completed");
         scheduleStateRefresh();
         detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.returned", { deviceName: body.name, result });

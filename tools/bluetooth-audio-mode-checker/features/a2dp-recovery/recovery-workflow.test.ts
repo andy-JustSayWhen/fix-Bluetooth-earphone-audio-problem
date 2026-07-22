@@ -69,6 +69,7 @@ function harness(): Harness {
     wait: async (milliseconds) => { actions.push(`wait:${milliseconds}`); },
     readDevices: () => devices,
     readMicrophoneUsers: async () => users,
+    readFormatRequestUsers: () => [],
     readProcess: (pid) => processes.get(pid) ?? null,
     terminateProcess: (processInfo) => { actions.push(`terminate:${processInfo.name}`); processes.delete(processInfo.pid); },
     readEvidenceSince: () => ({ windowMinutes: 1, events: [], rawLines: [], queryError: null }),
@@ -103,11 +104,6 @@ function request(h: Harness): RecoveryRequest {
     name: targetName,
     context: {
       clickedAt: "2026-07-22T10:00:00+08:00",
-      defaultInput: targetName,
-      defaultOutput: targetName,
-      targetSampleRate: 16_000,
-      targetAssessment: assessment(),
-      deviceAssessments: [assessment()],
     },
   };
 }
@@ -118,6 +114,7 @@ test("目标不在 HFP/HSP 时不执行任何修复动作", async () => {
   const result = await runRecovery(request(h), h.runtime);
   assert.equal(result.outcome, "无需修复");
   assert.deepEqual(h.actions, []);
+  assert.equal(result.steps.some((step) => step.stage.includes("保存现场")), false);
 });
 
 test("第一步先结束实时蓝牙麦克风占用，恢复后立即停止", async () => {
@@ -258,7 +255,7 @@ test("第四步在两次路由复位之后才处理已确认格式请求", async
   assert.ok(h.actions.indexOf("terminate:格式请求软件") > evidenceIndex);
 });
 
-test("第四步保留点击前已保存且仍未闭合的格式请求", async () => {
+test("第四步按实时格式请求时间回查点击前仍未闭合的请求", async () => {
   const h = harness();
   const processInfo = { pid: 77, name: "格式请求软件", command: "/Applications/FormatApp", startedAt: "Tue Jul 22 09:00:00 2026" };
   h.addProcess(processInfo);
@@ -281,10 +278,7 @@ test("第四步保留点击前已保存且仍未闭合的格式请求", async ()
     terminate(item);
     h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
   };
-  const req = request(h);
-  req.context!.occupancySnapshot = {
-    capturedAt: "2026-07-22T10:00:00+08:00",
-    users: [{
+  h.runtime.readFormatRequestUsers = () => [{
       pid: 77,
       name: "格式请求软件",
       bundleId: "",
@@ -292,10 +286,9 @@ test("第四步保留点击前已保存且仍未闭合的格式请求", async ()
       inputActivityKind: "已确认实体麦克风占用",
       occupancyEvidenceKinds: ["unclosed-format-request"],
       unclosedFormatRequestAt: "2026-07-22T09:59:30+08:00",
-    }],
-  };
+  }];
 
-  const result = await runRecovery(req, h.runtime);
+  const result = await runRecovery(request(h), h.runtime);
 
   assert.equal(result.outcome, "完全恢复");
   assert.equal(queriedFrom, requestAt);
@@ -366,9 +359,7 @@ test("第五步只有双蓝牙拒绝证据完整时才结束唯一会话进程",
       "2026-07-22 10:00:00.020000+0800 localhost coreaudiod[100]: There was an error setting the deviceUUIDs as there are more than one BT device connected",
     ],
   });
-  const req = request(h);
-  req.context.defaultInput = "蓝牙麦克风";
-  await runRecovery(req, h.runtime);
+  await runRecovery(request(h), h.runtime);
   assert.equal(h.actions.filter((item) => item === "terminate:双蓝牙软件").length, 1);
   assert.ok(h.actions.indexOf("terminate:双蓝牙软件") < h.actions.indexOf("power:off"));
 });

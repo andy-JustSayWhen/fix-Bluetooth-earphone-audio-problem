@@ -48,6 +48,7 @@ export type RecoveryRuntime = {
   wait: (milliseconds: number) => Promise<void>;
   readDevices: () => RawAudioDevice[];
   readMicrophoneUsers: () => Promise<MicrophoneUser[]>;
+  readFormatRequestUsers: () => MicrophoneUser[];
   readProcess: (pid: number) => RunningProcess | null;
   terminateProcess: (processInfo: RunningProcess) => void;
   readEvidenceSince: (startedAtMs: number) => FormatRequestEvidence;
@@ -66,6 +67,7 @@ export const systemRuntime: RecoveryRuntime = {
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   readDevices: () => readAudioDevices().devices,
   readMicrophoneUsers: () => readMicrophoneUsersAsync(2_000),
+  readFormatRequestUsers: () => [],
   readProcess: readRunningProcess,
   terminateProcess: terminateRunningProcess,
   readEvidenceSince: readSystemAudioEvidenceSince,
@@ -124,27 +126,18 @@ function uniqueBluetoothDeviceNames(devices: RawAudioDevice[]): string[] {
   return [...byPhysicalIdentity.values()];
 }
 
-function recoveryEvidenceStart(context: RecoveryRequestContext, fallback: number): number {
+function recoveryEvidenceStart(
+  context: RecoveryRequestContext,
+  formatRequestUsers: MicrophoneUser[],
+  fallback: number,
+): number {
   const clickedAt = Date.parse(context.clickedAt);
-  const savedRequestTimes = (context.occupancySnapshot?.users ?? [])
+  const activeRequestTimes = formatRequestUsers
     .filter((user) => user.occupancyEvidenceKinds?.includes("unclosed-format-request"))
     .map((user) => Date.parse(user.unclosedFormatRequestAt ?? ""))
     .filter(Number.isFinite);
-  const clickSnapshotStart = Number.isFinite(clickedAt) ? clickedAt - 2_000 : fallback;
-  return Math.min(clickSnapshotStart, ...savedRequestTimes);
-}
-
-function mergeEvidence(...snapshots: FormatRequestEvidence[]): FormatRequestEvidence {
-  const events = [...new Map(snapshots.flatMap((snapshot) => snapshot.events)
-    .map((event) => [`${event.kind}\u0000${event.timestampMs}\u0000${event.raw}`, event] as const)).values()]
-    .sort((left, right) => left.timestampMs - right.timestampMs);
-  const queryErrors = [...new Set(snapshots.map((snapshot) => snapshot.queryError).filter(Boolean))];
-  return {
-    windowMinutes: Math.max(...snapshots.map((snapshot) => snapshot.windowMinutes)),
-    events,
-    rawLines: [...new Set(snapshots.flatMap((snapshot) => snapshot.rawLines))],
-    queryError: queryErrors.length > 0 ? queryErrors.join("；") : null,
-  };
+  const clickStart = Number.isFinite(clickedAt) ? clickedAt - 2_000 : fallback;
+  return Math.min(clickStart, ...activeRequestTimes);
 }
 
 function currentObservation(runtime: RecoveryRuntime, request: RecoveryRequest) {
@@ -268,22 +261,21 @@ async function restoreRoutes(
   request: RecoveryRequest,
   state: RecoveryState,
   runtime: RecoveryRuntime,
-  outputFirst = true,
+  originalInput: string | null,
+  originalOutput: string | null,
 ): Promise<boolean> {
-  const pairs = outputFirst
-    ? [["output", state.context.defaultOutput], ["input", state.context.defaultInput]] as const
-    : [["input", state.context.defaultInput], ["output", state.context.defaultOutput]] as const;
+  const pairs = [["output", originalOutput], ["input", originalInput]] as const;
   let restored = true;
   for (const [direction, expected] of pairs) {
     if (!expected || currentDefaultName(runtime.readDevices(), direction) === expected) continue;
     const channels = direction === "input" ? "inputChannels" : "outputChannels";
     if (!runtime.readDevices().some((device) => device.name === expected && device[channels] > 0)) {
-      addStep(request.name, state.steps, "恢复点击前声音设备", "失败", `${expected} 当前不可用`);
+      addStep(request.name, state.steps, "恢复本步骤声音设备", "失败", `${expected} 当前不可用`);
       restored = false;
       continue;
     }
     const confirmed = await setAndConfirmRoute(direction, expected, runtime);
-    addStep(request.name, state.steps, "恢复点击前声音设备", confirmed ? "成功" : "失败", `${direction === "input" ? "输入" : "输出"}：${expected}`);
+    addStep(request.name, state.steps, "恢复本步骤声音设备", confirmed ? "成功" : "失败", `${direction === "input" ? "输入" : "输出"}：${expected}`);
     restored = restored && confirmed;
   }
   return restored;
@@ -329,7 +321,7 @@ function result(
     outcome,
     recoveryPath: outcome === "无需修复" ? "现场复核" : "固定处理顺序",
     handledCause: state.releasedPrograms.length > 0,
-    sampleRate: observation.rate ?? request.context?.targetSampleRate ?? null,
+    sampleRate: observation.rate,
     releasedPrograms: [...new Set(state.releasedPrograms)],
     remainingPrograms: [...new Set(state.remainingPrograms)],
     diagnosis,
@@ -386,7 +378,7 @@ async function runInputReset(
   reportProgress: (progress: RecoveryProgress) => void,
   stage: string,
 ): Promise<StableRecovery | null> {
-  const original = currentDefaultName(runtime.readDevices(), "input") ?? state.context.defaultInput;
+  const original = currentDefaultName(runtime.readDevices(), "input");
   if (!original) {
     addStep(request.name, state.steps, stage, "跳过", "没有可恢复的默认输入");
     return null;
@@ -419,10 +411,10 @@ async function runDualRouteReset(
   runtime: RecoveryRuntime,
   reportProgress: (progress: RecoveryProgress) => void,
 ): Promise<StableRecovery | null> {
-  const originalInput = currentDefaultName(runtime.readDevices(), "input") ?? state.context.defaultInput;
-  const originalOutput = currentDefaultName(runtime.readDevices(), "output") ?? state.context.defaultOutput;
+  const originalInput = currentDefaultName(runtime.readDevices(), "input");
+  const originalOutput = currentDefaultName(runtime.readDevices(), "output");
   if (!originalInput || !originalOutput) {
-    addStep(request.name, state.steps, "同时切换输入输出", "跳过", "点击现场缺少默认输入或输出");
+    addStep(request.name, state.steps, "同时切换输入输出", "跳过", "本步骤开始时缺少默认输入或输出");
     return null;
   }
   const inputCandidates = nonBluetoothCandidates(runtime.readDevices(), "input", [originalInput]);
@@ -435,8 +427,8 @@ async function runDualRouteReset(
   const input = await selectAndSetNonBluetooth("input", [originalInput], runtime);
   const output = input ? await selectAndSetNonBluetooth("output", [originalOutput], runtime) : null;
   if (!input || !output) {
-    await restoreRoutes(request, state, runtime, true);
-    addStep(request.name, state.steps, "同时切换输入输出", "失败", "中转路由未能完整建立，已恢复点击前路由");
+    await restoreRoutes(request, state, runtime, originalInput, originalOutput);
+    addStep(request.name, state.steps, "同时切换输入输出", "失败", "中转路由未能完整建立，已恢复本步骤原路由");
     return null;
   }
   const outputRestored = await setAndConfirmRoute("output", originalOutput, runtime);
@@ -484,6 +476,9 @@ async function rebuildAudioChain(
   runtime: RecoveryRuntime,
   reportProgress: (progress: RecoveryProgress) => void,
 ): Promise<StableRecovery | null> {
+  const devicesBeforeRebuild = runtime.readDevices();
+  const originalInput = currentDefaultName(devicesBeforeRebuild, "input");
+  const originalOutput = currentDefaultName(devicesBeforeRebuild, "output");
   reportProgress({ stage: "正在重建声音链路", message: "正在关闭蓝牙并按固定顺序刷新系统声音服务。" });
   try {
     runtime.setBluetoothPower(false);
@@ -525,7 +520,7 @@ async function rebuildAudioChain(
       addStep(request.name, state.steps, "连接目标设备", "失败", error instanceof Error ? error.message : String(error));
     }
   }
-  const restored = await restoreRoutes(request, state, runtime, true);
+  const restored = await restoreRoutes(request, state, runtime, originalInput, originalOutput);
   return restored && appeared ? verifyStableRecovery(request, runtime, reportProgress) : null;
 }
 
@@ -537,11 +532,6 @@ export async function runRecovery(
   const assessment = currentAssessment(runtime, request);
   const context = request.context ?? {
     clickedAt: new Date(runtime.now()).toISOString(),
-    defaultInput: currentDefaultName(runtime.readDevices(), "input"),
-    defaultOutput: currentDefaultName(runtime.readDevices(), "output"),
-    targetSampleRate: assessment?.actualSampleRateOutput ?? null,
-    targetAssessment: assessment,
-    deviceAssessments: currentAssessments(runtime, request),
   };
   const state: RecoveryState = {
     context,
@@ -552,21 +542,10 @@ export async function runRecovery(
   };
   request = { ...request, context };
 
-  reportProgress({ stage: "正在保存现场", message: "正在保存点击时的输入、输出、模式和链路证据。" });
   if (assessment?.a2dpSupport === "UNSUPPORTED" || assessment?.mode !== "HFP_HSP") {
-    addStep(request.name, state.steps, "保存现场", "成功", `输入：${context.defaultInput ?? "未知"}；输出：${context.defaultOutput ?? "未知"}`);
     const diagnosis = makeDiagnosis("证据不足", assessment?.a2dpSupport === "UNSUPPORTED" ? "目标不支持 A2DP" : "目标当前不在 HFP/HSP");
     return result(request, state, runtime, "无需修复", diagnosis, false);
   }
-  const evidenceStart = recoveryEvidenceStart(context, runtime.now());
-  let recoveryEvidence = runtime.readEvidenceSince(evidenceStart);
-  addStep(
-    request.name,
-    state.steps,
-    "保存现场",
-    recoveryEvidence.queryError ? "失败" : "成功",
-    `输入：${context.defaultInput ?? "未知"}；输出：${context.defaultOutput ?? "未知"}${recoveryEvidence.queryError ? `；声音证据保存失败：${recoveryEvidence.queryError}` : ""}`,
-  );
 
   const finishIfAlreadyRecovered = async (): Promise<A2dpRecoveryResult | null> => {
     const current = currentAssessment(runtime, request);
@@ -584,13 +563,8 @@ export async function runRecovery(
   if (alreadyRecovered) return alreadyRecovered;
   reportProgress({ stage: "正在检查占用", message: "正在检查实时蓝牙麦克风占用。" });
   let users: MicrophoneUser[] = [];
-  const capturedAt = Date.parse(context.occupancySnapshot?.capturedAt ?? "");
-  const snapshotAge = runtime.now() - capturedAt;
-  if (Number.isFinite(capturedAt) && snapshotAge >= 0 && snapshotAge <= 2_000) users = context.occupancySnapshot?.users ?? [];
-  else {
-    try { users = await runtime.readMicrophoneUsers(); }
-    catch (error) { addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "失败", error instanceof Error ? error.message : String(error)); }
-  }
+  try { users = await runtime.readMicrophoneUsers(); }
+  catch (error) { addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "失败", error instanceof Error ? error.message : String(error)); }
   const confirmedUsers = physicalBluetoothUsers(users, runtime.readDevices());
   const microphoneProcesses = identifiedProcesses(confirmedUsers, runtime);
   if (microphoneProcesses.length === 0) addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "跳过", "没有已确认占用进程");
@@ -612,12 +586,13 @@ export async function runRecovery(
   alreadyRecovered = await finishIfAlreadyRecovered();
   if (alreadyRecovered) return alreadyRecovered;
   reportProgress({ stage: "正在检查占用", message: "正在检查仍有效的格式请求。" });
-  recoveryEvidence = mergeEvidence(recoveryEvidence, runtime.readEvidenceSince(evidenceStart));
+  const formatEvidenceStart = recoveryEvidenceStart(context, runtime.readFormatRequestUsers(), runtime.now());
+  const formatEvidence = runtime.readEvidenceSince(formatEvidenceStart);
   const devices = runtime.readDevices();
   const lowRateBluetoothNames = uniqueBluetoothDeviceNames(devices.filter((device) =>
     isBluetooth(device) && device.outputChannels > 0 && (device.actualSampleRateOutput ?? device.sampleRateOutput ?? Infinity) <= 16_000
   ));
-  const formatCause = diagnoseFormatRequestCause(recoveryEvidence, request.name, lowRateBluetoothNames, runtime.readProcess);
+  const formatCause = diagnoseFormatRequestCause(formatEvidence, request.name, lowRateBluetoothNames, runtime.readProcess);
   if (formatCause.confidence === "已确认" && formatCause.requester) {
     stable = await processStep(request, state, runtime, reportProgress, "格式请求类", [formatCause.requester]);
     if (stable) return result(request, state, runtime, "完全恢复", makeDiagnosis("格式请求类", "结束格式请求进程后稳定恢复", [processDescription(formatCause.requester, "格式请求类")]), false);
@@ -634,10 +609,7 @@ export async function runRecovery(
     const target = targetOutput(currentDevices, request.name);
     if (target) {
       const clickedAt = Date.parse(context.clickedAt);
-      const multiEndpointEvidence = mergeEvidence(
-        recoveryEvidence,
-        runtime.readEvidenceSince(Number.isFinite(clickedAt) ? clickedAt : evidenceStart),
-      );
+      const multiEndpointEvidence = runtime.readEvidenceSince(Number.isFinite(clickedAt) ? clickedAt - 2_000 : runtime.now());
       const cause = diagnoseMultiEndpointCause(multiEndpointEvidence, target, runtime.readProcess);
       if (cause.confidence === "已确认" && cause.requester && !protectedProcessNames.has(cause.requester.name)) {
         const candidates = processesNotYetAttempted([cause.requester], state);

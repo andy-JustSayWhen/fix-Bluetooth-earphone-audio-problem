@@ -707,7 +707,8 @@ test("双蓝牙抖动时立即刷新但不自动发起修复", () => {
 test("多端点处理只能由用户点击一键修复发起", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
-  assert.match(source, /"正在保存现场…"/);
+  assert.match(source, /"正在修复…"/);
+  assert.doesNotMatch(source, /正在保存现场/);
   assert.match(source, /body: JSON\.stringify\(\{ name: device\.name \}\)/);
   assert.doesNotMatch(source, /async function inspectRouteConflict|inspectingDevices/);
   assert.doesNotMatch(source, /routeChoiceId|route-choice/);

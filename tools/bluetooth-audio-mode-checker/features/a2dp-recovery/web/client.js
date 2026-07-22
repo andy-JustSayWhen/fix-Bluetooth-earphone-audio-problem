@@ -76,7 +76,7 @@ export function createA2dpRecoveryController({
   async function recover(device) {
     if (runningDevices.has(device.name)) return;
     runningDevices.add(device.name);
-    progressByDevice.set(device.name, "正在保存现场…");
+    progressByDevice.set(device.name, "正在修复…");
     renderAggregateTrigger();
     try {
       const response = await fetch("/api/a2dp-recovery", {
