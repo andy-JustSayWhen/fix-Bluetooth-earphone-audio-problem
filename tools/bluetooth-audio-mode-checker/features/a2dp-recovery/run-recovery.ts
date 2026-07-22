@@ -177,22 +177,10 @@ async function verifyStableRecovery(
   request: RecoveryRequest,
   runtime: RecoveryRuntime,
   reportProgress: (progress: RecoveryProgress) => void,
-  options: { waitForEntry?: boolean } = {},
 ): Promise<StableRecovery | null> {
-  const waitForEntry = options.waitForEntry ?? true;
   const entryDeadline = runtime.now() + stableObservationMs;
   let stableStartedAt: number | null = null;
-  if (!waitForEntry) {
-    const initial = currentObservation(runtime, request);
-    if (initial.mode !== "A2DP") return null;
-    stableStartedAt = runtime.now();
-  }
-  reportProgress({
-    stage: "正在确认稳定",
-    message: waitForEntry
-      ? "正在等待目标进入 A2DP 并连续保持 3 秒。"
-      : "目标当前已是 A2DP，正在确认连续保持 3 秒。",
-  });
+  reportProgress({ stage: "正在确认稳定", message: "正在等待目标进入 A2DP 并连续保持 3 秒。" });
   while (true) {
     const observation = currentObservation(runtime, request);
     const observedAt = runtime.now();
@@ -616,30 +604,6 @@ export async function runRecovery(
         "麦克风占用类",
         "结束占用进程后稳定恢复",
         microphoneRelease.processes.map((item) => processDescription(item)),
-      ), false);
-    }
-  }
-
-  if (!microphoneRelease || microphoneRelease.processes.length === 0) {
-    const stableWithoutAction = await verifyStableRecovery(
-      request,
-      runtime,
-      reportProgress,
-      { waitForEntry: false },
-    );
-    addStep(
-      request.name,
-      state.steps,
-      "等待点击后的自行恢复",
-      stableWithoutAction ? "成功" : "跳过",
-      stableWithoutAction
-        ? "目标已自行连续保持 A2DP 3 秒，未执行修复动作"
-        : "即时模式不是 A2DP 或三秒内离开 A2DP，继续固定处理顺序",
-    );
-    if (stableWithoutAction) {
-      return result(request, state, runtime, "无需修复", makeDiagnosis(
-        "证据不足",
-        "点击后目标自行稳定恢复，未执行修复动作",
       ), false);
     }
   }
