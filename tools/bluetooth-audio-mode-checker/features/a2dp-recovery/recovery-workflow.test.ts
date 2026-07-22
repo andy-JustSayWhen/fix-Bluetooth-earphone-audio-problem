@@ -189,6 +189,30 @@ test("单步三秒内曾离开 A2DP 则直接执行下一步", async () => {
   assert.equal(firstRouteIndex >= 0, true);
 });
 
+test("单步首次观察不是 A2DP 即使随后恢复也进入下一步", async () => {
+  const h = harness();
+  const processInfo = { pid: 88, name: "会议软件", command: "/Applications/Meeting", startedAt: "Tue Jul 22 09:00:00 2026" };
+  h.addProcess(processInfo);
+  h.setUsers([{ pid: 88, name: "会议软件", bundleId: "", devices: [targetName], inputActivityKind: "已确认实体麦克风占用" }]);
+  let active = true;
+  h.runtime.terminateProcess = () => { active = false; };
+  h.runtime.readProcess = (pid) => active && pid === processInfo.pid ? processInfo : null;
+  const originalWait = h.runtime.wait;
+  let waitCount = 0;
+  h.runtime.wait = async (milliseconds) => {
+    await originalWait(milliseconds);
+    waitCount += 1;
+    if (waitCount === 1) h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+  };
+
+  const result = await runRecovery(request(h), h.runtime);
+
+  assert.equal(result.outcome, "完全恢复");
+  const firstRouteIndex = h.actions.findIndex((item) => item.startsWith("route:"));
+  assert.equal(h.actions.slice(0, firstRouteIndex).filter((item) => item === "wait:500").length, 6);
+  assert.equal(firstRouteIndex >= 0, true);
+});
+
 test("修复子进程通过主服务复用统一麦克风解除能力", async () => {
   let currentAssessment = assessment();
   let releaseCalls = 0;

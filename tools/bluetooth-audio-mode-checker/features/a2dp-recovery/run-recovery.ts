@@ -179,16 +179,14 @@ async function verifyStableRecovery(
   reportProgress: (progress: RecoveryProgress) => void,
 ): Promise<StableRecovery | null> {
   const deadline = runtime.now() + stableObservationMs;
-  let sawA2dp = false;
-  let leftA2dp = false;
+  let remainedA2dp = true;
   reportProgress({ stage: "正在确认稳定", message: "正在观察目标是否连续保持 A2DP 3 秒。" });
   while (true) {
     const observation = currentObservation(runtime, request);
-    if (observation.mode === "A2DP") sawA2dp = true;
-    else if (sawA2dp) leftA2dp = true;
+    if (observation.mode !== "A2DP") remainedA2dp = false;
     const remaining = deadline - runtime.now();
     if (remaining <= 0) {
-      return sawA2dp && !leftA2dp && observation.mode === "A2DP"
+      return remainedA2dp && observation.mode === "A2DP"
         ? { rate: observation.rate, mode: observation.mode }
         : null;
     }

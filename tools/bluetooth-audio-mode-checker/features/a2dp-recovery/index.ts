@@ -78,11 +78,14 @@ export async function recoverA2dp(
           else if (message.type === "release-bluetooth-microphone-occupancy") {
             void releaseBluetoothMicrophoneOccupancy(message.deviceName).then(
               (releaseResult) => {
-                if (!child.stdin.destroyed) child.stdin.write(`${JSON.stringify({
-                  type: "microphone-release-result",
-                  requestId: message.requestId,
-                  result: releaseResult,
-                })}\n`);
+                if (!child.stdin.destroyed) {
+                  syncModeAssessments();
+                  child.stdin.write(`${JSON.stringify({
+                    type: "microphone-release-result",
+                    requestId: message.requestId,
+                    result: releaseResult,
+                  })}\n`);
+                }
               },
               (error) => {
                 if (!child.stdin.destroyed) child.stdin.write(`${JSON.stringify({
