@@ -384,6 +384,43 @@ function inputActivityOverview() {
   return section;
 }
 
+function formatRequestOccupancyOverview() {
+  const users = lastMicrophoneUsers.filter((user) =>
+    user.inputActivityKind === "已确认实体麦克风占用" &&
+    user.occupancyEvidenceKinds?.includes("unclosed-format-request")
+  );
+  if (users.length === 0) return null;
+  const section = createElement("section", "format-request-occupancy-overview");
+  const heading = createElement("div", "format-request-occupancy-overview__heading");
+  heading.append(
+    createElement("strong", "", "麦克风占用"),
+    createElement("span", "occupancy-status is-busy", "正在占用"),
+  );
+  section.append(
+    heading,
+    createElement(
+      "p",
+      "",
+      "以下存活进程最后一次格式请求为 0→1，且没有后续 1→0，已立即计入麦克风占用。当前没有足够证据将它归属到某个具体蓝牙麦克风；一键修复会先结束该进程并观察是否恢复 A2DP。",
+    ),
+  );
+  const list = createElement("div", "format-request-occupancy-overview__list");
+  for (const user of users) {
+    const requestedAt = new Date(user.unclosedFormatRequestAt ?? "");
+    const requestedAtText = Number.isNaN(requestedAt.getTime())
+      ? "请求时间无法读取"
+      : `请求于 ${requestedAt.toLocaleTimeString("zh-CN", { hour12: false })}`;
+    const row = createElement("div", "format-request-occupancy-overview__item");
+    row.append(
+      createElement("strong", "", user.name),
+      createElement("span", "", `进程 ${user.pid} · 最后一次格式请求未释放 · ${requestedAtText}`),
+    );
+    list.append(row);
+  }
+  section.append(list);
+  return section;
+}
+
 function createDeviceCard(device) {
   const card = createElement("article", "device-card");
   const header = createElement("div", "device-card__header");
@@ -599,6 +636,8 @@ function renderDevices(devices) {
     return;
   }
   const fragment = document.createDocumentFragment();
+  const formatRequestOccupancy = formatRequestOccupancyOverview();
+  if (formatRequestOccupancy) fragment.append(formatRequestOccupancy);
   const activityOverview = inputActivityOverview();
   if (activityOverview) fragment.append(activityOverview);
   for (const device of devices) fragment.append(createDeviceCard(device));

@@ -34,7 +34,8 @@ export function classifyInputActivities(
       const transport = byName.get(name)?.inputTransport;
       return transport === "bluetooth" || transport === "bluetooth-le";
     });
-    const inputActivityKind: MicrophoneUser["inputActivityKind"] = confirmedDeviceNames.length > 0
+    const hasUnclosedFormatRequest = user.occupancyEvidenceKinds?.includes("unclosed-format-request") ?? false;
+    const inputActivityKind: MicrophoneUser["inputActivityKind"] = confirmedDeviceNames.length > 0 || hasUnclosedFormatRequest
       ? "已确认实体麦克风占用"
       : isSystemAudioCapture(user)
         ? "系统声音采集"
@@ -46,6 +47,37 @@ export function classifyInputActivities(
       confirmedDeviceNames,
     };
   });
+}
+
+export function mergeMicrophoneUsers(...groups: MicrophoneUser[][]): MicrophoneUser[] {
+  const byPid = new Map<number, MicrophoneUser>();
+  for (const user of groups.flat()) {
+    const current = byPid.get(user.pid);
+    if (!current) {
+      byPid.set(user.pid, user);
+      continue;
+    }
+    byPid.set(user.pid, {
+      ...current,
+      ...user,
+      bundleId: user.bundleId || current.bundleId,
+      devices: [...new Set([...current.devices, ...user.devices])],
+      physicalDeviceNames: [...new Set([
+        ...(current.physicalDeviceNames ?? []),
+        ...(user.physicalDeviceNames ?? []),
+      ])],
+      confirmedDeviceNames: [...new Set([
+        ...(current.confirmedDeviceNames ?? []),
+        ...(user.confirmedDeviceNames ?? []),
+      ])],
+      occupancyEvidenceKinds: [...new Set([
+        ...(current.occupancyEvidenceKinds ?? []),
+        ...(user.occupancyEvidenceKinds ?? []),
+      ])],
+      unclosedFormatRequestAt: user.unclosedFormatRequestAt ?? current.unclosedFormatRequestAt,
+    });
+  }
+  return [...byPid.values()];
 }
 
 export function attachMicrophoneOccupancy(devices: AudioModeAssessment[]): AudioModeAssessment[] {

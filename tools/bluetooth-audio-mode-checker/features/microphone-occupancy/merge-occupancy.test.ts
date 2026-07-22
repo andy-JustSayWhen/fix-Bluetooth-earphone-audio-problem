@@ -7,6 +7,7 @@ import {
   attachMicrophoneOccupancyFromUsers,
   classifyInputActivities,
   mergeMicrophoneOccupancy,
+  mergeMicrophoneUsers,
   shouldContinueOccupancyScanning,
   shouldStartOccupancyScanForInputActivity,
 } from "./index.ts";
@@ -127,6 +128,40 @@ test("系统声音采集和空设备列表不得归为麦克风占用", () => {
   assert.equal(activities[0].inputActivityKind, "系统声音采集");
   assert.equal(activities[1].inputActivityKind, "未确认麦克风占用的输入活动");
   assert.deepEqual(activities.flatMap((activity) => activity.confirmedDeviceNames ?? []), []);
+});
+
+test("同一存活进程最后一次未闭合 0→1 必须计入麦克风占用", () => {
+  const [activity] = classifyInputActivities([
+    device({ mode: "HFP_HSP", audioLinkType: "tsco" }),
+  ], [{
+    pid: 49268,
+    name: "WeType",
+    bundleId: "",
+    devices: [],
+    occupancyEvidenceKinds: ["unclosed-format-request"],
+    unclosedFormatRequestAt: "2026-07-22 14:10:50.381000+0800",
+  }]);
+
+  assert.equal(activity.inputActivityKind, "已确认实体麦克风占用");
+  assert.deepEqual(activity.confirmedDeviceNames, []);
+});
+
+test("实体端点和未闭合格式请求属于同一进程时合并为一条占用", () => {
+  const [user] = mergeMicrophoneUsers(
+    [{ pid: 42, name: "语音程序", bundleId: "test.voice", devices: ["REDMI"] }],
+    [{
+      pid: 42,
+      name: "语音程序",
+      bundleId: "",
+      devices: [],
+      occupancyEvidenceKinds: ["unclosed-format-request"],
+      unclosedFormatRequestAt: "2026-07-22 14:10:50.381000+0800",
+    }],
+  );
+
+  assert.equal(user.bundleId, "test.voice");
+  assert.deepEqual(user.devices, ["REDMI"]);
+  assert.deepEqual(user.occupancyEvidenceKinds, ["unclosed-format-request"]);
 });
 
 test("默认输入从空闲变为运行时触发一次占用扫描", () => {

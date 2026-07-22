@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  createFormatRequestOccupancyTracker,
   diagnoseFormatRequestCause,
   diagnoseLinkResidualCause,
   diagnoseMultiEndpointCause,
@@ -70,6 +71,17 @@ test("解析格式请求者和内部切换方向", () => {
     to: 1,
     raw: requestLine,
   });
+});
+
+test("解析真实系统日志中位于插件和子系统标记后的请求进程号", () => {
+  const realLine = "2026-07-22 14:30:51.382631+0800 localhost coreaudiod[196]: (BTAudioHALPlugin) [com.apple.bluetooth:BTAudio] [ 49268 ]BTUnifiedAudioDevice: kBluetoothAudioDevicePropertyFormat request 0 ->1";
+  const [event] = parseSystemAudioLog(realLine);
+
+  assert.equal(event.kind, "format-request");
+  if (event.kind !== "format-request") return;
+  assert.equal(event.requesterPid, 49268);
+  assert.equal(event.from, 0);
+  assert.equal(event.to, 1);
 });
 
 test("唯一低采样率目标且两秒内进入 tsco 时确认格式请求原因", () => {
@@ -159,6 +171,46 @@ test("同一进程后续 1 -> 0 会闭合格式请求", () => {
     findUnclosedFormatRequests(evidence(`${requestLine}\n${reverseLine}`), () => processInfo),
     [],
   );
+});
+
+test("实时跟踪器在 0→1 后立即报告占用并在 1→0 后清除", () => {
+  const tracker = createFormatRequestOccupancyTracker(() => processInfo);
+  const [request] = parseSystemAudioLog(requestLine);
+  assert.equal(request.kind, "format-request");
+  if (request.kind !== "format-request") return;
+  tracker.accept(request);
+  assert.deepEqual(tracker.users().map((user) => ({
+    pid: user.pid,
+    kind: user.inputActivityKind,
+    evidence: user.occupancyEvidenceKinds,
+  })), [{
+    pid: 30114,
+    kind: "已确认实体麦克风占用",
+    evidence: ["unclosed-format-request"],
+  }]);
+
+  const [release] = parseSystemAudioLog(
+    "2026-07-18 12:47:05.000000+0800 localhost coreaudiod[90589]: [ 30114 ]BTUnifiedAudioDevice: kBluetoothAudioDevicePropertyFormat request 1 ->0",
+  );
+  assert.equal(release.kind, "format-request");
+  if (release.kind !== "format-request") return;
+  tracker.accept(release);
+  assert.deepEqual(tracker.users(), []);
+});
+
+test("实时跟踪器在原进程退出或进程号复用后清除占用", () => {
+  let running: RunningProcess | null = processInfo;
+  const tracker = createFormatRequestOccupancyTracker(() => running);
+  const [request] = parseSystemAudioLog(requestLine);
+  assert.equal(request.kind, "format-request");
+  if (request.kind !== "format-request") return;
+  tracker.accept(request);
+  assert.equal(tracker.users().length, 1);
+
+  running = null;
+  assert.deepEqual(tracker.users(), []);
+  running = { ...processInfo, startedAt: "Sat Jul 18 13:00:00 2026" };
+  assert.deepEqual(tracker.users(), []);
 });
 
 test("进程号已被后来启动的程序复用时不计入未闭合请求", () => {

@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   readRunningProcess,
   type RunningProcess,
 } from "../../core/macos-running-apps/index.ts";
-import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
+import { detailedLog } from "../../core/detailed-logging/index.ts";
+import type { MicrophoneUser, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
 export type FormatRequestEvent = {
   kind: "format-request";
@@ -55,6 +56,11 @@ export type UnclosedFormatRequest = {
   requester: RunningProcess;
 };
 
+export type FormatRequestOccupancyTracker = {
+  accept: (event: FormatRequestEvent) => void;
+  users: () => MicrophoneUser[];
+};
+
 export type LinkResidualCause = {
   confidence: "高度疑似" | "无法确认";
   startIo: StartIoEvent | null;
@@ -74,6 +80,11 @@ export type MultiEndpointCause = {
 
 const timestampPattern = "(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}[+-]\\d{4})";
 const timestampRegex = new RegExp(`^${timestampPattern}`);
+const formatRequestLogPredicate = [
+  'process == "coreaudiod"',
+  "AND",
+  'eventMessage CONTAINS[c] "kBluetoothAudioDevicePropertyFormat request"',
+].join(" ");
 
 function timestampToMilliseconds(timestamp: string): number {
   const normalized = timestamp.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
@@ -89,7 +100,7 @@ export function parseSystemAudioLog(output: string): SystemAudioEvent[] {
     const timestampMs = timestampToMilliseconds(timestamp);
 
     const formatMatch = raw.match(
-      /coreaudiod\[\d+\]:\s*\[\s*(\d+)\s*\].*kBluetoothAudioDevicePropertyFormat request\s+(\d+)\s*->\s*(\d+)/i,
+      /coreaudiod\[\d+\]:.*?\[\s*(\d+)\s*\].*kBluetoothAudioDevicePropertyFormat request\s+(\d+)\s*->\s*(\d+)/i,
     );
     if (formatMatch) {
       events.push({
@@ -130,6 +141,123 @@ export function parseSystemAudioLog(output: string): SystemAudioEvent[] {
     }
   }
   return events.sort((left, right) => left.timestampMs - right.timestampMs);
+}
+
+function unclosedFormatRequestUser(
+  event: FormatRequestEvent,
+  processReader: (pid: number) => RunningProcess | null,
+): MicrophoneUser | null {
+  if (event.from !== 0 || event.to !== 1) return null;
+  const requester = processReader(event.requesterPid);
+  if (!requester) return null;
+  const startedAt = Date.parse(requester.startedAt);
+  if (!Number.isFinite(startedAt) || startedAt > event.timestampMs + 1_000) return null;
+  return {
+    pid: requester.pid,
+    name: requester.name,
+    bundleId: "",
+    devices: [],
+    inputActivityKind: "已确认实体麦克风占用",
+    physicalDeviceNames: [],
+    confirmedDeviceNames: [],
+    occupancyEvidenceKinds: ["unclosed-format-request"],
+    unclosedFormatRequestAt: event.timestamp,
+  };
+}
+
+export function createFormatRequestOccupancyTracker(
+  processReader: (pid: number) => RunningProcess | null = readRunningProcess,
+): FormatRequestOccupancyTracker {
+  const latestByPid = new Map<number, FormatRequestEvent>();
+  return {
+    accept(event) {
+      const current = latestByPid.get(event.requesterPid);
+      if (!current || current.timestampMs <= event.timestampMs) {
+        latestByPid.set(event.requesterPid, event);
+      }
+    },
+    users() {
+      return [...latestByPid.values()]
+        .sort((left, right) => right.timestampMs - left.timestampMs)
+        .flatMap((event) => {
+          const user = unclosedFormatRequestUser(event, processReader);
+          return user ? [user] : [];
+        });
+    },
+  };
+}
+
+function systemBootTimeMs(): number {
+  try {
+    const output = execFileSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
+      encoding: "utf8",
+      timeout: 1_000,
+    });
+    const seconds = Number(output.match(/sec\s*=\s*(\d+)/)?.[1]);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : Date.now() - 24 * 60 * 60_000;
+  } catch {
+    return Date.now() - 24 * 60 * 60_000;
+  }
+}
+
+function consumeFormatRequestOutput(
+  child: ReturnType<typeof spawn>,
+  accept: (event: FormatRequestEvent) => void,
+): void {
+  let pending = "";
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    pending += chunk;
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      const event = parseSystemAudioLog(line).find(
+        (candidate): candidate is FormatRequestEvent => candidate.kind === "format-request",
+      );
+      if (event) accept(event);
+    }
+  });
+}
+
+export function startFormatRequestOccupancyMonitor(
+  onUsers: (users: MicrophoneUser[], event: FormatRequestEvent | null) => void,
+  processReader: (pid: number) => RunningProcess | null = readRunningProcess,
+): () => void {
+  if (process.platform !== "darwin") return () => {};
+  const tracker = createFormatRequestOccupancyTracker(processReader);
+  let fingerprint = "";
+  const publish = (event: FormatRequestEvent | null) => {
+    const users = tracker.users();
+    const nextFingerprint = JSON.stringify(users.map((user) => [
+      user.pid, user.unclosedFormatRequestAt,
+    ]));
+    if (nextFingerprint === fingerprint) return;
+    fingerprint = nextFingerprint;
+    onUsers(users, event);
+  };
+  const accept = (event: FormatRequestEvent) => {
+    tracker.accept(event);
+    publish(event);
+  };
+  const historical = spawn("/usr/bin/log", [
+    "show", "--style", "syslog", "--start", formatSystemLogStart(systemBootTimeMs()),
+    "--predicate", formatRequestLogPredicate,
+  ], { stdio: ["ignore", "pipe", "ignore"] });
+  const stream = spawn("/usr/bin/log", [
+    "stream", "--style", "syslog", "--debug", "--predicate", formatRequestLogPredicate,
+  ], { stdio: ["ignore", "pipe", "ignore"] });
+  consumeFormatRequestOutput(historical, (event) => tracker.accept(event));
+  consumeFormatRequestOutput(stream, accept);
+  historical.once("close", () => publish(null));
+  historical.once("error", (error) => detailedLog("warn", "format-request-occupancy.history-failed", { error }));
+  stream.once("error", (error) => detailedLog("error", "format-request-occupancy.stream-failed", { error }));
+  const pruneTimer = setInterval(() => publish(null), 2_000);
+  pruneTimer.unref();
+  return () => {
+    clearInterval(pruneTimer);
+    if (!historical.killed) historical.kill("SIGTERM");
+    if (!stream.killed) stream.kill("SIGTERM");
+  };
 }
 
 function readSystemAudioEvidence(

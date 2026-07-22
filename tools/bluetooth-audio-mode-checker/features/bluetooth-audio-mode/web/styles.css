@@ -117,6 +117,14 @@ button { font: inherit; }
 .input-activity-overview__item { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; background: rgba(255, 255, 255, 0.72); border-radius: 9px; font-size: 11px; }
 .input-activity-overview__item span { color: #8b7845; text-align: right; }
 
+.format-request-occupancy-overview { padding: 15px 16px; color: #6f3b13; background: #fff4e8; border: 1px solid #efc79e; border-radius: 14px; }
+.format-request-occupancy-overview__heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.format-request-occupancy-overview__heading > strong { color: #7b3d0a; font-size: 13px; }
+.format-request-occupancy-overview > p { margin: 7px 0 0; font-size: 11px; line-height: 1.65; }
+.format-request-occupancy-overview__list { display: grid; gap: 7px; margin-top: 10px; }
+.format-request-occupancy-overview__item { display: flex; justify-content: space-between; gap: 12px; padding: 9px 10px; background: rgba(255, 255, 255, 0.76); border-radius: 9px; font-size: 11px; }
+.format-request-occupancy-overview__item span { color: #8d5b32; text-align: right; }
+
 .device-card {
   overflow: hidden;
   background: rgba(255, 255, 255, 0.96);

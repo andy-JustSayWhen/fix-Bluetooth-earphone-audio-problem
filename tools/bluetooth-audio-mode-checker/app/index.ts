@@ -18,6 +18,7 @@ import {
   attachEmptyMicrophoneOccupancy,
   attachMicrophoneOccupancyFromUsers,
   classifyInputActivities,
+  mergeMicrophoneUsers,
   mergeMicrophoneOccupancy,
   readAllMicrophoneUsersAsync,
   releaseMicrophoneUsers,
@@ -27,6 +28,7 @@ import {
 import {
   recoverA2dp,
   recoveryWebAssetsDirectory,
+  startFormatRequestOccupancyMonitor,
   type RecoveryContinuation,
   type RecoveryDiagnosis,
   type RecoveryProgress,
@@ -187,6 +189,7 @@ function main(): void {
   const latestLinkSnapshots = new Map<string, BluetoothLinkSnapshot>();
   let latestOccupancyCapturedAt: string | null = null;
   let latestRawMicrophoneUsers: NonNullable<AudioModeState["microphoneUsers"]> = [];
+  let latestFormatRequestUsers: NonNullable<AudioModeState["microphoneUsers"]> = [];
   let latestMicrophoneUsers: AudioModeState["microphoneUsers"] = [];
   let latestSpeakerUsers: SpeakerOutputUser[] = [];
   let speakerOccupancyFingerprint = "";
@@ -213,6 +216,10 @@ function main(): void {
     refreshedAt: cachedStateUpdatedAt ?? new Date().toISOString(),
     occupancyCapturedAt: latestOccupancyCapturedAt,
   };
+  const currentMicrophoneUsers = () => mergeMicrophoneUsers(
+    latestRawMicrophoneUsers,
+    latestFormatRequestUsers,
+  );
   const broadcastState = () => {
     const payload = statePayload();
     if (payload === null) return;
@@ -250,11 +257,12 @@ function main(): void {
       nextState = applyBluetoothLinkSnapshot(nextState, linkSnapshot);
     }
     if (latestOccupancyCapturedAt !== null) {
+      const microphoneUsers = currentMicrophoneUsers();
       nextState = {
         ...nextState,
-        devices: attachMicrophoneOccupancyFromUsers(nextState.devices, latestRawMicrophoneUsers),
+        devices: attachMicrophoneOccupancyFromUsers(nextState.devices, microphoneUsers),
       };
-      latestMicrophoneUsers = classifyInputActivities(nextState.devices, latestRawMicrophoneUsers);
+      latestMicrophoneUsers = classifyInputActivities(nextState.devices, microphoneUsers);
     }
     nextState = {
       ...nextState,
@@ -396,11 +404,12 @@ function main(): void {
     if (cachedState === null) return;
     const previousFingerprint = JSON.stringify(cachedState.devices);
     cachedState = applyBluetoothLinkSnapshot(cachedState, snapshot);
+    const microphoneUsers = currentMicrophoneUsers();
     cachedState = {
       ...cachedState,
-      devices: attachMicrophoneOccupancyFromUsers(cachedState.devices, latestRawMicrophoneUsers),
+      devices: attachMicrophoneOccupancyFromUsers(cachedState.devices, microphoneUsers),
     };
-    latestMicrophoneUsers = classifyInputActivities(cachedState.devices, latestRawMicrophoneUsers);
+    latestMicrophoneUsers = classifyInputActivities(cachedState.devices, microphoneUsers);
     const nextFingerprint = JSON.stringify(cachedState.devices);
     if (nextFingerprint === previousFingerprint) return;
     cachedStateUpdatedAt = snapshot.timestamp;
@@ -425,6 +434,20 @@ function main(): void {
     };
     if (JSON.stringify(cachedState.devices) === previousDevicesFingerprint) return;
     cachedStateUpdatedAt = event?.observedAt ?? new Date().toISOString();
+    broadcastState();
+  });
+  const stopFormatRequestOccupancyMonitor = startFormatRequestOccupancyMonitor((users, event) => {
+    latestFormatRequestUsers = users;
+    detailedLog("info", "format-request-occupancy.changed", { event, users });
+    if (cachedState === null) return;
+    const microphoneUsers = currentMicrophoneUsers();
+    cachedState = {
+      ...cachedState,
+      devices: attachMicrophoneOccupancyFromUsers(cachedState.devices, microphoneUsers),
+    };
+    latestMicrophoneUsers = classifyInputActivities(cachedState.devices, microphoneUsers);
+    latestOccupancyCapturedAt = event?.timestamp ?? new Date().toISOString();
+    cachedStateUpdatedAt = latestOccupancyCapturedAt;
     broadcastState();
   });
   let occupancyFingerprint = "";
@@ -453,9 +476,10 @@ function main(): void {
       let continueScanning = false;
       const startedAt = performance.now();
       try {
-        const microphoneUsers = await readAllMicrophoneUsersAsync();
+        const physicalMicrophoneUsers = await readAllMicrophoneUsersAsync();
+        latestRawMicrophoneUsers = physicalMicrophoneUsers;
+        const microphoneUsers = currentMicrophoneUsers();
         const occupancySnapshot = attachMicrophoneOccupancyFromUsers(cachedState.devices, microphoneUsers);
-        latestRawMicrophoneUsers = microphoneUsers;
         latestMicrophoneUsers = classifyInputActivities(occupancySnapshot, microphoneUsers);
         latestOccupancyCapturedAt = new Date().toISOString();
         continueScanning = shouldContinueOccupancyScanning(occupancySnapshot, microphoneUsers);
@@ -795,7 +819,8 @@ function main(): void {
         () => cachedState?.devices ?? [],
         async () => {
           const state = cachedState ?? readAudioModeState();
-          const activities = classifyInputActivities(state.devices, await readAllMicrophoneUsersAsync());
+          latestRawMicrophoneUsers = await readAllMicrophoneUsersAsync();
+          const activities = classifyInputActivities(state.devices, currentMicrophoneUsers());
           return activities.filter((user) => user.inputActivityKind === "已确认实体麦克风占用");
         });
         scheduleOccupancyScan(0, "a2dp-recovery-completed");
@@ -895,6 +920,7 @@ function main(): void {
     stopRealtimeMonitor();
     stopLinkMonitor();
     stopSpeakerOccupancyMonitor();
+    stopFormatRequestOccupancyMonitor();
     if (error.code === "EADDRINUSE") {
       console.error(`端口 ${options.port} 已被占用，请运行 ./run.command --port 4174 重试。`);
     } else {
@@ -908,6 +934,7 @@ function main(): void {
     stopRealtimeMonitor();
     stopLinkMonitor();
     stopSpeakerOccupancyMonitor();
+    stopFormatRequestOccupancyMonitor();
     if (occupancyTimer !== null) clearTimeout(occupancyTimer);
     for (const client of eventClients) client.end();
     server.close(() => {

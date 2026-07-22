@@ -12,6 +12,8 @@ import {
   readRecentSystemAudioEvidence,
   type FormatRequestEvidence,
 } from "./format-request-diagnosis.ts";
+
+export { startFormatRequestOccupancyMonitor } from "./format-request-diagnosis.ts";
 import type {
   A2dpRecoveryResult,
   RecoveryProgress,

@@ -359,8 +359,20 @@ function diagnoseCause(
   const targetAssessment = assessments.find((assessment) => assessment.name === name) ??
     runtime.readModeAssessment(name) ?? request.context?.targetAssessment ?? null;
   const physicalOccupancyUsers = confirmedBluetoothMicrophoneUsers(users, devices);
+  const snapshotFormatRequestUsers = users.filter((user) => {
+    if (!user.occupancyEvidenceKinds?.includes("unclosed-format-request")) return false;
+    const processInfo = runtime.readProcess(user.pid);
+    const requestedAt = Date.parse(user.unclosedFormatRequestAt ?? "");
+    const startedAt = Date.parse(processInfo?.startedAt ?? "");
+    return processInfo !== null && Number.isFinite(requestedAt) && Number.isFinite(startedAt) &&
+      startedAt <= requestedAt + 1_000;
+  });
   const formatRequestOccupancyUsers = unclosedFormatRequestUsers(evidence, runtime);
-  const occupancyUsers = mergeConfirmedOccupancyUsers(physicalOccupancyUsers, formatRequestOccupancyUsers);
+  const occupancyUsers = mergeConfirmedOccupancyUsers(
+    physicalOccupancyUsers,
+    snapshotFormatRequestUsers,
+    formatRequestOccupancyUsers,
+  );
   const identified = identifyProcesses(occupancyUsers, runtime);
   if (identified.processes.length > 0) {
     const currentUsers = occupancyUsers.filter((user) =>
