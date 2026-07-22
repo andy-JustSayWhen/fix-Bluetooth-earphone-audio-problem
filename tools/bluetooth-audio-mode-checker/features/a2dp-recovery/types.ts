@@ -1,7 +1,6 @@
 import type { AudioModeAssessment, MicrophoneUser } from "../../shared/audio-device-types/index.ts";
-import type { FormatRequestEvent } from "./format-request-diagnosis.ts";
 
-export type RecoveryOutcome = "无需修复" | "完全恢复" | "未恢复" | "等待授权";
+export type RecoveryOutcome = "无需修复" | "完全恢复" | "未恢复";
 
 export type RecoveryCauseKind =
   | "麦克风占用类"
@@ -14,7 +13,6 @@ export type RecoveryStep = {
   stage: string;
   status: "成功" | "失败" | "跳过";
   detail: string;
-  sampleRate?: number | null;
 };
 
 export type RecoveryDiagnosis = {
@@ -22,15 +20,6 @@ export type RecoveryDiagnosis = {
   confidence: "已确认" | "高度疑似" | "无法确认";
   summary: string;
   evidence: string[];
-};
-
-export type RecoveryActionRequired = {
-  kind: "relaunch-authorization";
-  prompt: string;
-  processNames: string[];
-  cause: "麦克风占用类" | "格式请求类";
-  triggerState: "still-running" | "restarted";
-  occupancyEvidence?: "physical-bluetooth-microphone" | "unclosed-format-request";
 };
 
 export type RecoveryProgress = {
@@ -48,48 +37,9 @@ export type RecoveryRequestContext = {
   occupancySnapshot?: { capturedAt: string; users: MicrophoneUser[] };
 };
 
-export type RecoveryProcessAttempt = {
-  cause: "麦克风占用类" | "格式请求类";
-  command: string;
-  processName: string;
-  microphoneDeviceName?: string;
-  automaticProcessPid?: number;
-  automaticProcessStartedAt?: string;
-  automaticAttempted: boolean;
-  automaticExitConfirmed?: boolean;
-  authorizedAttempted: boolean;
-};
-
-export type RecoveryRoundState = {
-  context: RecoveryRequestContext;
-  nextStep: 1 | 2 | 3 | 4 | 5 | 6;
-  processAttempts: RecoveryProcessAttempt[];
-  latestFormatRequests?: FormatRequestEvent[];
-  releasedPrograms: string[];
-  remainingPrograms: string[];
-  guardedPrograms: string[];
-  steps: RecoveryStep[];
-};
-
-export type RelaunchGuardRequest = {
-  cause: "麦克风占用类" | "格式请求类";
-  command: string;
-  processName: string;
-  microphoneDeviceName?: string;
-  occupancyEvidence?: "physical-bluetooth-microphone" | "unclosed-format-request";
-};
-
-export type RecoveryContinuation = {
-  roundState: RecoveryRoundState;
-  pendingGuards: RelaunchGuardRequest[];
-};
-
 export type RecoveryRequest = {
   name: string;
   context?: RecoveryRequestContext;
-  authorizeRelaunchBlock?: boolean;
-  _roundState?: RecoveryRoundState;
-  _approvedRelaunchGuards?: RelaunchGuardRequest[];
 };
 
 export type A2dpRecoveryResult = {
@@ -100,11 +50,8 @@ export type A2dpRecoveryResult = {
   sampleRate: number | null;
   releasedPrograms: string[];
   remainingPrograms: string[];
-  guardedPrograms?: string[];
   diagnosis: RecoveryDiagnosis;
   steps: RecoveryStep[];
   rebuiltAudioChain: boolean;
-  actionRequired?: RecoveryActionRequired;
   message: string;
-  _continuation?: RecoveryContinuation;
 };

@@ -423,10 +423,6 @@ function createDeviceCard(device) {
   header.append(summary);
 
   const details = createElement("div", "device-card__details");
-  const recovery = recoveryController.feedbackByDevice.get(device.name);
-  if (recovery?.result?.actionRequired) {
-    details.append(recoveryController.actionSection(recovery, device.name));
-  }
   details.append(audioLinkGroup(device));
   details.append(microphoneOccupancySection(device));
   details.append(speakerOccupancyController.section(device));
@@ -530,7 +526,6 @@ function renderState(result, options = {}) {
   lastOccupancyCapturedAt = Date.parse(result.occupancyCapturedAt) || lastOccupancyCapturedAt;
   lastMicrophoneUsers = result.microphoneUsers ?? [];
   lastRenderedRoutes = result.routes;
-  recoveryController?.reconcilePendingAuthorizations(result.devices, lastMicrophoneUsers, result.occupancyCapturedAt);
   recoveryController?.renderAggregateTrigger(result.devices);
   const fingerprint = JSON.stringify({ devices: result.devices, microphoneUsers: lastMicrophoneUsers, routes: result.routes });
   if (fingerprint !== lastRenderedStateFingerprint) {
@@ -578,14 +573,9 @@ function renderRealtimeState(result) {
 
 function renderDevices(devices) {
   lastRenderedDevices = devices;
-  const pendingActionDevice = devices.find((device) =>
-    recoveryController?.feedbackByDevice.get(device.name)?.result?.actionRequired
-  );
   const occupiedDevice = devices.find((device) => device.microphoneOccupancy?.isInUse);
   const speakerOccupiedDevice = devices.find((device) => device.speakerOccupancy?.isInUse);
-  if (pendingActionDevice) {
-    expandedDevices.add(pendingActionDevice.name);
-  } else if (occupiedDevice) {
+  if (occupiedDevice) {
     expandedDevices.clear();
     expandedDevices.add(occupiedDevice.name);
   } else if (speakerOccupiedDevice) {
@@ -640,7 +630,6 @@ async function refreshDevices(options = {}) {
 
 recoveryController = createA2dpRecoveryController({
   createElement,
-  expandedDevices,
   getLastRenderedDevices: () => lastRenderedDevices,
   triggerContainer: recoveryTriggerElement,
   renderDevices,

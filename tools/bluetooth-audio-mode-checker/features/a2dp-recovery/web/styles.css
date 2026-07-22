@@ -6,11 +6,3 @@
 .recovery-trigger.is-success { color: white; background: #25855d; cursor: default; }
 .recovery-trigger.is-error { color: white; background: #b64255; cursor: default; }
 .recovery-trigger:disabled { opacity: 1; }
-.recovery-feedback { margin: 13px 0 20px; padding: 10px 12px; border-radius: 10px; font-size: 11px; line-height: 1.55; }
-.recovery-feedback.is-pending { color: #6f571f; background: #fff8df; }
-.recovery-title { display: block; margin-bottom: 5px; font-size: 12px; }
-.recovery-actions { display: grid; gap: 7px; margin-top: 10px; }
-.recovery-action-prompt { margin: 0; font-weight: 700; }
-.recovery-action { width: 100%; padding: 8px 10px; border: 1px solid #b8c7dc; border-radius: 8px; color: #29445f; background: #fff; text-align: left; cursor: pointer; }
-.recovery-action:hover, .recovery-action:focus-visible { border-color: #6685ac; background: #f5f8fc; }
-.recovery-action.is-danger { color: #8a293b; border-color: #ddb0b9; }

@@ -18,7 +18,6 @@ import {
 import {
   createA2dpRecoveryController,
   isA2dpRecoveryTarget,
-  shouldContinueAfterOccupancyEnded,
 } from "../a2dp-recovery/web/client.js";
 
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
@@ -498,31 +497,19 @@ test("设备卡片在名称下显示模式且右侧只保留展开图标", () =>
   assert.doesNotMatch(styles, /\.device-card__mode-actions/);
 });
 
-test("列表级一键修复逐台处理并在需要用户选择时暂停", () => {
+test("列表级一键修复严格逐台处理且不包含人工续接分支", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.match(source, /while \(batchQueue\.length > 0\)/);
   assert.match(source, /await recover\(device\)/);
-  assert.match(source, /feedbackByDevice\.get\(deviceName\)\?\.result\?\.actionRequired/);
-  assert.match(source, /batchPausedDevice = deviceName/);
-  assert.match(source, /recoverAndResumeBatch/);
-  assert.match(source, /batchStorageKey = "a2dp-recovery-batch-v1"/);
-  assert.match(source, /pausedDevice: batchPausedDevice/);
-  assert.match(source, /storedBatch\?\.pausedDevice/);
-  assert.match(source, /persistBatchState\(\)/);
+  assert.doesNotMatch(source, /actionRequired|authorize|continueAfter|batchPaused|sessionStorage/);
 });
 
-test("同一标签页刷新后只恢复等待交互而不恢复完成或运行状态", () => {
+test("一键修复前端不保存授权或续跑状态", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
-  assert.match(source, /window\.sessionStorage\.getItem\(storageKey\)/);
-  assert.match(source, /action\?\.kind !== "relaunch-authorization"/);
-  assert.match(source, /removedInvalidFeedback/);
-  assert.match(source, /setFeedback\(device\.name, \{\s+kind: "running"[\s\S]*?\}, false\)/);
-  assert.match(source, /setFeedback\(device\.name, \{ kind: "pending", result \}\)/);
-  assert.match(source, /removeStoredFeedback\(device\.name\)/);
-  assert.match(source, /if \(feedback\?\.result\?\.actionRequired\) expandedDevices\.add/);
-  assert.doesNotMatch(source, /for \(const deviceName of feedbackByDevice\.keys\(\)\) expandedDevices\.add/);
+  assert.doesNotMatch(source, /sessionStorage|feedbackByDevice|actionSection|pending/);
+  assert.match(source, /body: JSON\.stringify\(\{ name: device\.name \}\)/);
 });
 
 test("一键修复不再提供多端点人工组合选择", () => {
@@ -530,19 +517,14 @@ test("一键修复不再提供多端点人工组合选择", () => {
   const recoverySource = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.doesNotMatch(pageSource, /pendingRouteChoice|getPendingRouteChoice|showConfirmedRouteConflict/);
-  assert.doesNotMatch(recoverySource, /routeChoiceId|actionRequired\?\.kind === "route-choice"/);
-  assert.match(recoverySource, /function actionSection\(feedback, deviceName\)/);
+  assert.doesNotMatch(recoverySource, /routeChoiceId|actionRequired|actionSection/);
   assert.doesNotMatch(recoverySource, /recovery-result-header|successfulRecoverySummary|修复成功|修复失败|未执行修复/);
 });
 
-test("更新快照显示目标已退出 HFP 时清除过期授权状态", () => {
+test("一键修复没有授权状态清理器", () => {
   const recoverySource = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
-  assert.match(recoverySource, /function reconcilePendingDevices\(devices\)/);
-  assert.match(recoverySource, /!isA2dpRecoveryTarget\(device\)/);
-  assert.match(recoverySource, /stalePendingNames/);
-  assert.match(recoverySource, /removeStoredFeedback\(deviceName\)/);
-  assert.match(recoverySource, /if \(pausedWasStale\) batchPausedDevice = null/);
+  assert.doesNotMatch(recoverySource, /reconcilePending|stalePending|removeStoredFeedback|batchPaused/);
 });
 
 test("批次完成后胶囊只显示成功或错误并在十秒后清除", () => {
@@ -552,7 +534,7 @@ test("批次完成后胶囊只显示成功或错误并在十秒后清除", () =>
   assert.match(recoverySource, /const terminalKind = batchHadError \? "error" : "success"/);
   assert.match(recoverySource, /terminalBatchState === "success" \? "成功" : "错误"/);
   assert.match(recoverySource, /window\.setTimeout\([\s\S]*?terminalBatchState = null;[\s\S]*?terminalDisplayMs\)/);
-  assert.match(pageSource, /if \(recovery\?\.result\?\.actionRequired\) \{[\s\S]*?actionSection/);
+  assert.doesNotMatch(pageSource, /actionRequired|actionSection/);
   assert.doesNotMatch(pageSource, /resultSection/);
 });
 
@@ -560,13 +542,7 @@ test("列表级胶囊成功态保留十秒后按当前设备恢复入口", async
   const originalWindow = globalThis.window;
   const originalFetch = globalThis.fetch;
   const timers = [];
-  const storage = new Map();
   globalThis.window = {
-    sessionStorage: {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-      removeItem: (key) => storage.delete(key),
-    },
     setTimeout: (callback, delay) => {
       const timer = { callback, delay };
       timers.push(timer);
@@ -580,7 +556,6 @@ test("列表级胶囊成功态保留十秒后按当前设备恢复入口", async
       ok: true,
       outcome: "完全恢复",
       releasedPrograms: [],
-      actionRequired: null,
     }),
   });
   const createElement = (tag, className, text) => ({
@@ -599,7 +574,6 @@ test("列表级胶囊成功态保留十秒后按当前设备恢复入口", async
   try {
     const controller = createA2dpRecoveryController({
       createElement,
-      expandedDevices: new Set(),
       getLastRenderedDevices: () => devices,
       triggerContainer,
       renderDevices: () => {},
@@ -615,42 +589,6 @@ test("列表级胶囊成功态保留十秒后按当前设备恢复入口", async
     globalThis.window = originalWindow;
     globalThis.fetch = originalFetch;
   }
-});
-
-test("只有较新的占用快照确认相关进程停止读取时才撤销麦克风授权", () => {
-  const feedback = {
-    recordedAt: "2026-07-21T00:21:12.380+08:00",
-    result: {
-      actionRequired: {
-        kind: "relaunch-authorization",
-        cause: "麦克风占用类",
-        triggerState: "still-running",
-        occupancyEvidence: "physical-bluetooth-microphone",
-        processNames: ["replayd"],
-      },
-    },
-  };
-  const free = [];
-  const unconfirmed = [{ pid: 80530, name: "replayd", bundleId: "", devices: [], inputActivityKind: "未确认麦克风占用的输入活动" }];
-  const occupied = [{ pid: 80530, name: "replayd", bundleId: "", devices: ["耳机"], inputActivityKind: "已确认实体麦克风占用" }];
-
-  assert.equal(shouldContinueAfterOccupancyEnded(feedback, free, "2026-07-21T00:21:12.446+08:00"), true);
-  assert.equal(shouldContinueAfterOccupancyEnded(feedback, free, "2026-07-21T00:21:12.000+08:00"), false);
-  assert.equal(shouldContinueAfterOccupancyEnded(feedback, unconfirmed, "2026-07-21T00:21:12.446+08:00"), true);
-  assert.equal(shouldContinueAfterOccupancyEnded(feedback, occupied, "2026-07-21T00:21:12.446+08:00"), false);
-  assert.equal(shouldContinueAfterOccupancyEnded({
-    ...feedback,
-    result: { actionRequired: { ...feedback.result.actionRequired, cause: "格式请求类" } },
-  }, free, "2026-07-21T00:21:12.446+08:00"), false);
-  assert.equal(shouldContinueAfterOccupancyEnded({
-    ...feedback,
-    result: {
-      actionRequired: {
-        ...feedback.result.actionRequired,
-        occupancyEvidence: "unclosed-format-request",
-      },
-    },
-  }, free, "2026-07-21T00:21:12.446+08:00"), false);
 });
 
 test("无法形成占用证据的声音活动必须脱离具体设备卡片展示", () => {
@@ -749,9 +687,8 @@ test("页面首次扫描只展示双蓝牙实时状态而不自动发起修复",
 test("一键修复完成结果不再进入设备卡片", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
-  assert.match(source, /if \(result\.actionRequired\) \{[\s\S]*?setFeedback\(device\.name, \{ kind: "pending", result \}\)/);
-  assert.match(source, /batchHadError = batchHadError \|\| !result\.ok;[\s\S]*?removeStoredFeedback\(device\.name\)/);
-  assert.doesNotMatch(source, /kind: result\.ok \? "success" : "error"/);
+  assert.doesNotMatch(source, /actionRequired|setFeedback|feedbackByDevice/);
+  assert.match(source, /batchHadError = batchHadError \|\| !result\.ok/);
   assert.match(source, /finally \{\s+runningDevices\.delete\(device\.name\);\s+progressByDevice\.delete/s);
 });
 
@@ -771,7 +708,7 @@ test("多端点处理只能由用户点击一键修复发起", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.match(source, /"正在保存现场…"/);
-  assert.match(source, /正在保存点击现场，然后按固定顺序执行修复/);
+  assert.match(source, /body: JSON\.stringify\(\{ name: device\.name \}\)/);
   assert.doesNotMatch(source, /async function inspectRouteConflict|inspectingDevices/);
   assert.doesNotMatch(source, /routeChoiceId|route-choice/);
 });

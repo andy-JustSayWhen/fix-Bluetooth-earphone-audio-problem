@@ -51,22 +51,9 @@ export type FormatRequestCause = {
   gaps: string[];
 };
 
-export type UnclosedFormatRequest = {
-  request: FormatRequestEvent;
-  requester: RunningProcess;
-};
-
 export type FormatRequestOccupancyTracker = {
   accept: (event: FormatRequestEvent) => void;
   users: () => MicrophoneUser[];
-};
-
-export type LinkResidualCause = {
-  confidence: "高度疑似" | "无法确认";
-  startIo: StartIoEvent | null;
-  matchingTsco: ProfileEvent | null;
-  laterTacl: ProfileEvent | null;
-  gaps: string[];
 };
 
 export type MultiEndpointCause = {
@@ -308,10 +295,6 @@ function readSystemAudioEvidence(
   }
 }
 
-export function readRecentSystemAudioEvidence(windowMinutes = 10): FormatRequestEvidence {
-  return readSystemAudioEvidence(["--last", `${windowMinutes}m`], windowMinutes);
-}
-
 export function formatSystemLogStart(timestampMs: number): string {
   const date = new Date(timestampMs);
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -326,9 +309,8 @@ export function formatSystemLogStart(timestampMs: number): string {
 }
 
 export function readSystemAudioEvidenceSince(startedAtMs: number): FormatRequestEvidence {
-  const boundedStart = Math.max(startedAtMs, Date.now() - 10 * 60_000);
-  const windowMinutes = Math.max(1, Math.ceil((Date.now() - boundedStart) / 60_000));
-  return readSystemAudioEvidence(["--start", formatSystemLogStart(boundedStart)], windowMinutes);
+  const windowMinutes = Math.max(1, Math.ceil((Date.now() - startedAtMs) / 60_000));
+  return readSystemAudioEvidence(["--start", formatSystemLogStart(startedAtMs)], windowMinutes);
 }
 
 function normalizedBluetoothIdentity(value: string): string {
@@ -339,7 +321,6 @@ export function diagnoseMultiEndpointCause(
   evidence: FormatRequestEvidence,
   target: RawAudioDevice,
   processReader: (pid: number) => RunningProcess | null = readRunningProcess,
-  options: { allowRecoveredTarget?: boolean } = {},
 ): MultiEndpointCause {
   const raw = evidence.rawLines.join("\n");
   const sessionRegex = new RegExp(
@@ -379,10 +360,6 @@ export function diagnoseMultiEndpointCause(
   if (!uniqueBindings.some((binding) =>
     binding.direction === "output" && targetIdentities.includes(binding.address)
   )) gaps.push("日志中的蓝牙输出端点无法与目标设备对应");
-  if (!options.allowRecoveredTarget && (!target.isDefaultOutput || target.sampleRateOutput === null || target.sampleRateOutput > 16_000)) {
-    gaps.push("目标当前不是低采样率默认输出");
-  }
-
   const hasCandidate = sessionMatches.length > 0 || uniqueBindings.length > 0 || rejection !== null;
   return {
     confidence: gaps.length === 0 ? "已确认" : hasCandidate ? "高度疑似" : "无法确认",
@@ -423,7 +400,8 @@ export function diagnoseFormatRequestCause(
   const sameProcessStartIo = evidence.events.find((event): event is StartIoEvent =>
     event.kind === "start-io" &&
     event.requesterPid === request.requesterPid &&
-    Math.abs(event.timestampMs - request.timestampMs) <= 2_000
+    event.timestampMs >= request.timestampMs &&
+    event.timestampMs - request.timestampMs <= 2_000
   ) ?? null;
   const matchingTsco = evidence.events.find((event): event is ProfileEvent =>
     event.kind === "profile" &&
@@ -450,62 +428,6 @@ export function diagnoseFormatRequestCause(
     sameProcessStartIo,
     matchingTsco,
     requestCount,
-    gaps,
-  };
-}
-
-export function findUnclosedFormatRequests(
-  evidence: FormatRequestEvidence,
-  processReader: (pid: number) => RunningProcess | null = readRunningProcess,
-): UnclosedFormatRequest[] {
-  const latestByPid = new Map<number, FormatRequestEvent>();
-  for (const event of evidence.events) {
-    if (event.kind === "format-request") latestByPid.set(event.requesterPid, event);
-  }
-  return [...latestByPid.values()]
-    .filter((event) => event.from === 0 && event.to === 1)
-    .flatMap((request) => {
-      const requester = processReader(request.requesterPid);
-      if (!requester) return [];
-      const startedAt = Date.parse(requester.startedAt);
-      if (!Number.isFinite(startedAt) || startedAt > request.timestampMs + 1_000) return [];
-      return [{ request, requester }];
-    })
-    .sort((left, right) => right.request.timestampMs - left.request.timestampMs);
-}
-
-export function diagnoseLinkResidualCause(
-  evidence: FormatRequestEvidence,
-  targetName: string,
-  lowRateBluetoothOutputNames: string[],
-): LinkResidualCause {
-  const startIo = evidence.events
-    .filter((event): event is StartIoEvent => event.kind === "start-io")
-    .sort((left, right) => right.timestampMs - left.timestampMs)[0] ?? null;
-  const matchingTsco = startIo === null ? null : evidence.events.find((event): event is ProfileEvent =>
-    event.kind === "profile" &&
-    event.profile === "tsco" &&
-    event.timestampMs >= startIo.timestampMs &&
-    event.timestampMs - startIo.timestampMs <= 2_000
-  ) ?? null;
-  const laterTacl = matchingTsco === null ? null : evidence.events.find((event): event is ProfileEvent =>
-    event.kind === "profile" &&
-    event.profile === "tacl" &&
-    event.timestampMs > matchingTsco.timestampMs
-  ) ?? null;
-  const gaps: string[] = [];
-  if (evidence.queryError) gaps.push(`系统声音日志读取失败：${evidence.queryError}`);
-  if (!startIo) gaps.push("最近日志中没有蓝牙输入启动记录");
-  if (startIo && !matchingTsco) gaps.push("输入启动后两秒内没有匹配的 tsco 日志");
-  if (laterTacl) gaps.push("tsco 之后已经出现 tacl，不能认定链路仍有残留");
-  if (lowRateBluetoothOutputNames.length !== 1 || lowRateBluetoothOutputNames[0] !== targetName) {
-    gaps.push("当前低采样率蓝牙输出不是唯一目标，无法对应残留链路");
-  }
-  return {
-    confidence: gaps.length === 0 ? "高度疑似" : "无法确认",
-    startIo,
-    matchingTsco,
-    laterTacl,
     gaps,
   };
 }

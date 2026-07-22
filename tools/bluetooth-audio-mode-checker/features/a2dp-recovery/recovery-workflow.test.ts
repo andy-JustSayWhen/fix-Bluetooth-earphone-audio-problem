@@ -4,6 +4,7 @@ import { runRecovery, type RecoveryRuntime } from "./run-recovery.ts";
 import type { AudioModeAssessment, MicrophoneUser, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 import type { RunningProcess } from "../../core/macos-running-apps/index.ts";
 import type { AudioChainService } from "../../core/macos-system-services/index.ts";
+import type { RecoveryRequest } from "./types.ts";
 
 const targetName = "目标耳机";
 
@@ -69,7 +70,6 @@ function harness(): Harness {
     readDevices: () => devices,
     readMicrophoneUsers: async () => users,
     readProcess: (pid) => processes.get(pid) ?? null,
-    readProcessesByCommand: (command) => [...processes.values()].filter((item) => item.command === command),
     terminateProcess: (processInfo) => { actions.push(`terminate:${processInfo.name}`); processes.delete(processInfo.pid); },
     readEvidenceSince: () => ({ windowMinutes: 1, events: [], rawLines: [], queryError: null }),
     readModeAssessment: (name) => name === targetName ? currentAssessment : null,
@@ -98,7 +98,7 @@ function harness(): Harness {
   };
 }
 
-function request(h: Harness) {
+function request(h: Harness): RecoveryRequest {
   return {
     name: targetName,
     context: {
@@ -132,11 +132,29 @@ test("第一步先结束实时蓝牙麦克风占用，恢复后立即停止", as
     h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
   };
   h.runtime.readProcess = (pid) => active && pid === processInfo.pid ? processInfo : null;
-  h.runtime.readProcessesByCommand = () => [];
   const result = await runRecovery(request(h), h.runtime);
   assert.equal(result.outcome, "完全恢复");
   assert.equal(h.actions[0], "terminate:会议软件");
   assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
+});
+
+test("旧进程退出后同命令新进程未形成占用时不再处理", async () => {
+  const h = harness();
+  const oldProcess = { pid: 88, name: "语音软件", command: "/Applications/VoiceApp", startedAt: "Tue Jul 22 09:00:00 2026" };
+  h.addProcess(oldProcess);
+  h.setUsers([{ pid: 88, name: "语音软件", bundleId: "", devices: [targetName], inputActivityKind: "已确认实体麦克风占用" }]);
+  const terminate = h.runtime.terminateProcess;
+  h.runtime.terminateProcess = (item) => {
+    terminate(item);
+    h.addProcess({ ...oldProcess, pid: 99, startedAt: "Tue Jul 22 10:00:01 2026" });
+    h.setUsers([]);
+    h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+  };
+
+  const result = await runRecovery(request(h), h.runtime);
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(h.actions.filter((item) => item === "terminate:语音软件").length, 1);
 });
 
 test("任何后续动作前发现目标自行恢复时立即停止", async () => {
@@ -165,6 +183,26 @@ test("第二步严格执行输入 A 到非蓝牙 C 再回 A", async () => {
     "route:input:内置麦克风", `route:input:${targetName}`,
   ]);
   assert.equal(h.actions.some((item) => item.startsWith("service:")), false);
+});
+
+test("第二步所有中转输入切换失败时恢复原输入", async () => {
+  const h = harness();
+  const originalSet = h.runtime.setDefaultDevice;
+  h.runtime.setDefaultDevice = (direction, name) => {
+    h.actions.push(`route:${direction}:${name}`);
+    if (direction !== "input") {
+      originalSet(direction, name);
+      return;
+    }
+    for (const device of h.devices) device.isDefaultInput = name === targetName && device.name === targetName;
+  };
+
+  await runRecovery(request(h), h.runtime);
+
+  const firstOutputSwitch = h.actions.findIndex((item) => item.startsWith("route:output:"));
+  const inputActionsBeforeOutput = h.actions.slice(0, firstOutputSwitch < 0 ? undefined : firstOutputSwitch)
+    .filter((item) => item.startsWith("route:input:"));
+  assert.equal(inputActionsBeforeOutput.at(-1), `route:input:${targetName}`);
 });
 
 test("第三步先切输入输出，再先恢复输出 B、最后恢复输入 A", async () => {
@@ -213,11 +251,55 @@ test("第四步在两次路由复位之后才处理已确认格式请求", async
   assert.equal(result.outcome, "完全恢复");
   assert.ok(progressMessages.some((message) => message.includes("格式请求软件（格式请求）")));
   assert.ok(result.diagnosis.evidence.some((item) => item.includes("格式请求软件（格式请求）")));
-  const evidenceIndex = h.actions.indexOf("evidence:format");
+  const evidenceIndex = h.actions.lastIndexOf("evidence:format");
   const routeActions = h.actions.filter((item) => item.startsWith("route:"));
   assert.equal(routeActions.length, 6);
   assert.ok(evidenceIndex > h.actions.lastIndexOf(`route:input:${targetName}`));
   assert.ok(h.actions.indexOf("terminate:格式请求软件") > evidenceIndex);
+});
+
+test("第四步保留点击前已保存且仍未闭合的格式请求", async () => {
+  const h = harness();
+  const processInfo = { pid: 77, name: "格式请求软件", command: "/Applications/FormatApp", startedAt: "Tue Jul 22 09:00:00 2026" };
+  h.addProcess(processInfo);
+  const requestAt = Date.parse("2026-07-22T09:59:30+08:00");
+  let queriedFrom = 0;
+  h.runtime.readEvidenceSince = (startedAt) => {
+    queriedFrom = startedAt;
+    return {
+      windowMinutes: 1,
+      queryError: null,
+      rawLines: [],
+      events: [
+        { kind: "format-request", timestamp: "2026-07-22 09:59:30.000000+0800", timestampMs: requestAt, requesterPid: 77, from: 0, to: 1, raw: "format 0 -> 1" },
+        { kind: "profile", timestamp: "2026-07-22 09:59:30.100000+0800", timestampMs: requestAt + 100, profile: "tsco", raw: "Current profile tsco" },
+      ],
+    };
+  };
+  const terminate = h.runtime.terminateProcess;
+  h.runtime.terminateProcess = (item) => {
+    terminate(item);
+    h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+  };
+  const req = request(h);
+  req.context!.occupancySnapshot = {
+    capturedAt: "2026-07-22T10:00:00+08:00",
+    users: [{
+      pid: 77,
+      name: "格式请求软件",
+      bundleId: "",
+      devices: [],
+      inputActivityKind: "已确认实体麦克风占用",
+      occupancyEvidenceKinds: ["unclosed-format-request"],
+      unclosedFormatRequestAt: "2026-07-22T09:59:30+08:00",
+    }],
+  };
+
+  const result = await runRecovery(req, h.runtime);
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(queriedFrom, requestAt);
+  assert.equal(h.actions.includes("terminate:格式请求软件"), true);
 });
 
 test("第四步按蓝牙地址去重同一物理设备的重复端点", async () => {
@@ -252,17 +334,17 @@ test("第四步按蓝牙地址去重同一物理设备的重复端点", async ()
   assert.equal(h.actions.includes("terminate:格式请求软件"), true);
 });
 
-test("进程不退出时暂停在线性步骤上，且只返回进程阻止授权", async () => {
+test("进程不退出时只请求一次退出并继续固定步骤", async () => {
   const h = harness();
   const processInfo = { pid: 66, name: "占用软件", command: "/Applications/BusyApp", startedAt: "Tue Jul 22 09:00:00 2026" };
   h.addProcess(processInfo);
   h.setUsers([{ pid: 66, name: "占用软件", bundleId: "", devices: [targetName], inputActivityKind: "已确认实体麦克风占用" }]);
   h.runtime.terminateProcess = (item) => { h.actions.push(`terminate:${item.name}`); };
   const result = await runRecovery(request(h), h.runtime);
-  assert.equal(result.outcome, "等待授权");
-  assert.equal(result.actionRequired?.kind, "relaunch-authorization");
-  assert.equal(result._continuation?.roundState.nextStep, 2);
-  assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
+  assert.equal(result.outcome, "未恢复");
+  assert.equal(h.actions.filter((item) => item === "terminate:占用软件").length, 1);
+  assert.equal(h.actions.some((item) => item.startsWith("route:")), true);
+  assert.equal(h.actions.includes("power:off"), true);
 });
 
 test("第五步只有双蓝牙拒绝证据完整时才结束唯一会话进程", async () => {

@@ -29,10 +29,8 @@ import {
   recoverA2dp,
   recoveryWebAssetsDirectory,
   startFormatRequestOccupancyMonitor,
-  type RecoveryContinuation,
   type RecoveryProgress,
   type RecoveryRequestContext,
-  type RecoveryRoundState,
 } from "../features/a2dp-recovery/index.ts";
 import {
   attachSpeakerOccupancy,
@@ -177,6 +175,7 @@ function main(): void {
 
   let cachedState: AudioModeState | null = null;
   let cachedStateUpdatedAt: string | null = null;
+  let fullStateUpdatedAtMs = 0;
   let latestSnapshot: ActiveOutputSnapshot | null = null;
   const eventClients = new Set<import("node:http").ServerResponse>();
   let stateRefreshRunning = false;
@@ -194,10 +193,6 @@ function main(): void {
   const speakerReconnectBusyDevices = new Set<string>();
   let inputActivityScanPending = false;
   let initialOccupancyScanScheduled = false;
-  const pendingRelaunchAuthorizations = new Map<string, {
-    continuation: RecoveryContinuation;
-    expiresAt: number;
-  }>();
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
     microphoneUsers: latestMicrophoneUsers,
@@ -258,6 +253,7 @@ function main(): void {
     };
     cachedState = nextState;
     cachedStateUpdatedAt = new Date().toISOString();
+    fullStateUpdatedAtMs = Date.now();
     const nextFingerprint = JSON.stringify({ devices: nextState.devices, routes: nextState.routes });
     return nextFingerprint !== previousFingerprint;
   };
@@ -704,31 +700,15 @@ function main(): void {
         if (!request.headers["content-type"]?.startsWith("application/json")) throw new Error("请求格式不正确");
         const expectedOrigin = `http://127.0.0.1:${options.port}`;
         if (request.headers.origin && request.headers.origin !== expectedOrigin) throw new Error("请求来源不正确");
-        const body = await readJsonBody(request) as {
-          name?: unknown;
-          authorizeRelaunchBlock?: unknown;
-          continueAfterOccupancyEnded?: unknown;
-        };
+        const body = await readJsonBody(request) as Record<string, unknown>;
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
-        if (body.authorizeRelaunchBlock !== undefined && typeof body.authorizeRelaunchBlock !== "boolean") {
-          throw new Error("授权信息无效");
-        }
-        if (body.continueAfterOccupancyEnded !== undefined && typeof body.continueAfterOccupancyEnded !== "boolean") {
-          throw new Error("继续处理信息无效");
-        }
-        const continuationActions = [
-          body.authorizeRelaunchBlock === true,
-          body.continueAfterOccupancyEnded === true,
-        ].filter(Boolean).length;
-        if (continuationActions > 1) {
-          throw new Error("一次只能提交一种继续处理动作");
-        }
+        if (Object.keys(body).some((key) => key !== "name")) throw new Error("修复请求只能提交目标设备名称");
+        const clickedAt = new Date().toISOString();
         detailedLog("info", "a2dp-recovery.requested", {
           deviceName: body.name,
-          continuation: body.authorizeRelaunchBlock === true
-            ? "relaunch-authorization"
-            : body.continueAfterOccupancyEnded === true ? "occupancy-ended" : "new-round",
+          clickedAt,
         });
+        if (cachedState === null || Date.now() - fullStateUpdatedAtMs > 2_000) refreshState();
         const currentState = cachedState ?? readAudioModeState();
         const currentDevice = currentState.devices.find((device) => device.name === body.name);
         const currentInputName = currentState.routes.input.find((route) => route.isDefault)?.name ?? null;
@@ -737,74 +717,25 @@ function main(): void {
           ? latestMicrophoneUsers ?? []
           : currentState.devices.flatMap((device) => device.microphoneOccupancy?.users ?? []))
           .map((user) => [user.pid, user] as const)).values()];
-        let recoveryContext: RecoveryRequestContext;
-        let roundState: RecoveryRoundState | undefined;
-        let approvedRelaunchGuards: RecoveryContinuation["pendingGuards"] | undefined;
-
-        if (body.authorizeRelaunchBlock === true || body.continueAfterOccupancyEnded === true) {
-          const pending = pendingRelaunchAuthorizations.get(body.name);
-          if (!pending || pending.expiresAt < Date.now()) {
-            pendingRelaunchAuthorizations.delete(body.name);
-            throw new Error("当前没有仍然有效的自动拉起阻止授权，请重新点击一键修复");
-          }
-          recoveryContext = pending.continuation.roundState.context;
-          roundState = pending.continuation.roundState;
-          const originalInput = recoveryContext.defaultInput;
-          const originalOutput = recoveryContext.defaultOutput;
-          if (currentInputName !== originalInput || currentOutputName !== originalOutput) {
-            pendingRelaunchAuthorizations.delete(body.name);
-            throw new Error("当前输入输出已变化，旧授权对应的现场已经失效，请重新点击一键修复");
-          }
-          approvedRelaunchGuards = body.authorizeRelaunchBlock === true && currentDevice?.mode === "HFP_HSP" &&
-              currentDevice.a2dpSupport !== "UNSUPPORTED"
-            ? pending.continuation.pendingGuards
-            : [];
-          pendingRelaunchAuthorizations.delete(body.name);
-        } else {
-          pendingRelaunchAuthorizations.delete(body.name);
-          const clickedAt = new Date().toISOString();
-          recoveryContext = {
-            clickedAt,
-            defaultInput: currentInputName,
-            defaultOutput: currentOutputName,
-            targetSampleRate: currentDevice?.actualSampleRateOutput ?? null,
-            targetAssessment: currentDevice ?? null,
-            deviceAssessments: currentState.devices,
-            occupancySnapshot: latestOccupancyCapturedAt ? {
-              capturedAt: latestOccupancyCapturedAt,
-              users: allOccupancyUsers,
-            } : undefined,
-          };
-        }
+        const recoveryContext: RecoveryRequestContext = {
+          clickedAt,
+          defaultInput: currentInputName,
+          defaultOutput: currentOutputName,
+          targetSampleRate: currentDevice?.actualSampleRateOutput ?? null,
+          targetAssessment: currentDevice ?? null,
+          deviceAssessments: currentState.devices,
+          occupancySnapshot: latestOccupancyCapturedAt ? {
+            capturedAt: latestOccupancyCapturedAt,
+            users: allOccupancyUsers,
+          } : undefined,
+        };
         const result = await recoverA2dp({
           name: body.name,
-          authorizeRelaunchBlock: body.authorizeRelaunchBlock as boolean | undefined,
-          _roundState: roundState,
-          _approvedRelaunchGuards: approvedRelaunchGuards,
           context: recoveryContext,
         }, (progress) => broadcastRecoveryProgress(body.name as string, progress),
-        () => cachedState?.devices ?? [],
-        async () => {
-          const state = cachedState ?? readAudioModeState();
-          latestRawMicrophoneUsers = await readAllMicrophoneUsersAsync();
-          const activities = classifyInputActivities(state.devices, currentMicrophoneUsers());
-          return activities.filter((user) => user.inputActivityKind === "已确认实体麦克风占用");
-        });
+        () => cachedState?.devices ?? []);
         scheduleOccupancyScan(0, "a2dp-recovery-completed");
         scheduleStateRefresh();
-        const continuation = result._continuation;
-        delete result._continuation;
-        if (result.actionRequired?.kind === "relaunch-authorization") {
-          if (!continuation || continuation.pendingGuards.length === 0) {
-            throw new Error("修复流程没有保存等待授权所需的进程和处理记录");
-          }
-          pendingRelaunchAuthorizations.set(body.name, {
-            continuation,
-            expiresAt: Date.now() + 30 * 60 * 1_000,
-          });
-        } else {
-          pendingRelaunchAuthorizations.delete(body.name);
-        }
         detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.returned", { deviceName: body.name, result });
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
         response.end(JSON.stringify(result));
