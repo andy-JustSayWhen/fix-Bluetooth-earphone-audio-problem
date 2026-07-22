@@ -117,6 +117,7 @@ const inputSelect = document.querySelector("#input-device");
 const routeMessage = document.querySelector("#route-message");
 
 const expandedDevices = new Set();
+const occupancyTerminalDisplayMs = 10_000;
 const occupancyFeedback = new Map();
 const occupancyFeedbackTimers = new Map();
 const occupancyBusyDevices = new Set();
@@ -268,7 +269,7 @@ async function releaseOccupancy(deviceName, users) {
         releasedNames: users
           .filter((user) => result.releasedPids.includes(user.pid))
           .map((user) => user.name),
-      }, 10_000);
+      }, occupancyTerminalDisplayMs);
     } else {
       setOccupancyFeedback(deviceName, {
         kind: "neutral",
@@ -276,7 +277,11 @@ async function releaseOccupancy(deviceName, users) {
       });
     }
   } catch (error) {
-    setOccupancyFeedback(deviceName, { kind: "error", text: `解除失败：${error.message}` });
+    setOccupancyFeedback(
+      deviceName,
+      { kind: "error", text: `解除失败：${error.message}` },
+      occupancyTerminalDisplayMs,
+    );
   } finally {
     occupancyBusyDevices.delete(deviceName);
     renderDevices(lastRenderedDevices);

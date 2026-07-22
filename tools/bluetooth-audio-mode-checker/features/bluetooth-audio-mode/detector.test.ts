@@ -683,13 +683,15 @@ test("多端点处理只能由用户点击一键修复发起", () => {
   assert.doesNotMatch(source, /routeChoiceId|route-choice/);
 });
 
-test("单独解除占用显示阶段并在完成后主动多次复查", () => {
+test("单独解除占用显示阶段、主动复查并在十秒后清除终态提示", () => {
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
 
   assert.match(source, /occupancyBusyDevices\.add\(deviceName\)/);
   assert.match(source, /正在解除并复查…/);
   assert.match(source, /\[350, 900, 1_800\]/);
   assert.match(source, /已重新占用/);
-  assert.match(source, /setOccupancyFeedback\(deviceName, \{[\s\S]*?kind: "success"[\s\S]*?\}, 10_000\)/);
+  assert.match(source, /const occupancyTerminalDisplayMs = 10_000/);
+  assert.match(source, /kind: "success"[\s\S]*?\}, occupancyTerminalDisplayMs\)/);
+  assert.match(source, /解除失败：\$\{error\.message\}[\s\S]*?occupancyTerminalDisplayMs/);
   assert.match(source, /occupancyFeedback\.get\(deviceName\) === feedback/);
 });
