@@ -151,12 +151,40 @@ test("第一步先结束实时蓝牙麦克风占用，恢复后立即停止", as
   h.runtime.terminateProcess = (item) => {
     h.actions.push(`terminate:${item.name}`);
     active = false;
-    h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+    h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 16_000, isDefaultOutput: false }));
   };
   h.runtime.readProcess = (pid) => active && pid === processInfo.pid ? processInfo : null;
   const result = await runRecovery(request(h), h.runtime);
   assert.equal(result.outcome, "完全恢复");
   assert.equal(h.actions[0], "terminate:会议软件");
+  assert.equal(h.actions.filter((item) => item === "wait:500").length, 6);
+  assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
+});
+
+test("A2DP 连续保持时间中断后从零重新计算", async () => {
+  const h = harness();
+  const processInfo = { pid: 88, name: "会议软件", command: "/Applications/Meeting", startedAt: "Tue Jul 22 09:00:00 2026" };
+  h.addProcess(processInfo);
+  h.setUsers([{ pid: 88, name: "会议软件", bundleId: "", devices: [targetName], inputActivityKind: "已确认实体麦克风占用" }]);
+  let active = true;
+  h.runtime.terminateProcess = () => {
+    active = false;
+    h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+  };
+  h.runtime.readProcess = (pid) => active && pid === processInfo.pid ? processInfo : null;
+  const originalWait = h.runtime.wait;
+  let waitCount = 0;
+  h.runtime.wait = async (milliseconds) => {
+    await originalWait(milliseconds);
+    waitCount += 1;
+    if (waitCount === 2) h.setAssessment(assessment());
+    if (waitCount === 3) h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
+  };
+
+  const result = await runRecovery(request(h), h.runtime);
+
+  assert.equal(result.outcome, "完全恢复");
+  assert.equal(h.actions.filter((item) => item === "wait:500").length, 9);
   assert.equal(h.actions.some((item) => item.startsWith("route:")), false);
 });
 

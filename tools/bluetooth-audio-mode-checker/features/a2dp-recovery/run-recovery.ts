@@ -50,6 +50,9 @@ const routePollMs = 100;
 const linkReleaseTimeoutMs = 500;
 const linkPollMs = 50;
 const linkHoldMs = 1_000;
+const stableEntryTimeoutMs = 5_000;
+const stableHoldMs = 3_000;
+const stablePollMs = 500;
 
 export type RecoveryRuntime = {
   now: () => number;
@@ -153,7 +156,6 @@ function currentObservation(runtime: RecoveryRuntime, request: RecoveryRequest) 
   return {
     mode: assessment?.mode ?? null,
     rate: assessment?.actualSampleRateOutput ?? null,
-    isDefaultOutput: assessment?.isDefaultOutput ?? false,
   };
 }
 
@@ -176,27 +178,29 @@ async function verifyStableRecovery(
   request: RecoveryRequest,
   runtime: RecoveryRuntime,
   reportProgress: (progress: RecoveryProgress) => void,
-  attempts = 10,
 ): Promise<StableRecovery | null> {
-  const deadline = runtime.now() + 5_000;
-  let consecutive = 0;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  const entryDeadline = runtime.now() + stableEntryTimeoutMs;
+  let a2dpSince: number | null = null;
+  while (true) {
     const observation = currentObservation(runtime, request);
-    const recovered = observation.isDefaultOutput
-      ? observation.rate !== null && observation.rate > 16_000 && observation.mode === "A2DP"
-      : observation.mode !== null && observation.mode !== "HFP_HSP";
-    consecutive = recovered ? consecutive + 1 : 0;
-    if (consecutive === 1) {
-      reportProgress({ stage: "正在确认稳定", message: "已初步退出通话模式，正在连续确认。" });
+    const observedAt = runtime.now();
+    if (observation.mode === "A2DP") {
+      if (a2dpSince === null) {
+        a2dpSince = observedAt;
+        reportProgress({ stage: "正在确认稳定", message: "已恢复 A2DP，正在确认连续保持 3 秒。" });
+      }
+      if (observedAt - a2dpSince >= stableHoldMs) {
+        return { rate: observation.rate, mode: observation.mode };
+      }
+    } else {
+      a2dpSince = null;
+      if (observedAt >= entryDeadline) return null;
     }
-    if (consecutive >= 3 && observation.mode !== null) {
-      return { rate: observation.rate, mode: observation.mode };
-    }
-    const remaining = deadline - runtime.now();
-    if (attempt >= attempts - 1 || remaining <= 0) break;
-    await runtime.wait(Math.min(500, remaining));
+
+    const observationDeadline = a2dpSince === null ? entryDeadline : a2dpSince + stableHoldMs;
+    const remaining = observationDeadline - runtime.now();
+    if (remaining > 0) await runtime.wait(Math.min(stablePollMs, remaining));
   }
-  return null;
 }
 
 async function waitForRoute(
@@ -589,7 +593,7 @@ export async function runRecovery(
     if (!current) {
       return result(request, state, runtime, "未恢复", makeDiagnosis("证据不足", "执行下一动作前目标设备已不可用"), false);
     }
-    const stable = await verifyStableRecovery(request, runtime, reportProgress, 3);
+    const stable = await verifyStableRecovery(request, runtime, reportProgress);
     return stable
       ? result(request, state, runtime, "完全恢复", makeDiagnosis("证据不足", "执行下一动作前目标已自行稳定恢复"), false)
       : result(request, state, runtime, "未恢复", makeDiagnosis("证据不足", "目标已不在 HFP/HSP，但未满足稳定恢复条件"), false);
