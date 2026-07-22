@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureNativeHelperBuilt } from "../native-helper/index.ts";
 
 import type {
   AudioProbeSnapshot,
@@ -30,26 +30,15 @@ type DeviceFormatFacts = {
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const toolRoot = join(moduleDirectory, "..", "..");
 const rateSourcePath = join(moduleDirectory, "read-device-formats.c");
-const rateBuildDirectory = join(toolRoot, ".build", "audio-probe");
-const rateExecutablePath = join(rateBuildDirectory, "read-device-formats");
-
-function modificationTime(path: string): number {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
+const rateExecutablePath = join(toolRoot, ".build", "audio-probe", "read-device-formats");
 
 function ensureRateHelperBuilt(): void {
-  if (modificationTime(rateExecutablePath) >= modificationTime(rateSourcePath)) return;
-  mkdirSync(rateBuildDirectory, { recursive: true });
-  execFileSync("/usr/bin/clang", [
-    rateSourcePath,
-    "-framework", "CoreAudio",
-    "-framework", "CoreFoundation",
-    "-o", rateExecutablePath,
-  ], { stdio: ["ignore", "inherit", "inherit"] });
+  ensureNativeHelperBuilt({
+    sourcePath: rateSourcePath,
+    executablePath: rateExecutablePath,
+    frameworks: ["CoreAudio", "CoreFoundation"],
+    stdio: ["ignore", "inherit", "inherit"],
+  });
 }
 
 function readDeviceFormatFacts(): DeviceFormatFacts[] {

@@ -1,21 +1,24 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { BluetoothLinkSnapshot, BluetoothLinkType } from "../../shared/audio-device-types/index.ts";
+import { normalizeBluetoothAddress } from "../../shared/bluetooth-device-identity/index.ts";
+import {
+  consumeUtf8Lines,
+  formatUnifiedLogStart,
+  parseUnifiedLogTimestamp,
+  systemBootTimeMs,
+} from "../macos-unified-log/index.ts";
+import { ensureNativeHelperBuilt } from "../native-helper/index.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const toolRoot = join(moduleDirectory, "..", "..");
 const sourcePath = join(moduleDirectory, "reconnect-device.m");
 const connectSourcePath = join(moduleDirectory, "connect-device.m");
-const disconnectScoSourcePath = join(moduleDirectory, "disconnect-sco.m");
-const disconnectSourcePath = join(moduleDirectory, "disconnect-device.m");
 const buildDirectory = join(toolRoot, ".build", "bluetooth-link");
 const executablePath = join(buildDirectory, "reconnect-device");
 const connectExecutablePath = join(buildDirectory, "connect-device");
-const disconnectScoExecutablePath = join(buildDirectory, "disconnect-sco");
-const disconnectExecutablePath = join(buildDirectory, "disconnect-device");
 const linkLogPredicate = [
   'process == "coreaudiod"',
   'AND',
@@ -27,29 +30,17 @@ const linkLogPredicate = [
   ')',
 ].join(" ");
 
-function modificationTime(path: string): number {
-  try { return statSync(path).mtimeMs; } catch { return 0; }
-}
-
-function ensureHelperBuilt(): void {
-  if (modificationTime(executablePath) >= modificationTime(sourcePath)) return;
-  mkdirSync(buildDirectory, { recursive: true });
-  execFileSync("/usr/bin/clang", [
-    "-fobjc-arc",
-    sourcePath,
-    "-framework", "Foundation",
-    "-framework", "IOBluetooth",
-    "-o", executablePath,
-  ], { stdio: ["ignore", "ignore", "pipe"] });
-}
-
-export function reconnectBluetoothDevice(name: string): void {
-  ensureHelperBuilt();
-  execFileSync(executablePath, [name], { encoding: "utf8", timeout: 18_000 });
+function ensureBluetoothHelperBuilt(source: string, executable: string): void {
+  ensureNativeHelperBuilt({
+    sourcePath: source,
+    executablePath: executable,
+    compilerFlags: ["-fobjc-arc"],
+    frameworks: ["Foundation", "IOBluetooth"],
+  });
 }
 
 export function reconnectBluetoothDeviceAsync(name: string): Promise<void> {
-  ensureHelperBuilt();
+  ensureBluetoothHelperBuilt(sourcePath, executablePath);
   return new Promise((resolve, reject) => {
     execFile(executablePath, [name], { encoding: "utf8", timeout: 18_000 }, (error) => {
       if (error) reject(error);
@@ -59,106 +50,19 @@ export function reconnectBluetoothDeviceAsync(name: string): Promise<void> {
 }
 
 export function connectBluetoothDevice(name: string): void {
-  if (modificationTime(connectExecutablePath) < modificationTime(connectSourcePath)) {
-    mkdirSync(buildDirectory, { recursive: true });
-    execFileSync("/usr/bin/clang", [
-      "-fobjc-arc",
-      connectSourcePath,
-      "-framework", "Foundation",
-      "-framework", "IOBluetooth",
-      "-o", connectExecutablePath,
-    ], { stdio: ["ignore", "ignore", "pipe"] });
-  }
+  ensureBluetoothHelperBuilt(connectSourcePath, connectExecutablePath);
   execFileSync(connectExecutablePath, [name], { encoding: "utf8", timeout: 18_000 });
-}
-
-export function disconnectBluetoothDevice(name: string): void {
-  if (modificationTime(disconnectExecutablePath) < modificationTime(disconnectSourcePath)) {
-    mkdirSync(buildDirectory, { recursive: true });
-    execFileSync("/usr/bin/clang", [
-      "-fobjc-arc",
-      disconnectSourcePath,
-      "-framework", "Foundation",
-      "-framework", "IOBluetooth",
-      "-o", disconnectExecutablePath,
-    ], { stdio: ["ignore", "ignore", "pipe"] });
-  }
-  execFileSync(disconnectExecutablePath, [name], { encoding: "utf8", timeout: 10_000 });
-}
-
-export function disconnectBluetoothSco(name: string): { scoWasConnected: boolean; scoConnected: boolean } {
-  if (modificationTime(disconnectScoExecutablePath) < modificationTime(disconnectScoSourcePath)) {
-    mkdirSync(buildDirectory, { recursive: true });
-    execFileSync("/usr/bin/clang", [
-      "-fobjc-arc",
-      disconnectScoSourcePath,
-      "-framework", "Foundation",
-      "-framework", "IOBluetooth",
-      "-o", disconnectScoExecutablePath,
-    ], { stdio: ["ignore", "ignore", "pipe"] });
-  }
-  const output = execFileSync(disconnectScoExecutablePath, [name], { encoding: "utf8", timeout: 10_000 });
-  return JSON.parse(output) as { scoWasConnected: boolean; scoConnected: boolean };
-}
-
-function normalizedAddress(address: string): string {
-  return address.replace(/[^0-9a-f]/gi, "").toUpperCase();
 }
 
 export function parseBluetoothLinkLine(line: string): BluetoothLinkSnapshot | null {
   const profileMatch = line.match(/(?:Current profile|Starting IO on profile)\s+(tacl|tsco)/i);
   const addressMatch = line.match(/\b([0-9A-F]{2}(?::[0-9A-F]{2}){5})\b/i);
   if (!profileMatch || !addressMatch) return null;
-  const localTimestamp = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)/)?.[1];
-  const parsedTimestamp = localTimestamp ? new Date(localTimestamp.replace(" ", "T")) : new Date();
   return {
-    address: normalizedAddress(addressMatch[1]),
+    address: normalizeBluetoothAddress(addressMatch[1]),
     profile: profileMatch[1].toLowerCase() as BluetoothLinkType,
-    timestamp: Number.isNaN(parsedTimestamp.getTime()) ? new Date().toISOString() : parsedTimestamp.toISOString(),
+    timestamp: parseUnifiedLogTimestamp(line),
   };
-}
-
-function systemBootTimeMs(): number {
-  try {
-    const output = execFileSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
-      encoding: "utf8",
-      timeout: 1_000,
-    });
-    const seconds = Number(output.match(/sec\s*=\s*(\d+)/)?.[1]);
-    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : Date.now() - 24 * 60 * 60_000;
-  } catch {
-    return Date.now() - 24 * 60 * 60_000;
-  }
-}
-
-export function formatBluetoothLinkLogStart(timestampMs: number): string {
-  const date = new Date(timestampMs);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return [
-    date.getFullYear(),
-    "-", pad(date.getMonth() + 1),
-    "-", pad(date.getDate()),
-    " ", pad(date.getHours()),
-    ":", pad(date.getMinutes()),
-    ":", pad(date.getSeconds()),
-  ].join("");
-}
-
-function consumeLogOutput(
-  child: ReturnType<typeof spawn>,
-  onSnapshot: (snapshot: BluetoothLinkSnapshot) => void,
-): void {
-  let pending = "";
-  child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    pending += chunk;
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    for (const line of lines) {
-      const snapshot = parseBluetoothLinkLine(line);
-      if (snapshot) onSnapshot(snapshot);
-    }
-  });
 }
 
 export function startBluetoothLinkMonitor(
@@ -168,7 +72,7 @@ export function startBluetoothLinkMonitor(
   const historical = spawn("/usr/bin/log", [
     "show",
     "--style", "compact",
-    "--start", formatBluetoothLinkLogStart(systemBootTimeMs()),
+    "--start", formatUnifiedLogStart(systemBootTimeMs()),
     "--predicate", linkLogPredicate,
   ], { stdio: ["ignore", "pipe", "ignore"] });
   const stream = spawn("/usr/bin/log", [
@@ -177,8 +81,14 @@ export function startBluetoothLinkMonitor(
     "--debug",
     "--predicate", linkLogPredicate,
   ], { stdio: ["ignore", "pipe", "ignore"] });
-  consumeLogOutput(historical, onSnapshot);
-  consumeLogOutput(stream, onSnapshot);
+  consumeUtf8Lines(historical.stdout, (line) => {
+    const snapshot = parseBluetoothLinkLine(line);
+    if (snapshot) onSnapshot(snapshot);
+  });
+  consumeUtf8Lines(stream.stdout, (line) => {
+    const snapshot = parseBluetoothLinkLine(line);
+    if (snapshot) onSnapshot(snapshot);
+  });
   return () => {
     if (!historical.killed) historical.kill("SIGTERM");
     if (!stream.killed) stream.kill("SIGTERM");

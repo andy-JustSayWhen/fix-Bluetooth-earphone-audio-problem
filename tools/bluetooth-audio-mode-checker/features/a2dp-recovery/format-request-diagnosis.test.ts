@@ -4,7 +4,6 @@ import {
   createFormatRequestOccupancyTracker,
   diagnoseFormatRequestCause,
   diagnoseMultiEndpointCause,
-  formatSystemLogStart,
   parseSystemAudioLog,
   type FormatRequestEvidence,
 } from "./format-request-diagnosis.ts";
@@ -51,11 +50,6 @@ function evidence(lines: string): FormatRequestEvidence {
     queryError: null,
   };
 }
-
-test("系统日志开始时间使用本地空格格式而不是 ISO 字符串", () => {
-  const localTime = new Date(2026, 6, 20, 3, 4, 40).getTime();
-  assert.equal(formatSystemLogStart(localTime), "2026-07-20 03:04:40");
-});
 
 test("解析格式请求者和内部切换方向", () => {
   const events = parseSystemAudioLog(requestLine);

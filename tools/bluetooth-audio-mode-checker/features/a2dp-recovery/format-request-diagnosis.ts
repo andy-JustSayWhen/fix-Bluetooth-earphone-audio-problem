@@ -4,7 +4,13 @@ import {
   type RunningProcess,
 } from "../../core/macos-running-apps/index.ts";
 import { detailedLog } from "../../core/detailed-logging/index.ts";
+import {
+  consumeUtf8Lines,
+  formatUnifiedLogStart,
+  systemBootTimeMs,
+} from "../../core/macos-unified-log/index.ts";
 import type { MicrophoneUser, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
+import { normalizeBluetoothAddress } from "../../shared/bluetooth-device-identity/index.ts";
 
 export type FormatRequestEvent = {
   kind: "format-request";
@@ -174,35 +180,15 @@ export function createFormatRequestOccupancyTracker(
   };
 }
 
-function systemBootTimeMs(): number {
-  try {
-    const output = execFileSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], {
-      encoding: "utf8",
-      timeout: 1_000,
-    });
-    const seconds = Number(output.match(/sec\s*=\s*(\d+)/)?.[1]);
-    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : Date.now() - 24 * 60 * 60_000;
-  } catch {
-    return Date.now() - 24 * 60 * 60_000;
-  }
-}
-
 function consumeFormatRequestOutput(
   child: ReturnType<typeof spawn>,
   accept: (event: FormatRequestEvent) => void,
 ): void {
-  let pending = "";
-  child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    pending += chunk;
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    for (const line of lines) {
-      const event = parseSystemAudioLog(line).find(
-        (candidate): candidate is FormatRequestEvent => candidate.kind === "format-request",
-      );
-      if (event) accept(event);
-    }
+  consumeUtf8Lines(child.stdout, (line) => {
+    const event = parseSystemAudioLog(line).find(
+      (candidate): candidate is FormatRequestEvent => candidate.kind === "format-request",
+    );
+    if (event) accept(event);
   });
 }
 
@@ -227,7 +213,7 @@ export function startFormatRequestOccupancyMonitor(
     publish(event);
   };
   const historical = spawn("/usr/bin/log", [
-    "show", "--style", "syslog", "--start", formatSystemLogStart(systemBootTimeMs()),
+    "show", "--style", "syslog", "--start", formatUnifiedLogStart(systemBootTimeMs()),
     "--predicate", formatRequestLogPredicate,
   ], { stdio: ["ignore", "pipe", "ignore"] });
   const stream = spawn("/usr/bin/log", [
@@ -295,26 +281,9 @@ function readSystemAudioEvidence(
   }
 }
 
-export function formatSystemLogStart(timestampMs: number): string {
-  const date = new Date(timestampMs);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return [
-    date.getFullYear(),
-    "-", pad(date.getMonth() + 1),
-    "-", pad(date.getDate()),
-    " ", pad(date.getHours()),
-    ":", pad(date.getMinutes()),
-    ":", pad(date.getSeconds()),
-  ].join("");
-}
-
 export function readSystemAudioEvidenceSince(startedAtMs: number): FormatRequestEvidence {
   const windowMinutes = Math.max(1, Math.ceil((Date.now() - startedAtMs) / 60_000));
-  return readSystemAudioEvidence(["--start", formatSystemLogStart(startedAtMs)], windowMinutes);
-}
-
-function normalizedBluetoothIdentity(value: string): string {
-  return value.replace(/[^0-9a-f]/gi, "").toUpperCase();
+  return readSystemAudioEvidence(["--start", formatUnifiedLogStart(startedAtMs)], windowMinutes);
 }
 
 export function diagnoseMultiEndpointCause(
@@ -333,7 +302,7 @@ export function diagnoseMultiEndpointCause(
   const requester = requesterPid === null ? null : processReader(requesterPid);
   const bindings = [...raw.matchAll(/([0-9a-f]{2}(?:[-:][0-9a-f]{2}){5}):(input|output)\b/gi)]
     .map((match) => ({
-      address: normalizedBluetoothIdentity(match[1]),
+      address: normalizeBluetoothAddress(match[1]),
       direction: match[2].toLowerCase() as "input" | "output",
     }));
   const uniqueBindings = [...new Map(bindings.map((binding) =>
@@ -342,7 +311,7 @@ export function diagnoseMultiEndpointCause(
   const rejectionMatch = raw.match(/There was an error setting the deviceUUIDs[^\n]*more than one BT device connected[^\n]*/i);
   const rejection = rejectionMatch?.[0] ?? null;
   const targetIdentities = [target.uid, target.bluetoothAddress ?? ""]
-    .map(normalizedBluetoothIdentity)
+    .map(normalizeBluetoothAddress)
     .filter(Boolean);
   const addresses = new Set(uniqueBindings.map((binding) => binding.address));
   const gaps: string[] = [];

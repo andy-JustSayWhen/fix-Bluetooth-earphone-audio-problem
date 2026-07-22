@@ -1,31 +1,20 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureNativeHelperBuilt } from "../native-helper/index.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const toolRoot = join(moduleDirectory, "..", "..");
 const sourcePath = join(moduleDirectory, "set-default-device.c");
-const buildDirectory = join(toolRoot, ".build", "audio-route");
-const executablePath = join(buildDirectory, "set-default-device");
-
-function modificationTime(path: string): number {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
+const executablePath = join(toolRoot, ".build", "audio-route", "set-default-device");
 
 function ensureHelperBuilt(): void {
-  if (modificationTime(executablePath) >= modificationTime(sourcePath)) return;
-  mkdirSync(buildDirectory, { recursive: true });
-  execFileSync("/usr/bin/clang", [
+  ensureNativeHelperBuilt({
     sourcePath,
-    "-framework", "CoreAudio",
-    "-framework", "CoreFoundation",
-    "-o", executablePath,
-  ], { stdio: ["ignore", "inherit", "inherit"] });
+    executablePath,
+    frameworks: ["CoreAudio", "CoreFoundation"],
+    stdio: ["ignore", "inherit", "inherit"],
+  });
 }
 
 export function setDefaultAudioDevice(direction: "input" | "output", name: string): void {

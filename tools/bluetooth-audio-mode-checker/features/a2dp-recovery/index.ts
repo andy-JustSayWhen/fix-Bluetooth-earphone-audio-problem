@@ -5,6 +5,7 @@ import { detailedLog } from "../../core/detailed-logging/index.ts";
 import type { AudioModeAssessment, MicrophoneUser } from "../../shared/audio-device-types/index.ts";
 
 export { startFormatRequestOccupancyMonitor } from "./format-request-diagnosis.ts";
+export { isA2dpRecoveryEligible } from "./recovery-policy.ts";
 import type {
   A2dpRecoveryResult,
   RecoveryMicrophoneReleaseResult,
@@ -33,7 +34,7 @@ export async function recoverA2dp(
   readModeAssessments: () => AudioModeAssessment[] = () => [],
   readFormatRequestUsers: () => MicrophoneUser[] = () => [],
   releaseBluetoothMicrophoneOccupancy: (deviceName: string) => Promise<RecoveryMicrophoneReleaseResult> = async () => ({
-    users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [],
+    users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [], protectedPids: [],
   }),
 ): Promise<A2dpRecoveryResult> {
   return new Promise((resolve, reject) => {

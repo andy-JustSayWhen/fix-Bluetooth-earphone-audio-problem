@@ -3,6 +3,7 @@ export function createSpeakerOccupancyController({
   getLastRenderedDevices,
   renderDevices,
   schedulePostActionRefresh,
+  postJson,
 }) {
   const busyDevices = new Set();
   const feedbackByDevice = new Map();
@@ -15,13 +16,11 @@ export function createSpeakerOccupancyController({
     });
     renderDevices(getLastRenderedDevices());
     try {
-      const response = await fetch("/api/speaker-occupancy/reconnect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: device.name }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "断开重连失败");
+      const result = await postJson(
+        "/api/speaker-occupancy/reconnect",
+        { name: device.name },
+        "断开重连失败",
+      );
       feedbackByDevice.set(device.name, {
         kind: "success",
         text: `设备已完成断开重连，用时 ${(result.durationMs / 1_000).toFixed(1)} 秒。请重新播放声音确认设备端是否恢复。`,

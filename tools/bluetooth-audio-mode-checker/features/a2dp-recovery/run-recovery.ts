@@ -4,6 +4,8 @@ import { connectBluetoothDevice } from "../../core/macos-bluetooth-link/index.ts
 import { readBluetoothPower, setBluetoothPower } from "../../core/macos-bluetooth-control/index.ts";
 import {
   readRunningProcess,
+  runningProcessIdentity,
+  terminateAndConfirmRunningProcesses,
   terminateRunningProcess,
   type RunningProcess,
 } from "../../core/macos-running-apps/index.ts";
@@ -15,12 +17,21 @@ import {
 import { detailedLog } from "../../core/detailed-logging/index.ts";
 import type { AudioModeAssessment, MicrophoneUser, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 import {
+  bluetoothPhysicalIdentity,
+  isBluetoothTransport,
+} from "../../shared/bluetooth-device-identity/index.ts";
+import {
   diagnoseFormatRequestCause,
   diagnoseMultiEndpointCause,
   readSystemAudioEvidenceSince,
   type FormatRequestEvidence,
 } from "./format-request-diagnosis.ts";
-import { orderedRouteCandidates, routeDevicePriority, routeDevicePriorityLabel } from "./recovery-policy.ts";
+import {
+  isA2dpRecoveryEligible,
+  orderedRouteCandidates,
+  routeDevicePriority,
+  routeDevicePriorityLabel,
+} from "./recovery-policy.ts";
 import type {
   A2dpRecoveryResult,
   RecoveryDiagnosis,
@@ -31,9 +42,6 @@ import type {
   RecoveryStep,
 } from "./types.ts";
 
-const protectedProcessNames = new Set([
-  "audioaccessoryd", "audiomxd", "bluetoothd", "bluetoothuserd", "coreaudiod", "kernel_task", "launchd",
-]);
 const serviceOrder: AudioChainService[] = [
   "bluetoothd", "bluetoothuserd", "coreaudiod", "audioaccessoryd", "audiomxd",
 ];
@@ -67,7 +75,7 @@ export const systemRuntime: RecoveryRuntime = {
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   readDevices: () => readAudioDevices().devices,
   releaseBluetoothMicrophoneOccupancy: async () => ({
-    users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [],
+    users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [], protectedPids: [],
   }),
   readFormatRequestUsers: () => [],
   readProcess: readRunningProcess,
@@ -93,8 +101,7 @@ type RecoveryState = {
 };
 
 function isBluetooth(device: RawAudioDevice): boolean {
-  const transport = (device.transport ?? "").toLowerCase();
-  return transport === "bluetooth" || transport === "bluetooth-le" || transport.includes("bluetooth");
+  return isBluetoothTransport(device.transport);
 }
 
 function currentAssessments(runtime: RecoveryRuntime, request: RecoveryRequest): AudioModeAssessment[] {
@@ -121,8 +128,7 @@ function targetOutput(devices: RawAudioDevice[], name: string): RawAudioDevice |
 function uniqueBluetoothDeviceNames(devices: RawAudioDevice[]): string[] {
   const byPhysicalIdentity = new Map<string, string>();
   for (const device of devices) {
-    const address = device.bluetoothAddress?.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
-    const identity = address ? `address:${address}` : `name:${device.name}`;
+    const identity = bluetoothPhysicalIdentity(device.bluetoothAddress, device.name);
     if (!byPhysicalIdentity.has(identity)) byPhysicalIdentity.set(identity, device.name);
   }
   return [...byPhysicalIdentity.values()];
@@ -274,29 +280,69 @@ async function restoreRoutes(
   return restored;
 }
 
-async function terminateAndWait(processes: RunningProcess[], runtime: RecoveryRuntime): Promise<RunningProcess[]> {
-  const safe = processes.filter((processInfo) => !protectedProcessNames.has(processInfo.name));
-  for (const processInfo of safe) runtime.terminateProcess(processInfo);
-  const deadline = runtime.now() + 2_000;
-  while (true) {
-    const remaining = safe.filter((expected) => {
-      const current = runtime.readProcess(expected.pid);
-      return current?.command === expected.command && current.startedAt === expected.startedAt;
-    });
-    if (remaining.length === 0) return [];
-    const remainingTime = deadline - runtime.now();
-    if (remainingTime <= 0) return remaining;
-    await runtime.wait(Math.min(100, remainingTime));
-  }
-}
-
-function processIdentity(processInfo: RunningProcess): string {
-  return `${processInfo.pid}\u0000${processInfo.command}\u0000${processInfo.startedAt}`;
-}
-
 function processesNotYetAttempted(processes: RunningProcess[], state: RecoveryState): RunningProcess[] {
-  const unique = [...new Map(processes.map((item) => [processIdentity(item), item] as const)).values()];
-  return unique.filter((item) => !state.attemptedProcessIdentities.has(processIdentity(item)));
+  const unique = [...new Map(processes.map((item) => [runningProcessIdentity(item), item] as const)).values()];
+  return unique.filter((item) => !state.attemptedProcessIdentities.has(runningProcessIdentity(item)));
+}
+
+function recordProcessRelease(
+  request: RecoveryRequest,
+  state: RecoveryState,
+  stage: string,
+  cause: "麦克风占用类" | "格式请求类" | "多端点会话类",
+  release: RecoveryMicrophoneReleaseResult,
+): void {
+  const released = release.processes.filter((processInfo) => release.releasedPids.includes(processInfo.pid));
+  const remaining = release.processes.filter((processInfo) => release.remainingPids.includes(processInfo.pid));
+  const protectedProcesses = release.processes.filter((processInfo) => release.protectedPids.includes(processInfo.pid));
+  state.releasedPrograms.push(...released.map((item) => item.name));
+  state.remainingPrograms.push(...remaining.map((item) => item.name));
+  const displayCause = cause === "多端点会话类" ? undefined : cause;
+  const details = [
+    released.length > 0
+      ? `已确认退出：${released.map((item) => processDescription(item, displayCause)).join("、")}`
+      : null,
+    remaining.length > 0
+      ? `仍未退出：${remaining.map((item) => processDescription(item, displayCause)).join("、")}`
+      : null,
+    protectedProcesses.length > 0
+      ? `系统核心进程未处理：${protectedProcesses.map((item) => processDescription(item)).join("、")}`
+      : null,
+  ].filter((item): item is string => item !== null);
+  const status: RecoveryStep["status"] = remaining.length > 0
+    ? "失败"
+    : released.length > 0 ? "成功" : "跳过";
+  addStep(request.name, state.steps, stage, status, details.join("；") || "没有可请求退出的应用进程");
+}
+
+async function requestProcessExitOnce(
+  request: RecoveryRequest,
+  state: RecoveryState,
+  runtime: RecoveryRuntime,
+  reportProgress: (progress: RecoveryProgress) => void,
+  stage: string,
+  cause: "麦克风占用类" | "格式请求类" | "多端点会话类",
+  processes: RunningProcess[],
+): Promise<RecoveryMicrophoneReleaseResult | null> {
+  const candidates = processesNotYetAttempted(processes, state);
+  if (candidates.length === 0) {
+    addStep(request.name, state.steps, stage, "跳过", "本次修复已经请求该进程身份退出一次");
+    return null;
+  }
+  for (const item of candidates) state.attemptedProcessIdentities.add(runningProcessIdentity(item));
+  reportProgress({
+    stage: "正在检查占用",
+    message: `正在请求${candidates.map((item) => processDisplayName(item, cause === "多端点会话类" ? undefined : cause)).join("、")}正常退出。`,
+  });
+  const termination = await terminateAndConfirmRunningProcesses(candidates, {
+    now: runtime.now,
+    readProcess: runtime.readProcess,
+    terminateProcess: runtime.terminateProcess,
+    wait: runtime.wait,
+  });
+  const release: RecoveryMicrophoneReleaseResult = { users: [], ...termination };
+  recordProcessRelease(request, state, stage, cause, release);
+  return release;
 }
 
 function result(
@@ -341,26 +387,18 @@ async function processStep(
   processes: RunningProcess[],
 ): Promise<StableRecovery | null> {
   if (processes.length === 0) return null;
-  const safe = processesNotYetAttempted(
-    processes.filter((item) => !protectedProcessNames.has(item.name)),
+  const release = await requestProcessExitOnce(
+    request,
     state,
+    runtime,
+    reportProgress,
+    `处理${cause}`,
+    cause,
+    processes,
   );
-  if (safe.length === 0) {
-    addStep(request.name, state.steps, `处理${cause}`, "跳过", "进程受保护或本次修复已经请求其退出一次");
-    return null;
-  }
-  for (const item of safe) state.attemptedProcessIdentities.add(processIdentity(item));
-  reportProgress({ stage: "正在检查占用", message: `正在请求${safe.map((item) => processDisplayName(item, cause)).join("、")}正常退出。` });
-  const remaining = await terminateAndWait(safe, runtime);
-  const released = safe.filter((item) => !remaining.some((current) => current.pid === item.pid));
-  state.releasedPrograms.push(...released.map((item) => item.name));
-  state.remainingPrograms.push(...remaining.map((item) => item.name));
-  addStep(request.name, state.steps, `处理${cause}`, remaining.length === 0 ? "成功" : "失败",
-    remaining.length === 0
-      ? `已确认退出：${released.map((item) => processDescription(item, cause)).join("、")}`
-      : `仍未退出：${remaining.map((item) => processDescription(item, cause)).join("、")}`);
-
-  return verifyStableRecovery(request, runtime, reportProgress);
+  return release && release.requestedPids.length > 0
+    ? verifyStableRecovery(request, runtime, reportProgress)
+    : null;
 }
 
 async function runInputReset(
@@ -540,7 +578,7 @@ export async function runRecovery(
   };
   request = { ...request, context };
 
-  if (assessment?.a2dpSupport === "UNSUPPORTED" || assessment?.mode !== "HFP_HSP") {
+  if (!isA2dpRecoveryEligible(assessment)) {
     const diagnosis = makeDiagnosis("证据不足", assessment?.a2dpSupport === "UNSUPPORTED" ? "目标不支持 A2DP" : "目标当前不在 HFP/HSP");
     return result(request, state, runtime, "无需修复", diagnosis, false);
   }
@@ -566,30 +604,16 @@ export async function runRecovery(
   } catch (error) {
     addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "失败", error instanceof Error ? error.message : String(error));
   }
-  if (microphoneRelease && microphoneRelease.requestedPids.length === 0) {
+  if (microphoneRelease && microphoneRelease.processes.length === 0) {
     addStep(request.name, state.steps, "检查实时蓝牙麦克风占用", "跳过", "没有已确认占用进程");
   } else if (microphoneRelease) {
     for (const processInfo of microphoneRelease.processes) {
-      state.attemptedProcessIdentities.add(processIdentity(processInfo));
+      state.attemptedProcessIdentities.add(runningProcessIdentity(processInfo));
     }
-    const releasedProcesses = microphoneRelease.processes.filter((processInfo) =>
-      microphoneRelease?.releasedPids.includes(processInfo.pid)
-    );
-    const remainingProcesses = microphoneRelease.processes.filter((processInfo) =>
-      microphoneRelease?.remainingPids.includes(processInfo.pid)
-    );
-    state.releasedPrograms.push(...releasedProcesses.map((item) => item.name));
-    state.remainingPrograms.push(...remainingProcesses.map((item) => item.name));
-    addStep(
-      request.name,
-      state.steps,
-      "处理麦克风占用类",
-      remainingProcesses.length === 0 ? "成功" : "失败",
-      remainingProcesses.length === 0
-        ? `已确认退出：${releasedProcesses.map((item) => processDescription(item, "麦克风占用类")).join("、")}`
-        : `仍未退出：${remainingProcesses.map((item) => processDescription(item, "麦克风占用类")).join("、")}`,
-    );
-    const stableAfterRelease = await verifyStableRecovery(request, runtime, reportProgress);
+    recordProcessRelease(request, state, "处理麦克风占用类", "麦克风占用类", microphoneRelease);
+    const stableAfterRelease = microphoneRelease.requestedPids.length > 0
+      ? await verifyStableRecovery(request, runtime, reportProgress)
+      : null;
     if (stableAfterRelease) {
       return result(request, state, runtime, "完全恢复", makeDiagnosis(
         "麦克风占用类",
@@ -637,17 +661,16 @@ export async function runRecovery(
       const clickedAt = Date.parse(context.clickedAt);
       const multiEndpointEvidence = runtime.readEvidenceSince(Number.isFinite(clickedAt) ? clickedAt - 2_000 : runtime.now());
       const cause = diagnoseMultiEndpointCause(multiEndpointEvidence, target, runtime.readProcess);
-      if (cause.confidence === "已确认" && cause.requester && !protectedProcessNames.has(cause.requester.name)) {
-        const candidates = processesNotYetAttempted([cause.requester], state);
-        if (candidates.length > 0) {
-          state.attemptedProcessIdentities.add(processIdentity(cause.requester));
-          const remaining = await terminateAndWait(candidates, runtime);
-          if (remaining.length === 0) state.releasedPrograms.push(cause.requester.name);
-          else state.remainingPrograms.push(cause.requester.name);
-          addStep(request.name, state.steps, "处理多蓝牙拒绝进程", remaining.length === 0 ? "成功" : "失败", processDescription(cause.requester));
-        } else {
-          addStep(request.name, state.steps, "处理多蓝牙拒绝进程", "跳过", "本次修复已经请求该进程退出一次");
-        }
+      if (cause.confidence === "已确认" && cause.requester) {
+        await requestProcessExitOnce(
+          request,
+          state,
+          runtime,
+          reportProgress,
+          "处理多蓝牙拒绝进程",
+          "多端点会话类",
+          [cause.requester],
+        );
       } else {
         addStep(request.name, state.steps, "检查多蓝牙拒绝进程", "跳过", cause.gaps.join("；") || "没有唯一已确认进程");
       }

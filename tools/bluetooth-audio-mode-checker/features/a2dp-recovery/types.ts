@@ -43,6 +43,7 @@ export type RecoveryMicrophoneReleaseResult = {
   requestedPids: number[];
   releasedPids: number[];
   remainingPids: number[];
+  protectedPids: number[];
 };
 
 export type A2dpRecoveryResult = {

@@ -16,29 +16,30 @@ import {
 } from "../features/bluetooth-audio-mode/index.ts";
 import {
   attachEmptyMicrophoneOccupancy,
-  attachMicrophoneOccupancyFromUsers,
-  classifyInputActivities,
   confirmAndReleaseMicrophoneOccupancy,
   mergeMicrophoneUsers,
-  mergeMicrophoneOccupancy,
-  readAllMicrophoneUsersAsync,
   shouldContinueOccupancyScanning,
   shouldStartOccupancyScanForInputActivity,
 } from "../features/microphone-occupancy/index.ts";
 import {
+  isA2dpRecoveryEligible,
   recoverA2dp,
   recoveryWebAssetsDirectory,
   startFormatRequestOccupancyMonitor,
   type RecoveryProgress,
 } from "../features/a2dp-recovery/index.ts";
 import {
-  attachSpeakerOccupancy,
   filterCurrentSpeakerUsers,
   reconnectSpeakerDevice,
   speakerOccupancyWebAssetsDirectory,
   startSpeakerOccupancyMonitor,
 } from "../features/speaker-occupancy/index.ts";
+import {
+  composeMicrophoneOccupancyState,
+  composeSpeakerOccupancyState,
+} from "./state-composition.ts";
 import { setDefaultAudioDevice } from "../core/macos-audio-route/index.ts";
+import { readMicrophoneUsersAsync } from "../core/macos-microphone-usage/index.ts";
 import { detailedLog, getDetailedLogStatus } from "../core/detailed-logging/index.ts";
 
 import type {
@@ -58,6 +59,7 @@ const appWebAssetsDirectory = join(dirname(fileURLToPath(import.meta.url)), "web
 const allowedAssets = new Set([
   "index.html",
   "app-client.js",
+  "app-request.js",
   "styles.css",
   "bluetooth-audio-mode-client.js",
   "a2dp-recovery-client.js",
@@ -71,10 +73,6 @@ const contentTypes: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
 };
 const manualRefreshMinimumIntervalMs = 2_500;
-
-function isRecoverableHfpOutput(device: AudioModeState["devices"][number]): boolean {
-  return device.mode === "HFP_HSP" && device.a2dpSupport !== "UNSUPPORTED";
-}
 
 function parseArguments(argumentsList: string[]): Options {
   const options: Options = { port: 4173, openBrowser: true };
@@ -110,8 +108,13 @@ async function serveAsset(assetName: string, response: import("node:http").Serve
     return;
   }
   try {
-    const source = assetName === "index.html" || assetName === "app-client.js"
-      ? { directory: appWebAssetsDirectory, name: assetName === "app-client.js" ? "client.js" : assetName }
+    const source = assetName === "index.html" || assetName === "app-client.js" || assetName === "app-request.js"
+      ? {
+          directory: appWebAssetsDirectory,
+          name: assetName === "app-client.js"
+            ? "client.js"
+            : assetName === "app-request.js" ? "request.js" : assetName,
+        }
       : assetName === "a2dp-recovery-client.js" || assetName === "a2dp-recovery.css"
         ? {
             directory: recoveryWebAssetsDirectory,
@@ -156,6 +159,32 @@ async function readJsonBody(request: import("node:http").IncomingMessage): Promi
   return JSON.parse(body);
 }
 
+async function readLocalJsonBody(
+  request: import("node:http").IncomingMessage,
+  port: number,
+): Promise<unknown> {
+  if (!request.headers["content-type"]?.startsWith("application/json")) {
+    throw new Error("请求格式不正确");
+  }
+  const expectedOrigin = `http://127.0.0.1:${port}`;
+  if (request.headers.origin && request.headers.origin !== expectedOrigin) {
+    throw new Error("请求来源不正确");
+  }
+  return readJsonBody(request);
+}
+
+function sendJson(
+  response: import("node:http").ServerResponse,
+  statusCode: number,
+  payload: unknown,
+): void {
+  response.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  response.end(JSON.stringify(payload));
+}
+
 function main(): void {
   let options: Options;
   try {
@@ -194,6 +223,10 @@ function main(): void {
   let initialOccupancyScanScheduled = false;
   const statePayload = () => cachedState === null ? null : {
     ...cachedState,
+    devices: cachedState.devices.map((device) => ({
+      ...device,
+      a2dpRecoveryEligible: isA2dpRecoveryEligible(device),
+    })),
     microphoneUsers: latestMicrophoneUsers,
     refreshedAt: cachedStateUpdatedAt ?? new Date().toISOString(),
     occupancyCapturedAt: latestOccupancyCapturedAt,
@@ -202,6 +235,16 @@ function main(): void {
     latestRawMicrophoneUsers,
     latestFormatRequestUsers,
   );
+  const applyCurrentMicrophoneOccupancy = (
+    state: AudioModeState,
+    users = currentMicrophoneUsers(),
+  ): AudioModeState => {
+    const composed = composeMicrophoneOccupancyState(state, users);
+    latestMicrophoneUsers = composed.classifiedUsers;
+    return composed.state;
+  };
+  const applyCurrentSpeakerOccupancy = (state: AudioModeState): AudioModeState =>
+    composeSpeakerOccupancyState(state, latestSpeakerUsers);
   const releaseConfirmedMicrophoneOccupancy = async (
     deviceName: string,
     requestedPids: number[] | null,
@@ -254,17 +297,9 @@ function main(): void {
       nextState = applyBluetoothLinkSnapshot(nextState, linkSnapshot);
     }
     if (latestOccupancyCapturedAt !== null) {
-      const microphoneUsers = currentMicrophoneUsers();
-      nextState = {
-        ...nextState,
-        devices: attachMicrophoneOccupancyFromUsers(nextState.devices, microphoneUsers),
-      };
-      latestMicrophoneUsers = classifyInputActivities(nextState.devices, microphoneUsers);
+      nextState = applyCurrentMicrophoneOccupancy(nextState);
     }
-    nextState = {
-      ...nextState,
-      devices: attachSpeakerOccupancy(nextState.devices, latestSpeakerUsers),
-    };
+    nextState = applyCurrentSpeakerOccupancy(nextState);
     cachedState = nextState;
     cachedStateUpdatedAt = new Date().toISOString();
     fullStateUpdatedAtMs = Date.now();
@@ -303,12 +338,12 @@ function main(): void {
           });
           broadcastState();
         }
-        if (cachedState?.devices.some(isRecoverableHfpOutput)) {
+        if (cachedState?.devices.some(isA2dpRecoveryEligible)) {
           scheduleOccupancyScan(0, "low-output-state");
         }
         if (!initialOccupancyScanScheduled && cachedState !== null) {
           initialOccupancyScanScheduled = true;
-          if (cachedState.devices.some(isRecoverableHfpOutput)) {
+          if (cachedState.devices.some(isA2dpRecoveryEligible)) {
             scheduleOccupancyScan(0, "initial-low-output-state");
           }
         }
@@ -346,11 +381,14 @@ function main(): void {
     }
     if (scheduleStateRefresh()) lastManualRefreshStartedAt = now;
   };
-  const scheduleModeTransitionChecks = () => {
-    scheduleStateRefresh();
-    for (const delay of [700, 1_500, 2_800, 4_500]) {
-      setTimeout(scheduleStateRefresh, delay);
+  const scheduleStateRefreshSequence = (delays: number[]) => {
+    for (const delay of delays) {
+      if (delay === 0) scheduleStateRefresh();
+      else setTimeout(scheduleStateRefresh, delay);
     }
+  };
+  const scheduleModeTransitionChecks = () => {
+    scheduleStateRefreshSequence([0, 700, 1_500, 2_800, 4_500]);
   };
   const stopRealtimeMonitor = startAudioModeRealtimeMonitor((snapshot) => {
     const inputSnapshot = snapshot.defaultInput;
@@ -388,7 +426,7 @@ function main(): void {
       cachedState = applyActiveOutputSnapshot(cachedState, snapshot);
       cachedStateUpdatedAt = snapshot.timestamp;
       broadcastState();
-      if (cachedState.devices.some(isRecoverableHfpOutput)) {
+      if (cachedState.devices.some(isA2dpRecoveryEligible)) {
         scheduleOccupancyScan(0, "low-output-realtime");
       }
       scheduleStateRefresh();
@@ -402,12 +440,7 @@ function main(): void {
     if (cachedState === null) return;
     const previousFingerprint = JSON.stringify(cachedState.devices);
     cachedState = applyBluetoothLinkSnapshot(cachedState, snapshot);
-    const microphoneUsers = currentMicrophoneUsers();
-    cachedState = {
-      ...cachedState,
-      devices: attachMicrophoneOccupancyFromUsers(cachedState.devices, microphoneUsers),
-    };
-    latestMicrophoneUsers = classifyInputActivities(cachedState.devices, microphoneUsers);
+    cachedState = applyCurrentMicrophoneOccupancy(cachedState);
     const nextFingerprint = JSON.stringify(cachedState.devices);
     if (nextFingerprint === previousFingerprint) return;
     cachedStateUpdatedAt = snapshot.timestamp;
@@ -426,10 +459,7 @@ function main(): void {
     });
     if (cachedState === null) return;
     const previousDevicesFingerprint = JSON.stringify(cachedState.devices);
-    cachedState = {
-      ...cachedState,
-      devices: attachSpeakerOccupancy(cachedState.devices, latestSpeakerUsers),
-    };
+    cachedState = applyCurrentSpeakerOccupancy(cachedState);
     if (JSON.stringify(cachedState.devices) === previousDevicesFingerprint) return;
     cachedStateUpdatedAt = event?.observedAt ?? new Date().toISOString();
     broadcastState();
@@ -438,12 +468,7 @@ function main(): void {
     latestFormatRequestUsers = users;
     detailedLog("info", "format-request-occupancy.changed", { event, users });
     if (cachedState === null) return;
-    const microphoneUsers = currentMicrophoneUsers();
-    cachedState = {
-      ...cachedState,
-      devices: attachMicrophoneOccupancyFromUsers(cachedState.devices, microphoneUsers),
-    };
-    latestMicrophoneUsers = classifyInputActivities(cachedState.devices, microphoneUsers);
+    cachedState = applyCurrentMicrophoneOccupancy(cachedState);
     latestOccupancyCapturedAt = event?.timestamp ?? new Date().toISOString();
     cachedStateUpdatedAt = latestOccupancyCapturedAt;
     broadcastState();
@@ -474,11 +499,11 @@ function main(): void {
       let continueScanning = false;
       const startedAt = performance.now();
       try {
-        const physicalMicrophoneUsers = await readAllMicrophoneUsersAsync();
+        const physicalMicrophoneUsers = await readMicrophoneUsersAsync();
         latestRawMicrophoneUsers = physicalMicrophoneUsers;
         const microphoneUsers = currentMicrophoneUsers();
-        const occupancySnapshot = attachMicrophoneOccupancyFromUsers(cachedState.devices, microphoneUsers);
-        latestMicrophoneUsers = classifyInputActivities(occupancySnapshot, microphoneUsers);
+        const occupancyState = applyCurrentMicrophoneOccupancy(cachedState, microphoneUsers);
+        const occupancySnapshot = occupancyState.devices;
         latestOccupancyCapturedAt = new Date().toISOString();
         continueScanning = shouldContinueOccupancyScanning(occupancySnapshot, microphoneUsers);
         const nextFingerprint = JSON.stringify({
@@ -499,8 +524,7 @@ function main(): void {
             users: device.microphoneOccupancy?.users ?? [],
           })),
         });
-        const devices = mergeMicrophoneOccupancy(cachedState.devices, occupancySnapshot);
-        cachedState = { ...cachedState, devices };
+        cachedState = occupancyState;
         cachedStateUpdatedAt = new Date().toISOString();
         broadcastState();
         if (!continueScanning) scheduleModeTransitionChecks();
@@ -523,6 +547,10 @@ function main(): void {
         else if (inputActivityScanPending) scheduleOccupancyScan(0, "default-input-started");
       }
     }, delay);
+  };
+  const schedulePostMicrophoneActionRefresh = (source: string) => {
+    scheduleOccupancyScan(0, source);
+    scheduleStateRefreshSequence([0]);
   };
   scheduleStateRefresh();
 
@@ -557,47 +585,27 @@ function main(): void {
       try {
         if (cachedState === null) {
           scheduleManualStateRefresh();
-          response.writeHead(202, {
-            "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "no-store",
-          });
-          response.end(JSON.stringify({ loading: true }));
+          sendJson(response, 202, { loading: true });
           return;
         }
-        response.writeHead(200, {
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
-        });
-        response.end(JSON.stringify(statePayload()));
+        sendJson(response, 200, statePayload());
         scheduleManualStateRefresh();
       } catch (error) {
-        response.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-        response.end(JSON.stringify({
+        sendJson(response, 500, {
           error: error instanceof Error ? error.message : "音频设备读取失败",
-        }));
+        });
       }
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/api/logs/status") {
-      response.writeHead(200, {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": "no-store",
-      });
-      response.end(JSON.stringify(getDetailedLogStatus()));
+      sendJson(response, 200, getDetailedLogStatus());
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/microphone-occupancy/release") {
       try {
-        if (!request.headers["content-type"]?.startsWith("application/json")) {
-          throw new Error("请求格式不正确");
-        }
-        const expectedOrigin = `http://127.0.0.1:${options.port}`;
-        if (request.headers.origin && request.headers.origin !== expectedOrigin) {
-          throw new Error("请求来源不正确");
-        }
-        const body = await readJsonBody(request) as { deviceName?: unknown; pids?: unknown };
+        const body = await readLocalJsonBody(request, options.port) as { deviceName?: unknown; pids?: unknown };
         if (typeof body.deviceName !== "string" || body.deviceName.length === 0) {
           throw new Error("麦克风设备无效");
         }
@@ -629,21 +637,19 @@ function main(): void {
           requestedPids: release.requestedPids,
           releasedPids: release.releasedPids,
           remainingPids: release.remainingPids,
+          protectedPids: release.protectedPids,
         };
         detailedLog("info", "microphone-occupancy.release-completed", { evidence, result });
-        scheduleOccupancyScan(0, "manual-release-completed");
-        scheduleStateRefresh();
-        response.writeHead(200, {
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
+        schedulePostMicrophoneActionRefresh("manual-release-completed");
+        sendJson(response, 200, {
+          ok: result.remainingPids.length === 0 && result.protectedPids.length === 0,
+          ...result,
         });
-        response.end(JSON.stringify({ ok: result.remainingPids.length === 0, ...result }));
       } catch (error) {
         detailedLog("error", "microphone-occupancy.release-failed", { error });
-        response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        response.end(JSON.stringify({
+        sendJson(response, 400, {
           error: error instanceof Error ? error.message : "解除麦克风占用失败",
-        }));
+        });
       }
       return;
     }
@@ -651,14 +657,7 @@ function main(): void {
     if (request.method === "POST" && url.pathname === "/api/speaker-occupancy/reconnect") {
       let requestedName: string | null = null;
       try {
-        if (!request.headers["content-type"]?.startsWith("application/json")) {
-          throw new Error("请求格式不正确");
-        }
-        const expectedOrigin = `http://127.0.0.1:${options.port}`;
-        if (request.headers.origin && request.headers.origin !== expectedOrigin) {
-          throw new Error("请求来源不正确");
-        }
-        const body = await readJsonBody(request) as { name?: unknown };
+        const body = await readLocalJsonBody(request, options.port) as { name?: unknown };
         if (typeof body.name !== "string" || body.name.length === 0 || body.name.length > 256) {
           throw new Error("蓝牙设备名称无效");
         }
@@ -668,7 +667,7 @@ function main(): void {
         }
         if (cachedState === null) throw new Error("当前没有可用的蓝牙设备状态");
         const currentUsers = filterCurrentSpeakerUsers(latestSpeakerUsers);
-        const currentDevice = attachSpeakerOccupancy(cachedState.devices, currentUsers)
+        const currentDevice = composeSpeakerOccupancyState(cachedState, currentUsers).devices
           .find((device) => device.name === body.name);
         if (!currentDevice) throw new Error("目标蓝牙设备当前未连接");
         const evidenceUsers = currentDevice.speakerOccupancy?.users ?? [];
@@ -685,22 +684,16 @@ function main(): void {
           disconnected: true,
           reconnected: true,
         });
-        scheduleStateRefresh();
-        for (const delay of [350, 900, 1_800]) setTimeout(scheduleStateRefresh, delay);
-        response.writeHead(200, {
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
-        });
-        response.end(JSON.stringify({ ok: true, name: body.name, ...result }));
+        scheduleStateRefreshSequence([0, 350, 900, 1_800]);
+        sendJson(response, 200, { ok: true, name: body.name, ...result });
       } catch (error) {
         detailedLog("error", "speaker-occupancy.reconnect-failed", {
           deviceName: requestedName,
           error,
         });
-        response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        response.end(JSON.stringify({
+        sendJson(response, 400, {
           error: error instanceof Error ? error.message : "断开重连失败",
-        }));
+        });
       } finally {
         if (requestedName !== null) speakerReconnectBusyDevices.delete(requestedName);
       }
@@ -709,10 +702,7 @@ function main(): void {
 
     if (request.method === "POST" && url.pathname === "/api/a2dp-recovery") {
       try {
-        if (!request.headers["content-type"]?.startsWith("application/json")) throw new Error("请求格式不正确");
-        const expectedOrigin = `http://127.0.0.1:${options.port}`;
-        if (request.headers.origin && request.headers.origin !== expectedOrigin) throw new Error("请求来源不正确");
-        const body = await readJsonBody(request) as Record<string, unknown>;
+        const body = await readLocalJsonBody(request, options.port) as Record<string, unknown>;
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
         if (Object.keys(body).some((key) => key !== "name")) throw new Error("修复请求只能提交目标设备名称");
         const clickedAt = new Date().toISOString();
@@ -738,33 +728,24 @@ function main(): void {
             requestedPids: release.requestedPids,
             releasedPids: release.releasedPids,
             remainingPids: release.remainingPids,
+            protectedPids: release.protectedPids,
             users: release.users,
           });
           return release;
         });
-        scheduleOccupancyScan(0, "a2dp-recovery-completed");
-        scheduleStateRefresh();
+        schedulePostMicrophoneActionRefresh("a2dp-recovery-completed");
         detailedLog(result.ok ? "info" : "warn", "a2dp-recovery.returned", { deviceName: body.name, result });
-        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-        response.end(JSON.stringify(result));
+        sendJson(response, 200, result);
       } catch (error) {
         detailedLog("error", "a2dp-recovery.request-failed", { error });
-        response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        response.end(JSON.stringify({ error: error instanceof Error ? error.message : "恢复失败" }));
+        sendJson(response, 400, { error: error instanceof Error ? error.message : "恢复失败" });
       }
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/default-device") {
       try {
-        if (!request.headers["content-type"]?.startsWith("application/json")) {
-          throw new Error("请求格式不正确");
-        }
-        const expectedOrigin = `http://127.0.0.1:${options.port}`;
-        if (request.headers.origin && request.headers.origin !== expectedOrigin) {
-          throw new Error("请求来源不正确");
-        }
-        const body = await readJsonBody(request) as { direction?: unknown; name?: unknown };
+        const body = await readLocalJsonBody(request, options.port) as { direction?: unknown; name?: unknown };
         if ((body.direction !== "input" && body.direction !== "output") || typeof body.name !== "string") {
           throw new Error("声音设备选择无效");
         }
@@ -782,17 +763,12 @@ function main(): void {
           scheduleModeTransitionChecks();
         }
         detailedLog("info", "default-device.change-completed", { direction: body.direction, deviceName: body.name });
-        response.writeHead(200, {
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
-        });
-        response.end(JSON.stringify({ ok: true }));
+        sendJson(response, 200, { ok: true });
       } catch (error) {
         detailedLog("error", "default-device.change-failed", { error });
-        response.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        response.end(JSON.stringify({
+        sendJson(response, 400, {
           error: error instanceof Error ? error.message : "声音设备切换失败",
-        }));
+        });
       }
       return;
     }

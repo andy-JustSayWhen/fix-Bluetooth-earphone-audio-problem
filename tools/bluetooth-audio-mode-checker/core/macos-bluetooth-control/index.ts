@@ -1,28 +1,20 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureNativeHelperBuilt } from "../native-helper/index.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const toolRoot = join(moduleDirectory, "..", "..");
 const sourcePath = join(moduleDirectory, "bluetooth-control.m");
-const buildDirectory = join(toolRoot, ".build", "bluetooth-control");
-const executablePath = join(buildDirectory, "bluetooth-control");
-
-function modificationTime(path: string): number {
-  try { return statSync(path).mtimeMs; } catch { return 0; }
-}
+const executablePath = join(toolRoot, ".build", "bluetooth-control", "bluetooth-control");
 
 function ensureHelperBuilt(): void {
-  if (modificationTime(executablePath) >= modificationTime(sourcePath)) return;
-  mkdirSync(buildDirectory, { recursive: true });
-  execFileSync("/usr/bin/clang", [
-    "-fobjc-arc",
+  ensureNativeHelperBuilt({
     sourcePath,
-    "-framework", "Foundation",
-    "-framework", "IOBluetooth",
-    "-o", executablePath,
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+    executablePath,
+    compilerFlags: ["-fobjc-arc"],
+    frameworks: ["Foundation", "IOBluetooth"],
+  });
 }
 
 export function readBluetoothPower(): boolean {

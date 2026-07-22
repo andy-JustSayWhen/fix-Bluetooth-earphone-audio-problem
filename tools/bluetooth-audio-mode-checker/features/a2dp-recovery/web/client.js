@@ -1,5 +1,5 @@
 export function isA2dpRecoveryTarget(device) {
-  return device?.mode === "HFP_HSP" && device.a2dpSupport !== "UNSUPPORTED";
+  return device?.a2dpRecoveryEligible === true;
 }
 
 export function createA2dpRecoveryController({
@@ -8,6 +8,7 @@ export function createA2dpRecoveryController({
   triggerContainer,
   renderDevices,
   schedulePostActionRefresh,
+  postJson,
 }) {
   const terminalDisplayMs = 10_000;
   const runningDevices = new Set();
@@ -79,13 +80,7 @@ export function createA2dpRecoveryController({
     progressByDevice.set(device.name, "正在修复…");
     renderAggregateTrigger();
     try {
-      const response = await fetch("/api/a2dp-recovery", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: device.name }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "恢复失败");
+      const result = await postJson("/api/a2dp-recovery", { name: device.name }, "恢复失败");
       for (const program of result.releasedPrograms ?? []) recentlyReleasedPrograms.set(program, Date.now());
       batchHadError = batchHadError || !result.ok;
     } catch {

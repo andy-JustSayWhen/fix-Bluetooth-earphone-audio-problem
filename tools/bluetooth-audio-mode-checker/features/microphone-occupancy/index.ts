@@ -1,9 +1,7 @@
-import {
-  readMicrophoneUsers,
-  readMicrophoneUsersAsync,
-} from "../../core/macos-microphone-usage/index.ts";
+import { readMicrophoneUsersAsync } from "../../core/macos-microphone-usage/index.ts";
 import {
   readRunningProcess,
+  terminateAndConfirmRunningProcesses,
   terminateRunningProcess,
   type RunningProcess,
 } from "../../core/macos-running-apps/index.ts";
@@ -13,6 +11,7 @@ import type {
   MicrophoneUser,
   MicrophoneOccupancy,
 } from "../../shared/audio-device-types/index.ts";
+import { isBluetoothTransport } from "../../shared/bluetooth-device-identity/index.ts";
 
 function isPhysicalInputAssessment(device: AudioModeAssessment): boolean {
   if (device.inputChannels <= 0 || !device.inputTransport) return false;
@@ -34,7 +33,7 @@ function assignedFormatRequestDevice(
     const matches = devices.filter((device) => {
       const observedAt = Date.parse(device.audioLinkTypeObservedAt ?? "");
       return device.inputChannels > 0 &&
-        (device.inputTransport === "bluetooth" || device.inputTransport === "bluetooth-le") &&
+        isBluetoothTransport(device.inputTransport) &&
         device.audioLinkType === "tsco" &&
         Number.isFinite(observedAt) &&
         Math.abs(observedAt - requestedAt) <= 2_000;
@@ -57,7 +56,7 @@ export function classifyInputActivities(
     }))];
     const physicalBluetoothDeviceNames = physicalDeviceNames.filter((name) => {
       const transport = byName.get(name)?.inputTransport;
-      return transport === "bluetooth" || transport === "bluetooth-le";
+      return isBluetoothTransport(transport);
     });
     const confirmedDeviceNames = [...new Set([
       ...physicalBluetoothDeviceNames,
@@ -109,24 +108,9 @@ export function mergeMicrophoneUsers(...groups: MicrophoneUser[][]): MicrophoneU
   return [...byPid.values()];
 }
 
-export function attachMicrophoneOccupancy(devices: AudioModeAssessment[]): AudioModeAssessment[] {
-  const users = readMicrophoneUsers();
-  return attachOccupancy(devices, users);
-}
-
-export async function attachMicrophoneOccupancyAsync(
-  devices: AudioModeAssessment[],
-): Promise<AudioModeAssessment[]> {
-  return attachOccupancy(devices, await readAllMicrophoneUsersAsync());
-}
-
-export function readAllMicrophoneUsersAsync() {
-  return readMicrophoneUsersAsync();
-}
-
 export function attachMicrophoneOccupancyFromUsers(
   devices: AudioModeAssessment[],
-  users: ReturnType<typeof readMicrophoneUsers>,
+  users: MicrophoneUser[],
 ): AudioModeAssessment[] {
   return attachOccupancy(devices, users);
 }
@@ -139,7 +123,7 @@ export function attachEmptyMicrophoneOccupancy(
 
 export function shouldContinueOccupancyScanning(
   devices: AudioModeAssessment[],
-  allUsers: ReturnType<typeof readMicrophoneUsers> = [],
+  allUsers: MicrophoneUser[] = [],
 ): boolean {
   return allUsers.length > 0 || devices.some((device) => (device.microphoneOccupancy?.users.length ?? 0) > 0);
 }
@@ -152,24 +136,9 @@ export function shouldStartOccupancyScanForInputActivity(
   return previous === null || !previous.isRunning || previous.name !== current.name;
 }
 
-export function mergeMicrophoneOccupancy(
-  currentDevices: AudioModeAssessment[],
-  occupancySnapshot: AudioModeAssessment[],
-): AudioModeAssessment[] {
-  const occupancyByName = new Map(
-    occupancySnapshot
-      .filter((device) => device.microphoneOccupancy !== undefined)
-      .map((device) => [device.name, device.microphoneOccupancy] as const),
-  );
-  return currentDevices.map((device) => {
-    const microphoneOccupancy = occupancyByName.get(device.name);
-    return microphoneOccupancy === undefined ? device : { ...device, microphoneOccupancy };
-  });
-}
-
 function attachOccupancy(
   devices: AudioModeAssessment[],
-  users: ReturnType<typeof readMicrophoneUsers>,
+  users: MicrophoneUser[],
 ): AudioModeAssessment[] {
   const activities = classifyInputActivities(devices, users);
   return devices.map((device) => {
@@ -193,6 +162,7 @@ export type MicrophoneReleaseResult = {
   requestedPids: number[];
   releasedPids: number[];
   remainingPids: number[];
+  protectedPids: number[];
 };
 
 export type ConfirmedMicrophoneReleaseResult = MicrophoneReleaseResult & {
@@ -234,29 +204,19 @@ async function releaseMicrophoneUsersDetailed(
     if (processInfo) expectedProcesses.set(pid, processInfo);
   }
   const processes = [...expectedProcesses.values()];
-  const requestedPids = [...expectedProcesses.keys()];
-  for (const processInfo of processes) runtime.terminateProcess(processInfo);
-
-  let remainingPids = requestedPids;
-  const now = runtime.now ?? Date.now;
-  const deadline = now() + 2_000;
-  for (let attempt = 0; attempt < 20 && remainingPids.length > 0; attempt += 1) {
-    const remainingTime = deadline - now();
-    if (remainingTime <= 0) break;
-    await runtime.wait(Math.min(100, remainingTime));
-    remainingPids = requestedPids.filter((pid) => {
-      const expected = expectedProcesses.get(pid);
-      const current = runtime.readProcess(pid);
-      return expected !== undefined && current !== null &&
-        current.startedAt === expected.startedAt && current.command === expected.command;
-    });
-  }
+  const termination = await terminateAndConfirmRunningProcesses(processes, {
+    now: runtime.now ?? Date.now,
+    readProcess: runtime.readProcess,
+    terminateProcess: runtime.terminateProcess,
+    wait: runtime.wait,
+  });
   return {
-    users: users.filter((user) => requestedPids.includes(user.pid)),
+    users: users.filter((user) => processes.some((processInfo) => processInfo.pid === user.pid)),
     processes,
-    requestedPids,
-    releasedPids: requestedPids.filter((pid) => !remainingPids.includes(pid)),
-    remainingPids,
+    requestedPids: termination.requestedPids,
+    releasedPids: termination.releasedPids,
+    remainingPids: termination.remainingPids,
+    protectedPids: termination.protectedPids,
   };
 }
 
@@ -280,17 +240,4 @@ export async function confirmAndReleaseMicrophoneOccupancy(
     throw new Error("当前没有仍有效且已确认的占用或格式请求，未结束任何进程");
   }
   return releaseMicrophoneUsersDetailed(confirmedUsers, selectedPids, runtime);
-}
-
-export async function releaseMicrophoneUsers(
-  users: MicrophoneUser[],
-  pids: number[],
-  runtime: MicrophoneReleaseRuntime = systemReleaseRuntime,
-): Promise<MicrophoneReleaseResult> {
-  const result = await releaseMicrophoneUsersDetailed(users, pids, runtime);
-  return {
-    requestedPids: result.requestedPids,
-    releasedPids: result.releasedPids,
-    remainingPids: result.remainingPids,
-  };
 }

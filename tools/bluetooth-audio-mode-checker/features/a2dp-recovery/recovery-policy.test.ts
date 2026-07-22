@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { orderedRouteCandidates, routeDevicePriority } from "./recovery-policy.ts";
+import {
+  isA2dpRecoveryEligible,
+  orderedRouteCandidates,
+  routeDevicePriority,
+} from "./recovery-policy.ts";
 import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 
 function device(name: string, transport: string, inputChannels = 1, outputChannels = 1): RawAudioDevice {
@@ -35,4 +39,12 @@ test("输入输出分别过滤有效声道并排除原设备", () => {
   ];
   assert.deepEqual(orderedRouteCandidates(devices, "input", ["原设备"]).map((item) => item.name), ["只有输入"]);
   assert.deepEqual(orderedRouteCandidates(devices, "output", ["原设备"]).map((item) => item.name), ["只有输出"]);
+});
+
+test("一键修复资格只由一个服务端规则判定", () => {
+  assert.equal(isA2dpRecoveryEligible({ mode: "HFP_HSP", a2dpSupport: "SUPPORTED" }), true);
+  assert.equal(isA2dpRecoveryEligible({ mode: "HFP_HSP", a2dpSupport: "UNKNOWN" }), true);
+  assert.equal(isA2dpRecoveryEligible({ mode: "HFP_HSP", a2dpSupport: "UNSUPPORTED" }), false);
+  assert.equal(isA2dpRecoveryEligible({ mode: "A2DP", a2dpSupport: "SUPPORTED" }), false);
+  assert.equal(isA2dpRecoveryEligible(null), false);
 });

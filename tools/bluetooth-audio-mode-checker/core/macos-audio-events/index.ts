@@ -1,34 +1,24 @@
-import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ActiveOutputSnapshot } from "../../shared/audio-device-types/index.ts";
 import { detailedLog } from "../detailed-logging/index.ts";
+import { consumeUtf8Lines } from "../macos-unified-log/index.ts";
+import { ensureNativeHelperBuilt } from "../native-helper/index.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const toolRoot = join(moduleDirectory, "..", "..");
 const sourcePath = join(moduleDirectory, "watch-active-output.c");
-const buildDirectory = join(toolRoot, ".build", "audio-events");
-const executablePath = join(buildDirectory, "watch-active-output");
-
-function modificationTime(path: string): number {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
+const executablePath = join(toolRoot, ".build", "audio-events", "watch-active-output");
 
 function ensureBuilt(): void {
-  if (modificationTime(executablePath) >= modificationTime(sourcePath)) return;
-  mkdirSync(buildDirectory, { recursive: true });
-  execFileSync("/usr/bin/clang", [
+  ensureNativeHelperBuilt({
     sourcePath,
-    "-framework", "CoreAudio",
-    "-framework", "CoreFoundation",
-    "-o", executablePath,
-  ], { stdio: ["ignore", "inherit", "inherit"] });
+    executablePath,
+    frameworks: ["CoreAudio", "CoreFoundation"],
+    stdio: ["ignore", "inherit", "inherit"],
+  });
 }
 
 export function startActiveOutputMonitor(
@@ -38,21 +28,14 @@ export function startActiveOutputMonitor(
   ensureBuilt();
   const child = spawn(executablePath, [], { stdio: ["ignore", "pipe", "pipe"] });
   detailedLog("info", "active-output-monitor.started", { pid: child.pid, executablePath });
-  let pending = "";
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => {
-    pending += chunk;
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const parsed = JSON.parse(line) as Omit<ActiveOutputSnapshot, "timestamp">;
-        onSnapshot({ ...parsed, timestamp: new Date().toISOString() });
-      } catch (error) {
-        detailedLog("warn", "active-output-monitor.invalid-event", { line, error });
-        // Ignore a partial or malformed native event and wait for the next system update.
-      }
+  consumeUtf8Lines(child.stdout, (line) => {
+    if (!line.trim()) return;
+    try {
+      const parsed = JSON.parse(line) as Omit<ActiveOutputSnapshot, "timestamp">;
+      onSnapshot({ ...parsed, timestamp: new Date().toISOString() });
+    } catch (error) {
+      detailedLog("warn", "active-output-monitor.invalid-event", { line, error });
+      // Ignore a partial or malformed native event and wait for the next system update.
     }
   });
   child.stderr.on("data", (chunk) => {

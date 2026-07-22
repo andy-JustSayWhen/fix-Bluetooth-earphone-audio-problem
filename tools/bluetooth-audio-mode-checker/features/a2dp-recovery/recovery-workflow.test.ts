@@ -91,6 +91,7 @@ function harness(): Harness {
         requestedPids,
         releasedPids: requestedPids.filter((pid) => !remainingPids.includes(pid)),
         remainingPids,
+        protectedPids: [],
       };
     },
     readFormatRequestUsers: () => [],
@@ -191,6 +192,7 @@ test("修复子进程通过主服务复用统一麦克风解除能力", async ()
         requestedPids: [88],
         releasedPids: [88],
         remainingPids: [],
+        protectedPids: [],
       };
     },
   );
@@ -224,7 +226,7 @@ test("任何后续动作前发现目标自行恢复时立即停止", async () =>
   const h = harness();
   h.runtime.releaseBluetoothMicrophoneOccupancy = async () => {
     h.setAssessment(assessment({ mode: "A2DP", actualSampleRateOutput: 48_000 }));
-    return { users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [] };
+    return { users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [], protectedPids: [] };
   };
   const result = await runRecovery(request(h), h.runtime);
   assert.equal(result.outcome, "完全恢复");

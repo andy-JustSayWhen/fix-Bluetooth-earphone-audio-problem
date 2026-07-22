@@ -7,9 +7,7 @@ import {
   attachMicrophoneOccupancyFromUsers,
   classifyInputActivities,
   confirmAndReleaseMicrophoneOccupancy,
-  mergeMicrophoneOccupancy,
   mergeMicrophoneUsers,
-  releaseMicrophoneUsers,
   shouldContinueOccupancyScanning,
   shouldStartOccupancyScanForInputActivity,
 } from "./index.ts";
@@ -45,29 +43,6 @@ function device(overrides: Partial<AudioModeAssessment>): AudioModeAssessment {
     ...overrides,
   };
 }
-
-test("占用扫描不得用旧 A2DP 状态覆盖实时 HFP 状态", () => {
-  const current = device({ mode: "HFP_HSP", label: "HFP", sampleRateOutput: 16_000, outputChannels: 1 });
-  const staleScan = device({
-    mode: "A2DP",
-    sampleRateOutput: 44_100,
-    microphoneOccupancy: {
-      isInUse: true,
-      users: [{ pid: 42, name: "Codex", bundleId: "com.openai.codex", devices: ["REDMI"] }],
-      multipointSupport: "unknown",
-      multipointExplanation: "",
-      remoteReleaseSupported: false,
-      remoteReleaseExplanation: "",
-    },
-  });
-
-  const [merged] = mergeMicrophoneOccupancy([current], [staleScan]);
-
-  assert.equal(merged.mode, "HFP_HSP");
-  assert.equal(merged.sampleRateOutput, 16_000);
-  assert.equal(merged.outputChannels, 1);
-  assert.equal(merged.microphoneOccupancy?.isInUse, true);
-});
 
 test("没有占用程序时必须停止占用扫描", () => {
   const devices = attachEmptyMicrophoneOccupancy([device("HFP_HSP", 16_000)]);
@@ -253,17 +228,52 @@ test("未闭合格式请求没有实体麦克风端点时仍可结束对应进�
   let running = true;
   const terminated: number[] = [];
 
-  const result = await releaseMicrophoneUsers([formatUser], [42], {
+  const result = await confirmAndReleaseMicrophoneOccupancy(
+    [device({ mode: "HFP_HSP", audioLinkType: "tsco" })],
+    [formatUser],
+    "REDMI",
+    [42],
+    "全部已确认占用",
+    {
     readProcess: (pid) => running && pid === 42 ? processInfo : null,
     terminateProcess: (current) => {
       terminated.push(current.pid);
       running = false;
     },
     wait: async () => {},
-  });
+    },
+  );
 
   assert.deepEqual(terminated, [42]);
-  assert.deepEqual(result, { requestedPids: [42], releasedPids: [42], remainingPids: [] });
+  assert.deepEqual(result.requestedPids, [42]);
+  assert.deepEqual(result.releasedPids, [42]);
+  assert.deepEqual(result.remainingPids, []);
+  assert.deepEqual(result.protectedPids, []);
+});
+
+test("页面单独解除不会结束系统核心进程", async () => {
+  const processInfo = {
+    pid: 99,
+    name: "coreaudiod",
+    command: "/usr/sbin/coreaudiod",
+    startedAt: "Wed Jul 22 16:00:00 2026",
+  };
+  const terminated: number[] = [];
+  const result = await confirmAndReleaseMicrophoneOccupancy(
+    [device({ mode: "HFP_HSP", audioLinkType: "tsco" })],
+    [{ pid: 99, name: "coreaudiod", bundleId: "", devices: ["REDMI"] }],
+    "REDMI",
+    [99],
+    "全部已确认占用",
+    {
+      readProcess: () => processInfo,
+      terminateProcess: (current) => { terminated.push(current.pid); },
+      wait: async () => {},
+    },
+  );
+
+  assert.deepEqual(terminated, []);
+  assert.deepEqual(result.protectedPids, [99]);
 });
 
 test("一键修复第一步复用统一解除能力但只处理实体端点占用", async () => {

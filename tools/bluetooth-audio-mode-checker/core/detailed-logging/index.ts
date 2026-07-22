@@ -106,27 +106,3 @@ export function getDetailedLogStatus(): DetailedLogStatus {
   }
   return { enabled, path: logPath, sizeBytes, maxFileBytes, retainedFiles };
 }
-
-export function measureDetailedOperation<T>(
-  event: string,
-  details: Record<string, unknown>,
-  operation: () => T,
-): T {
-  const startedAt = performance.now();
-  detailedLog("debug", `${event}.started`, details);
-  try {
-    const result = operation();
-    detailedLog("debug", `${event}.completed`, {
-      ...details,
-      durationMs: Number((performance.now() - startedAt).toFixed(3)),
-    });
-    return result;
-  } catch (error) {
-    detailedLog("error", `${event}.failed`, {
-      ...details,
-      durationMs: Number((performance.now() - startedAt).toFixed(3)),
-      error,
-    });
-    throw error;
-  }
-}

@@ -14,6 +14,11 @@ import type {
   ActiveOutputSnapshot,
   RawAudioDevice,
 } from "../../shared/audio-device-types/index.ts";
+import {
+  bluetoothPhysicalIdentity,
+  isBluetoothTransport,
+  normalizeBluetoothAddress,
+} from "../../shared/bluetooth-device-identity/index.ts";
 
 type DeviceGroup = {
   name: string;
@@ -29,7 +34,7 @@ const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 export const webAssetsDirectory = join(moduleDirectory, "web");
 
 function isBluetooth(device: RawAudioDevice): boolean {
-  return device.transport === "bluetooth" || device.transport === "bluetooth-le";
+  return isBluetoothTransport(device.transport);
 }
 
 function chooseOutput(devices: RawAudioDevice[]): RawAudioDevice | undefined {
@@ -56,7 +61,7 @@ function chooseInput(devices: RawAudioDevice[]): RawAudioDevice | undefined {
 function groupBluetoothDevices(devices: RawAudioDevice[]): DeviceGroup[] {
   const groups = new Map<string, DeviceGroup>();
   for (const device of devices.filter(isBluetooth)) {
-    const key = device.name.trim().toLocaleLowerCase();
+    const key = bluetoothPhysicalIdentity(device.bluetoothAddress, device.name);
     const group = groups.get(key) ?? { name: device.name.trim() || "未命名蓝牙设备", devices: [] };
     group.devices.push(device);
     groups.set(key, group);
@@ -179,10 +184,6 @@ export function assessBluetoothDevices(devices: RawAudioDevice[]): AudioModeAsse
 export function formatRate(rate: number): string {
   const value = rate / 1_000;
   return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)} kHz`;
-}
-
-export function readAndAssess(): AudioModeAssessment[] {
-  return assessBluetoothDevices(readAudioDevices().devices);
 }
 
 function routeOptions(devices: RawAudioDevice[], direction: "input" | "output"): AudioRouteOption[] {
@@ -348,10 +349,6 @@ export function applyActiveInputSnapshot(
   };
 }
 
-function normalizeBluetoothAddress(address: string | null): string {
-  return (address ?? "").replace(/[^0-9a-f]/gi, "").toUpperCase();
-}
-
 export function applyBluetoothLinkSnapshot(
   state: AudioModeState,
   snapshot: BluetoothLinkSnapshot,
@@ -402,35 +399,4 @@ export function startAudioModeLinkMonitor(
   onSnapshot: (snapshot: BluetoothLinkSnapshot) => void,
 ): () => void {
   return startBluetoothLinkMonitor(onSnapshot);
-}
-
-export function selectAssessments(
-  assessments: AudioModeAssessment[],
-  nameFragment?: string,
-): AudioModeAssessment[] {
-  if (!nameFragment) {
-    return assessments;
-  }
-  const normalized = nameFragment.trim().toLocaleLowerCase();
-  return assessments.filter((assessment) =>
-    assessment.name.toLocaleLowerCase().includes(normalized)
-  );
-}
-
-export function formatAssessment(assessment: AudioModeAssessment): string {
-  const route = [
-    assessment.isDefaultOutput ? "当前默认输出" : null,
-    assessment.isDefaultInput ? "当前默认输入" : null,
-    assessment.isDefaultSystemOutput ? "系统提示音输出" : null,
-  ].filter(Boolean).join("、") || "已连接，非默认设备";
-
-  return [
-    `设备：${assessment.name}`,
-    `判定：${assessment.label}`,
-    `把握：${assessment.confidence}`,
-    `状态：${route}`,
-    "依据：",
-    ...assessment.evidence.map((item) => `  - ${item}`),
-    `说明：${assessment.explanation}`,
-  ].join("\n");
 }

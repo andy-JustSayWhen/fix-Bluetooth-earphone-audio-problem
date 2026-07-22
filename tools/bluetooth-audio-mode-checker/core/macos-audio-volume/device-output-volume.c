@@ -1,6 +1,5 @@
 #include <CoreAudio/CoreAudio.h>
 #include <CoreFoundation/CoreFoundation.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,17 +77,6 @@ static int read_scalar(AudioDeviceID device, AudioObjectPropertyElement element,
     return AudioObjectGetPropertyData(device, &address, 0, NULL, &size, value) == noErr;
 }
 
-static int set_scalar(AudioDeviceID device, AudioObjectPropertyElement element, Float32 value) {
-    AudioObjectPropertyAddress address = {
-        kAudioDevicePropertyVolumeScalar,
-        kAudioDevicePropertyScopeOutput,
-        element
-    };
-    Boolean settable = false;
-    if (AudioObjectIsPropertySettable(device, &address, &settable) != noErr || !settable) return 0;
-    return AudioObjectSetPropertyData(device, &address, 0, NULL, sizeof(value), &value) == noErr;
-}
-
 static int read_mute(AudioDeviceID device, UInt32 *muted) {
     AudioObjectPropertyAddress address = {
         kAudioDevicePropertyMute,
@@ -97,17 +85,6 @@ static int read_mute(AudioDeviceID device, UInt32 *muted) {
     };
     UInt32 size = sizeof(*muted);
     return AudioObjectGetPropertyData(device, &address, 0, NULL, &size, muted) == noErr;
-}
-
-static int set_mute(AudioDeviceID device, UInt32 muted) {
-    AudioObjectPropertyAddress address = {
-        kAudioDevicePropertyMute,
-        kAudioDevicePropertyScopeOutput,
-        kAudioObjectPropertyElementMain
-    };
-    Boolean settable = false;
-    if (AudioObjectIsPropertySettable(device, &address, &settable) != noErr || !settable) return 0;
-    return AudioObjectSetPropertyData(device, &address, 0, NULL, sizeof(muted), &muted) == noErr;
 }
 
 static int print_volume(AudioDeviceID device) {
@@ -136,23 +113,9 @@ static int print_volume(AudioDeviceID device) {
     return 0;
 }
 
-static int write_volume(AudioDeviceID device, Float32 percent, int should_set_mute, UInt32 muted) {
-    Float32 value = fmaxf(0.0f, fminf(100.0f, percent)) / 100.0f;
-    int wrote = set_scalar(device, kAudioObjectPropertyElementMain, value);
-    if (!wrote) {
-        int channels = output_channels(device);
-        for (int channel = 1; channel <= channels; channel++) {
-            wrote = set_scalar(device, (AudioObjectPropertyElement)channel, value) || wrote;
-        }
-    }
-    if (!wrote) return 6;
-    if (should_set_mute) set_mute(device, muted);
-    return 0;
-}
-
 int main(int argc, char **argv) {
-    if (argc < 3 || argc > 5 || (strcmp(argv[1], "read") != 0 && strcmp(argv[1], "write") != 0)) {
-        fprintf(stderr, "usage: device-output-volume <read|write> <device-name> [volume] [muted]\n");
+    if (argc != 3 || strcmp(argv[1], "read") != 0) {
+        fprintf(stderr, "usage: device-output-volume read <device-name>\n");
         return 2;
     }
 
@@ -162,11 +125,5 @@ int main(int argc, char **argv) {
         return 4;
     }
 
-    if (strcmp(argv[1], "read") == 0) return print_volume(device);
-
-    if (argc < 4) return 2;
-    Float32 percent = strtof(argv[3], NULL);
-    int should_set_mute = argc >= 5;
-    UInt32 muted = should_set_mute && strcmp(argv[4], "true") == 0 ? 1 : 0;
-    return write_volume(device, percent, should_set_mute, muted);
+    return print_volume(device);
 }

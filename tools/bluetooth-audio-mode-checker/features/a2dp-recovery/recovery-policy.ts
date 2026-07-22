@@ -1,6 +1,13 @@
-import type { RawAudioDevice } from "../../shared/audio-device-types/index.ts";
+import type { AudioModeAssessment, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
+import { isBluetoothTransport } from "../../shared/bluetooth-device-identity/index.ts";
 
 export type RouteDevicePriority = 0 | 1 | 2 | 3;
+
+export function isA2dpRecoveryEligible(
+  assessment: Pick<AudioModeAssessment, "mode" | "a2dpSupport"> | null | undefined,
+): boolean {
+  return assessment?.mode === "HFP_HSP" && assessment.a2dpSupport !== "UNSUPPORTED";
+}
 
 const explicitWiredTransportFragments = [
   "usb",
@@ -21,7 +28,7 @@ const explicitWiredTransportFragments = [
 
 export function routeDevicePriority(device: RawAudioDevice): RouteDevicePriority {
   const transport = (device.transport ?? "").trim().toLowerCase();
-  if (transport.includes("bluetooth")) return 3;
+  if (isBluetoothTransport(transport)) return 3;
   if (transport === "built-in" || transport.includes("builtin")) return 0;
   if (explicitWiredTransportFragments.some((fragment) => transport.includes(fragment))) return 1;
   return 2;

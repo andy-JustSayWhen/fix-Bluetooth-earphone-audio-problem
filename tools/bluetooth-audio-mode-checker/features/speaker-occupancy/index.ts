@@ -4,11 +4,16 @@ import { fileURLToPath } from "node:url";
 
 import { reconnectBluetoothDeviceAsync } from "../../core/macos-bluetooth-link/index.ts";
 import { readRunningProcess } from "../../core/macos-running-apps/index.ts";
+import {
+  consumeUtf8Lines,
+  parseUnifiedLogTimestamp,
+} from "../../core/macos-unified-log/index.ts";
 
 import type {
   AudioModeAssessment,
   SpeakerOutputUser,
 } from "../../shared/audio-device-types/index.ts";
+import { normalizeBluetoothAddress } from "../../shared/bluetooth-device-identity/index.ts";
 
 export type SpeakerSessionEvent = {
   sessionId: string;
@@ -32,14 +37,8 @@ const sessionLogPredicate = [
   'AND eventMessage CONTAINS[c] "update_running_state"',
 ].join(" ");
 
-export function normalizeBluetoothAddress(value: string): string {
-  return value.replace(/[^0-9a-f]/gi, "").toUpperCase();
-}
-
 function parseObservedAt(line: string): string {
-  const localTimestamp = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)/)?.[1];
-  const parsed = localTimestamp ? new Date(localTimestamp.replace(" ", "T")) : new Date();
-  return Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+  return parseUnifiedLogTimestamp(line);
 }
 
 export function parseSpeakerSessionLine(line: string): SpeakerSessionEvent | null {
@@ -140,16 +139,9 @@ function consumeLogOutput(
   child: ReturnType<typeof spawn>,
   onEvent: (event: SpeakerSessionEvent) => void,
 ): void {
-  let pending = "";
-  child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    pending += chunk;
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    for (const line of lines) {
-      const event = parseSpeakerSessionLine(line);
-      if (event) onEvent(event);
-    }
+  consumeUtf8Lines(child.stdout, (line) => {
+    const event = parseSpeakerSessionLine(line);
+    if (event) onEvent(event);
   });
 }
 

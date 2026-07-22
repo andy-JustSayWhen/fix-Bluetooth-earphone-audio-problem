@@ -71,10 +71,6 @@ export function observeBluetoothRouteInstability(previous, result, now = Date.no
   };
 }
 
-export function isRecoverableOutputDevice(device) {
-  return device.mode === "HFP_HSP" && device.a2dpSupport !== "UNSUPPORTED";
-}
-
 export function deviceModePresentation(device) {
   if (device.mode === "HFP_HSP") {
     return {
@@ -104,7 +100,11 @@ export function audioLinkTypePresentation(audioLinkType) {
   return "无法确认";
 }
 
-export function startBluetoothAudioModePage(createA2dpRecoveryController, createSpeakerOccupancyController) {
+export function startBluetoothAudioModePage(
+  createA2dpRecoveryController,
+  createSpeakerOccupancyController,
+  postJson,
+) {
 const listElement = document.querySelector("#device-list");
 const refreshButton = document.querySelector("#refresh-button");
 const countElement = document.querySelector("#device-count");
@@ -242,14 +242,17 @@ async function releaseOccupancy(deviceName, users) {
   setOccupancyFeedback(deviceName, { kind: "pending", text: "正在请求程序退出并复查占用，通常在 1 秒左右完成…" });
   renderDevices(lastRenderedDevices);
   try {
-    const response = await fetch("/api/microphone-occupancy/release", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deviceName, pids }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "解除失败");
-    if (result.remainingPids?.length) {
+    const result = await postJson(
+      "/api/microphone-occupancy/release",
+      { deviceName, pids },
+      "解除失败",
+    );
+    if (result.protectedPids?.length) {
+      setOccupancyFeedback(deviceName, {
+        kind: "error",
+        text: "系统核心进程受到保护，未发送退出请求。请保留现场并检查占用归属证据。",
+      });
+    } else if (result.remainingPids?.length) {
       setOccupancyFeedback(deviceName, {
         kind: "error",
         text: `解除未成功：仍有 ${result.remainingPids.length} 个程序保持当前占用。程序可能拒绝了正常退出请求。`,
@@ -495,13 +498,7 @@ async function changeDefaultDevice(select) {
   routeMessage.className = "route-message";
   routeMessage.textContent = `正在切换到“${name}”…`;
   try {
-    const response = await fetch("/api/default-device", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ direction, name }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "切换失败");
+    await postJson("/api/default-device", { direction, name }, "切换失败");
     pendingRouteChange = { direction, name };
     routeMessage.className = "route-message";
     routeMessage.textContent = `切换请求已提交，等待系统确认“${name}”…`;
@@ -634,12 +631,14 @@ recoveryController = createA2dpRecoveryController({
   triggerContainer: recoveryTriggerElement,
   renderDevices,
   schedulePostActionRefresh,
+  postJson,
 });
 speakerOccupancyController = createSpeakerOccupancyController({
   createElement,
   getLastRenderedDevices: () => lastRenderedDevices,
   renderDevices,
   schedulePostActionRefresh,
+  postJson,
 });
 
 refreshButton.addEventListener("click", refreshDevices);

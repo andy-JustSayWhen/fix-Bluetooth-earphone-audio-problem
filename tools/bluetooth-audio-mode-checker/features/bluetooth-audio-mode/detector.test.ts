@@ -12,7 +12,6 @@ import {
   audioLinkTypePresentation,
   deviceModePresentation,
   describeBluetoothRouteRisk,
-  isRecoverableOutputDevice,
   observeBluetoothRouteInstability,
 } from "./web/client.js";
 import {
@@ -168,7 +167,7 @@ test("可用采样率最高只有 16 kHz 时明确判定不支持 A2DP", () => {
   ]);
   assert.equal(result.mode, "UNKNOWN");
   assert.equal(result.a2dpSupport, "UNSUPPORTED");
-  assert.equal(isRecoverableOutputDevice(result), false);
+  assert.equal(isA2dpRecoveryTarget({ ...result, a2dpRecoveryEligible: false }), false);
   assert.deepEqual(deviceModePresentation(result), {
     className: "unknown",
     text: "模式无法确认",
@@ -187,15 +186,15 @@ test("44.1 kHz 是支持 A2DP 的可用采样率边界", () => {
   ]);
   assert.equal(result.mode, "HFP_HSP");
   assert.equal(result.a2dpSupport, "SUPPORTED");
-  assert.equal(isRecoverableOutputDevice(result), true);
+  assert.equal(isA2dpRecoveryTarget({ ...result, a2dpRecoveryEligible: true }), true);
 });
 
 test("输出可用采样率无法读取时支持能力未知且不擅自排除修复", () => {
   const deviceWithUnknownSupport = {
     mode: "HFP_HSP",
     a2dpSupport: "UNKNOWN",
+    a2dpRecoveryEligible: true,
   };
-  assert.equal(isRecoverableOutputDevice(deviceWithUnknownSupport), true);
   assert.equal(isA2dpRecoveryTarget(deviceWithUnknownSupport), true);
 });
 
@@ -346,52 +345,16 @@ test("仅作为输入且明确不支持 A2DP 的设备不显示修复入口", ()
     a2dpSupport: "UNSUPPORTED",
   };
 
-  assert.equal(isRecoverableOutputDevice(microphone), false);
+  assert.equal(isA2dpRecoveryTarget({ ...microphone, a2dpRecoveryEligible: false }), false);
   assert.deepEqual(deviceModePresentation(microphone), {
     className: "hfp_hsp",
     text: "HFP等模式（低音质语音模式）",
   });
 });
 
-test("一键修复入口以最新 HFP 模式和 A2DP 支持能力为准", () => {
-  assert.equal(isRecoverableOutputDevice({
-    isDefaultOutput: true,
-    mode: "HFP_HSP",
-    a2dpSupport: "SUPPORTED",
-    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 44_100 }],
-    actualSampleRateOutput: 16_000,
-    maxSupportedOutputRate: 44_100,
-    sampleRateOutput: 16_000,
-  }), true);
-  assert.equal(isRecoverableOutputDevice({
-    isDefaultOutput: false,
-    mode: "HFP_HSP",
-    a2dpSupport: "UNSUPPORTED",
-    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 16_000 }],
-    actualSampleRateOutput: 16_000,
-  }), false);
-  assert.equal(isRecoverableOutputDevice({
-    isDefaultOutput: true,
-    mode: "UNKNOWN",
-    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 16_000 }],
-    actualSampleRateOutput: 16_000,
-    maxSupportedOutputRate: 16_000,
-    sampleRateOutput: 16_000,
-  }), false);
-  assert.equal(isRecoverableOutputDevice({
-    isDefaultOutput: true,
-    mode: "HFP_HSP",
-    availableSampleRateRangesOutput: [{ minimum: 16_000, maximum: 44_100 }],
-    nominalSampleRateOutput: 16_000,
-    actualSampleRateOutput: null,
-  }), true);
-  assert.equal(isRecoverableOutputDevice({
-    isDefaultOutput: true,
-    mode: "HFP_HSP",
-    availableSampleRateRangesOutput: [],
-    actualSampleRateOutput: 16_000,
-    maxSupportedOutputRate: 44_100,
-  }), true);
+test("页面只消费服务端给出的一键修复资格", () => {
+  assert.equal(isA2dpRecoveryTarget({ mode: "UNKNOWN", a2dpSupport: "UNSUPPORTED", a2dpRecoveryEligible: true }), true);
+  assert.equal(isA2dpRecoveryTarget({ mode: "HFP_HSP", a2dpSupport: "SUPPORTED", a2dpRecoveryEligible: false }), false);
   assert.equal(deviceModePresentation({
     mode: "HFP_HSP",
     label: "HFP/HSP 模式",
@@ -454,7 +417,7 @@ test("忽略非蓝牙设备", () => {
 test("一键修复请求期间立即显示忙碌状态并阻止重复提交", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
   const busyState = source.indexOf("runningDevices.add(device.name)");
-  const request = source.indexOf('fetch("/api/a2dp-recovery"');
+  const request = source.indexOf('postJson("/api/a2dp-recovery"');
 
   assert.ok(busyState >= 0 && busyState < request);
   assert.match(source, /`正在修复 \$\{Math\.min\(batchCompleted \+ 1, batchTotal\)\}\/\$\{batchTotal\}`/);
@@ -509,7 +472,7 @@ test("一键修复前端不保存授权或续跑状态", () => {
   const source = readFileSync(new URL("../a2dp-recovery/web/client.js", import.meta.url), "utf8");
 
   assert.doesNotMatch(source, /sessionStorage|feedbackByDevice|actionSection|pending/);
-  assert.match(source, /body: JSON\.stringify\(\{ name: device\.name \}\)/);
+  assert.match(source, /postJson\("\/api\/a2dp-recovery", \{ name: device\.name \}, "恢复失败"\)/);
 });
 
 test("一键修复不再提供多端点人工组合选择", () => {
@@ -569,7 +532,12 @@ test("列表级胶囊成功态保留十秒后按当前设备恢复入口", async
     addEventListener() {},
   });
   const triggerContainer = createElement("div", "", "");
-  const devices = [{ name: "测试耳机", mode: "HFP_HSP", a2dpSupport: "SUPPORTED" }];
+  const devices = [{
+    name: "测试耳机",
+    mode: "HFP_HSP",
+    a2dpSupport: "SUPPORTED",
+    a2dpRecoveryEligible: true,
+  }];
 
   try {
     const controller = createA2dpRecoveryController({
@@ -578,6 +546,7 @@ test("列表级胶囊成功态保留十秒后按当前设备恢复入口", async
       triggerContainer,
       renderDevices: () => {},
       schedulePostActionRefresh: () => {},
+      postJson: async () => ({ ok: true, releasedPrograms: [] }),
     });
     await controller.recoverAll(devices);
     assert.equal(triggerContainer.children[0].children[1].textContent, "成功");
@@ -709,20 +678,9 @@ test("多端点处理只能由用户点击一键修复发起", () => {
 
   assert.match(source, /"正在修复…"/);
   assert.doesNotMatch(source, /正在保存现场/);
-  assert.match(source, /body: JSON\.stringify\(\{ name: device\.name \}\)/);
+  assert.match(source, /postJson\("\/api\/a2dp-recovery", \{ name: device\.name \}, "恢复失败"\)/);
   assert.doesNotMatch(source, /async function inspectRouteConflict|inspectingDevices/);
   assert.doesNotMatch(source, /routeChoiceId|route-choice/);
-});
-
-test("单独解除和一键修复第一步由应用入口复用同一解除能力", () => {
-  const appSource = readFileSync(new URL("../../app/index.ts", import.meta.url), "utf8");
-  const recoverySource = readFileSync(new URL("../a2dp-recovery/run-recovery.ts", import.meta.url), "utf8");
-
-  assert.equal((appSource.match(/releaseConfirmedMicrophoneOccupancy\(/g) ?? []).length, 2);
-  assert.match(appSource, /"全部已确认占用"/);
-  assert.match(appSource, /"实体端点占用"/);
-  assert.doesNotMatch(recoverySource, /physicalBluetoothUsers|identifiedProcesses|readMicrophoneUsers/);
-  assert.match(recoverySource, /releaseBluetoothMicrophoneOccupancy\(request\.name\)/);
 });
 
 test("单独解除占用显示阶段并在完成后主动多次复查", () => {
