@@ -26,6 +26,6 @@ export function setBluetoothPower(enabled: boolean): void {
   ensureHelperBuilt();
   execFileSync(executablePath, ["power", enabled ? "1" : "0"], {
     encoding: "utf8",
-    timeout: 2_000,
+    timeout: 6_000,
   });
 }

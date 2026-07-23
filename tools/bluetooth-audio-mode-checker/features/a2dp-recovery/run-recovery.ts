@@ -515,12 +515,29 @@ async function rebuildAudioChain(
   const originalInput = currentDefaultName(devicesBeforeRebuild, "input");
   const originalOutput = currentDefaultName(devicesBeforeRebuild, "output");
   reportProgress({ stage: "正在重建声音链路", message: "正在关闭蓝牙并按固定顺序刷新系统声音服务。" });
+  let off = false;
+  let powerOffError: unknown = null;
   try {
     runtime.setBluetoothPower(false);
-    const off = await waitForBluetoothPower(false, runtime);
-    addStep(request.name, state.steps, "关闭蓝牙", off ? "成功" : "失败", off ? "蓝牙已关闭" : "5 秒内未确认蓝牙关闭");
   } catch (error) {
-    addStep(request.name, state.steps, "关闭蓝牙", "失败", error instanceof Error ? error.message : String(error));
+    powerOffError = error;
+  }
+  try {
+    off = runtime.readBluetoothPower() === false;
+  } catch {
+    off = false;
+  }
+  if (!off && powerOffError === null) off = await waitForBluetoothPower(false, runtime);
+  addStep(request.name, state.steps, "关闭蓝牙", off ? "成功" : "失败",
+    off ? "已独立确认蓝牙关闭" : "5 秒内未确认蓝牙关闭");
+  if (!off) {
+    try {
+      if (!runtime.readBluetoothPower()) {
+        runtime.setBluetoothPower(true);
+        await waitForBluetoothPower(true, runtime);
+      }
+    } catch { /* 失败结果已记录，避免用后续动作掩盖原始失败 */ }
+    return null;
   }
 
   for (const service of serviceOrder) {
