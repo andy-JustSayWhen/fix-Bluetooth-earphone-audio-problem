@@ -84,6 +84,13 @@ export function deviceModePresentation(device) {
       text: "A2DP等模式（高音质播放模式）",
     };
   }
+  if (device.windowsEvidence?.sessionsKnown) {
+    return {
+      className: "pending",
+      text: device.windowsEvidence.activeOutput || device.windowsEvidence.activeCapture
+        ? "模式待确认" : "未检测到音频活动",
+    };
+  }
   return {
     className: "unknown",
     text: "模式无法确认",

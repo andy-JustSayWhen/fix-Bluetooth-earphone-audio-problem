@@ -2,6 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { aggregatePhysicalDevices, type WindowsEndpointFacts, type WindowsProbeResult } from "../../core/windows-audio-probe/index.ts";
 import { assessBluetoothDevices, applyActiveOutputSnapshot, applyActiveInputSnapshot } from "./index.ts";
+import { deviceModePresentation } from "./web/client.js";
+
+test("无活动与证据不足显示中性提示，通话证据仍优先显示", () => {
+  const idle = {mode: "UNKNOWN", windowsEvidence: {sessionsKnown: true, activeOutput: false, activeCapture: false}};
+  assert.deepEqual(deviceModePresentation(idle), {className: "pending", text: "未检测到音频活动"});
+  assert.equal(deviceModePresentation({...idle, windowsEvidence: {...idle.windowsEvidence, activeOutput: true}}).text, "模式待确认");
+  assert.equal(deviceModePresentation({...idle, mode: "HFP_HSP"}).className, "hfp_hsp");
+  assert.equal(deviceModePresentation({...idle, windowsEvidence: {sessionsKnown: false}}).className, "unknown");
+});
 
 const endpoint: WindowsEndpointFacts = {
   id: "output", flow: "eRender", name: "测试耳机", physicalName: "测试耳机", transport: "bluetooth",

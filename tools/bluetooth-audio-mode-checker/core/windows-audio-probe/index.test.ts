@@ -34,6 +34,29 @@ const emptyDefaults = {
   captureConsole: null,
 };
 
+test("启用麦克风时不同父路径的同容器端点仍为一副耳机", () => {
+  const output = endpoint({id: "output", name: "耳机 (测试耳机)", transport: "bluetooth", containerId: "{11111111-2222-3333-4444-555555555555}", canonicalId: "output"});
+  const input = endpoint({...output, id: "input", canonicalId: "input", flow: "eCapture", channels: 1, containerId: "11111111-2222-3333-4444-555555555555"});
+  const before = aggregatePhysicalDevices({endpoints: [output], defaults: emptyDefaults});
+  const after = aggregatePhysicalDevices({endpoints: [output, input], defaults: emptyDefaults});
+  assert.equal(after.length, 1);
+  assert.equal(after[0].name, "测试耳机");
+  assert.equal(after[0].uid, before[0].uid);
+  assert.equal(after[0].inputChannels, 1);
+  assert.equal(after[0].outputChannels, 2);
+});
+
+test("同名不同容器不能合并，系统共享容器不能作为归组依据", () => {
+  for (const containers of [
+    ["11111111-2222-3333-4444-555555555555", "22222222-2222-3333-4444-555555555555"],
+    ["00000000-0000-0000-FFFF-FFFFFFFFFFFF", "00000000-0000-0000-FFFF-FFFFFFFFFFFF"],
+  ]) {
+    const devices = aggregatePhysicalDevices({endpoints: containers.map((containerId, i) => endpoint({id: String(i), canonicalId: null, name: "同名耳机", transport: "bluetooth", containerId})), defaults: emptyDefaults});
+    assert.equal(devices.length, 2);
+    assert.notEqual(devices[0].name, devices[1].name);
+  }
+});
+
 test("两台同型号非蓝牙设备保留独立身份和可区分名称", () => {
   const result: WindowsProbeResult = {endpoints: [
     endpoint({id: "first", canonicalId: "same-model"}),

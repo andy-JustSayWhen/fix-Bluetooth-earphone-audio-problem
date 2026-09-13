@@ -18,6 +18,7 @@ export type WindowsEndpointFacts = {
   role: "handsfree" | "a2dp" | null;
   bluetoothAddress: string | null;
   canonicalId: string | null;
+  containerId?: string | null;
   physicalName: string | null;
   manufacturer: string | null;
   pnpFound: boolean;
@@ -111,8 +112,11 @@ export function groupEndpointsByPhysicalDevice(result: WindowsProbeResult): Endp
   const groups = new Map<string, EndpointGroup>();
   for (const endpoint of result.endpoints) {
     // 蓝牙设备的免提与立体声端点必须合并成同一物理设备；其余设备按端点拆分，保证路由名称正确。
+    const container = endpoint.containerId?.replace(/[{}]/g, "").toUpperCase();
+    const validContainer = container && /^[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}$/.test(container)
+      && !["00000000-0000-0000-0000-000000000000", "00000000-0000-0000-FFFF-FFFFFFFFFFFF"].includes(container);
     const key = endpoint.transport.startsWith("bluetooth")
-      ? (endpoint.bluetoothAddress ? formatBluetoothAddress(endpoint.bluetoothAddress) : endpoint.canonicalId ?? endpoint.id)
+      ? (validContainer ? `container:${container}` : endpoint.bluetoothAddress ? formatBluetoothAddress(endpoint.bluetoothAddress) : endpoint.canonicalId ?? endpoint.id)
       : endpoint.id;
     let group = groups.get(key);
     if (!group) {

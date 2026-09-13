@@ -126,6 +126,36 @@ public static class WindowsAudioProbeCore {
     private static extern uint CM_Get_Device_IDW(uint node, StringBuilder id, int length, uint flags);
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     private static extern uint CM_Get_DevNode_PropertyW(uint node, ref PROPERTYKEY key, out uint type, byte[] buffer, ref uint size, uint flags);
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_Device_ID_List_SizeW(out uint length, string filter, uint flags);
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_Device_ID_ListW(string filter, char[] buffer, uint length, uint flags);
+
+    private static string ContainerId(uint node) {
+        PROPERTYKEY key = new PROPERTYKEY { fmtid = new Guid("8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c"), pid = 2 };
+        byte[] bytes = new byte[16]; uint size = 16, type;
+        if (CM_Get_DevNode_PropertyW(node, ref key, out type, bytes, ref size, 0) != 0 || type != 13 || size != 16) return null;
+        string value = new Guid(bytes).ToString("D").ToUpperInvariant();
+        return value == "00000000-0000-0000-0000-000000000000" || value == "00000000-0000-0000-FFFF-FFFFFFFFFFFF" ? null : value;
+    }
+
+    private static string FindBluetoothPhysicalNode(string container) {
+        if (container == null) return null;
+        uint size;
+        if (CM_Get_Device_ID_List_SizeW(out size, "BTHENUM", 1) != 0 || size > 1048576) return null;
+        char[] buffer = new char[size];
+        if (CM_Get_Device_ID_ListW("BTHENUM", buffer, size, 1) != 0) return null;
+        string result = null;
+        foreach (string candidate in new string(buffer).Split('\0')) {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^BTHENUM\\DEV_[0-9A-F]{12}\\", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) continue;
+            uint node;
+            if (CM_Locate_DevNodeW(out node, candidate, 0) == 0 && ContainerId(node) == container) {
+                if (result != null && !String.Equals(result, candidate, StringComparison.OrdinalIgnoreCase)) return null;
+                result = candidate.ToUpperInvariant();
+            }
+        }
+        return result;
+    }
 
     private static string NodeProperty(uint node, uint property) {
         PROPERTYKEY key = new PROPERTYKEY { fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), pid = property };
@@ -137,6 +167,7 @@ public static class WindowsAudioProbeCore {
     private static string PhysicalJson(string endpointId) {
         uint node;
         bool found = CM_Locate_DevNodeW(out node, "SWD\\MMDEVAPI\\" + endpointId, 0) == 0;
+        string container = found ? ContainerId(node) : null;
         string transport = "unknown", role = null, address = null, physical = null, manufacturer = null;
         string canonical = endpointId;
         if (found) {
@@ -161,7 +192,18 @@ public static class WindowsAudioProbeCore {
                 uint parent; if (CM_Get_Parent(out parent, node, 0) != 0) break; node = parent;
             }
         }
+        if ((transport == "bluetooth" || transport == "bluetooth-le") && address == null) {
+            string remote = FindBluetoothPhysicalNode(container);
+            uint remoteNode;
+            if (remote != null && CM_Locate_DevNodeW(out remoteNode, remote, 0) == 0) {
+                address = System.Text.RegularExpressions.Regex.Match(remote, @"DEV_([0-9A-F]{12})").Groups[1].Value;
+                canonical = remote;
+                physical = NodeProperty(remoteNode, 14) ?? NodeProperty(remoteNode, 2);
+                manufacturer = NodeProperty(remoteNode, 13);
+            }
+        }
         return ",\"transport\":" + Escape(transport) + ",\"role\":" + Escape(role)
+            + ",\"containerId\":" + Escape(container)
             + ",\"bluetoothAddress\":" + Escape(address) + ",\"canonicalId\":" + Escape(canonical)
             + ",\"physicalName\":" + Escape(physical) + ",\"manufacturer\":" + Escape(manufacturer)
             + ",\"pnpFound\":" + (found ? "true" : "false");
