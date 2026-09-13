@@ -1,4 +1,4 @@
-import { readMicrophoneUsersAsync } from "../core/macos-microphone-usage/index.ts";
+import { readMicrophoneUsersAsync } from "../features/microphone-occupancy/index.ts";
 import {
   confirmAndReleaseMicrophoneOccupancy,
   mergeMicrophoneUsers,

@@ -12,7 +12,7 @@ export function createSpeakerOccupancyController({
     busyDevices.add(device.name);
     feedbackByDevice.set(device.name, {
       kind: "pending",
-      text: "正在断开并立即重连该设备…",
+      text: device.windowsEvidence ? "正在重建目标设备连接…" : "正在断开并立即重连该设备…",
     });
     renderDevices(getLastRenderedDevices());
     try {
@@ -23,7 +23,7 @@ export function createSpeakerOccupancyController({
       );
       feedbackByDevice.set(device.name, {
         kind: "success",
-        text: `设备已完成断开重连，用时 ${(result.durationMs / 1_000).toFixed(1)} 秒。请重新播放声音确认设备端是否恢复。`,
+        text: `设备已完成${result.operation === "restart-node" ? "节点重启，输出端点已可用" : "断开重连"}，用时 ${(result.durationMs / 1_000).toFixed(1)} 秒。请重新播放声音确认设备端是否恢复。`,
       });
     } catch (error) {
       feedbackByDevice.set(device.name, {
@@ -48,7 +48,7 @@ export function createSpeakerOccupancyController({
       createElement(
         "span",
         inUse ? "speaker-occupancy-status is-busy" : "speaker-occupancy-status is-free",
-        inUse ? "正在被应用使用" : "未被应用使用",
+        inUse ? "正在被应用使用" : device.windowsEvidence && (!device.windowsEvidence.sessionsKnown || device.windowsEvidence.activeOutput) ? "占用归属无法确认" : "未被应用使用",
       ),
     );
     container.append(heading);
@@ -75,7 +75,7 @@ export function createSpeakerOccupancyController({
     const button = createElement(
       "button",
       "speaker-reconnect-button",
-      busyDevices.has(device.name) ? "正在断开重连…" : "一键断开重连",
+      busyDevices.has(device.name) ? "正在处理…" : device.windowsEvidence ? "重建设备连接" : "一键断开重连",
     );
     button.type = "button";
     button.disabled = busyDevices.has(device.name);
@@ -85,7 +85,7 @@ export function createSpeakerOccupancyController({
     container.append(createElement(
       "p",
       "speaker-occupancy-note",
-      "若当前设备处于A2DP，音频能正常播放但设备端没有声音，可以点击“一键断开重连”尝试修复",
+      device.windowsEvidence ? "无声时可尝试重启目标设备节点。需要管理员权限；不会重启整机蓝牙适配器。" : "若当前设备处于A2DP，音频能正常播放但设备端没有声音，可以点击“一键断开重连”尝试修复",
     ));
     const feedback = feedbackByDevice.get(device.name);
     if (feedback) {

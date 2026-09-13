@@ -299,7 +299,7 @@ function microphoneOccupancySection(device) {
     createElement(
       "span",
       hasAssignedUsers ? "occupancy-status is-busy" : "occupancy-status is-free",
-      hasAssignedUsers ? "正在占用" : "未被本机占用",
+      hasAssignedUsers ? "正在占用" : device.windowsEvidence && (!device.windowsEvidence.sessionsKnown || device.windowsEvidence.activeCapture) ? "占用归属无法确认" : "未被本机占用",
     ),
   );
   section.append(heading);
@@ -658,6 +658,12 @@ realtimeEvents.addEventListener("message", (event) => {
   } catch {
     // A later system event will replace a malformed update.
   }
+});
+realtimeEvents.addEventListener("status", (event) => {
+  try {
+    const status = JSON.parse(event.data);
+    if (status.error) { countElement.textContent = "设备读取失败"; timeElement.textContent = status.error; statusDot.className = "status-dot is-error"; }
+  } catch {}
 });
 realtimeEvents.addEventListener("recovery", (event) => {
   try {

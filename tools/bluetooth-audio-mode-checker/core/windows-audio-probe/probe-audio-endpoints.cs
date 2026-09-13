@@ -4,7 +4,6 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 
 public enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
 public enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
@@ -14,35 +13,38 @@ public class MMDeviceEnumeratorComObject { }
 
 [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IMMDeviceEnumerator {
-    int EnumAudioEndpoints(EDataFlow dataFlow, uint stateMask, out IMMDeviceCollection devices);
-    int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice device);
+    [PreserveSig] int EnumAudioEndpoints(EDataFlow dataFlow, uint stateMask, out IMMDeviceCollection devices);
+    [PreserveSig] int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice device);
 }
 
 [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IMMDeviceCollection {
-    int GetCount(out uint count);
-    int Item(uint index, out IMMDevice device);
+    [PreserveSig] int GetCount(out uint count);
+    [PreserveSig] int Item(uint index, out IMMDevice device);
 }
 
 [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IMMDevice {
-    int Activate(ref Guid iid, uint clsCtx, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object iface);
-    int OpenPropertyStore(uint stgmAccess, out IPropertyStore store);
-    int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
-    int GetState(out uint state);
+    [PreserveSig] int Activate(ref Guid iid, uint clsCtx, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object iface);
+    [PreserveSig] int OpenPropertyStore(uint stgmAccess, out IPropertyStore store);
+    [PreserveSig] int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
+    [PreserveSig] int GetState(out uint state);
 }
 
 [ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IPropertyStore {
-    int GetCount(out uint count);
-    int GetAt(uint index, out PROPERTYKEY key);
-    int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
-    int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
-    int Commit();
+    [PreserveSig] int GetCount(out uint count);
+    [PreserveSig] int GetAt(uint index, out PROPERTYKEY key);
+    [PreserveSig] int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+    [PreserveSig] int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+    [PreserveSig] int Commit();
 }
 
 [StructLayout(LayoutKind.Sequential)]
 public struct PROPERTYKEY { public Guid fmtid; public uint pid; }
+
+[StructLayout(LayoutKind.Sequential)]
+public struct PROPVARIANTBLOB { public uint size; public IntPtr data; }
 
 [StructLayout(LayoutKind.Explicit)]
 public struct PROPVARIANT {
@@ -51,19 +53,20 @@ public struct PROPVARIANT {
     [FieldOffset(8)] public Int64 int64Value;
     [FieldOffset(8)] public Int32 int32Value;
     [FieldOffset(8)] public UInt32 uint32Value;
+    [FieldOffset(8)] public PROPVARIANTBLOB blob;
 }
 
 [ComImport, Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IAudioClient {
-    int Initialize(int shareMode, uint streamFlags, long bufferDuration, long periodicity, IntPtr format, IntPtr sessionGuid);
-    int GetBufferSize(out uint bufferFrames);
-    int GetStreamLatency(out long latency);
-    int GetCurrentPadding(out uint padding);
-    int IsFormatSupported(int shareMode, IntPtr format, out IntPtr closestMatch);
-    int GetMixFormat(out IntPtr format);
+    [PreserveSig] int Initialize(int shareMode, uint streamFlags, long bufferDuration, long periodicity, IntPtr format, IntPtr sessionGuid);
+    [PreserveSig] int GetBufferSize(out uint bufferFrames);
+    [PreserveSig] int GetStreamLatency(out long latency);
+    [PreserveSig] int GetCurrentPadding(out uint padding);
+    [PreserveSig] int IsFormatSupported(int shareMode, IntPtr format, out IntPtr closestMatch);
+    [PreserveSig] int GetMixFormat(out IntPtr format);
 }
 
-[StructLayout(LayoutKind.Sequential)]
+[StructLayout(LayoutKind.Sequential, Pack = 2)]
 public struct WAVEFORMATEX {
     public ushort formatTag;
     public ushort channels;
@@ -81,9 +84,120 @@ public class AudioEndpoint {
     public uint Rate;
     public uint Channels;
     public uint Bits;
+    public string Sessions = "[]";
+    public bool SessionsKnown;
+}
+
+[ComImport, Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IAudioSessionManager2 {
+    [PreserveSig] int GetAudioSessionControl(IntPtr guid, uint flags, out IntPtr control);
+    [PreserveSig] int GetSimpleAudioVolume(IntPtr guid, uint flags, out IntPtr volume);
+    [PreserveSig] int GetSessionEnumerator(out IAudioSessionEnumerator sessions);
+}
+[ComImport, Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IAudioSessionEnumerator {
+    [PreserveSig] int GetCount(out int count);
+    [PreserveSig] int GetSession(int index, out IAudioSessionControl2 control);
+}
+[ComImport, Guid("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IAudioSessionControl2 {
+    [PreserveSig] int GetState(out int state);
+    [PreserveSig] int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+    [PreserveSig] int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string name, IntPtr context);
+    [PreserveSig] int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string path);
+    [PreserveSig] int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string path, IntPtr context);
+    [PreserveSig] int GetGroupingParam(out Guid grouping);
+    [PreserveSig] int SetGroupingParam(ref Guid grouping, IntPtr context);
+    [PreserveSig] int RegisterAudioSessionNotification(IntPtr notification);
+    [PreserveSig] int UnregisterAudioSessionNotification(IntPtr notification);
+    [PreserveSig] int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string id);
+    [PreserveSig] int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string id);
+    [PreserveSig] int GetProcessId(out uint pid);
+    [PreserveSig] int IsSystemSoundsSession();
+    [PreserveSig] int SetDuckingPreference(bool optOut);
 }
 
 public static class WindowsAudioProbeCore {
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Locate_DevNodeW(out uint node, string id, uint flags);
+    [DllImport("cfgmgr32.dll")]
+    private static extern uint CM_Get_Parent(out uint parent, uint node, uint flags);
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_Device_IDW(uint node, StringBuilder id, int length, uint flags);
+    [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_DevNode_PropertyW(uint node, ref PROPERTYKEY key, out uint type, byte[] buffer, ref uint size, uint flags);
+
+    private static string NodeProperty(uint node, uint property) {
+        PROPERTYKEY key = new PROPERTYKEY { fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), pid = property };
+        byte[] buffer = new byte[4096]; uint size = (uint)buffer.Length; uint type;
+        if (CM_Get_DevNode_PropertyW(node, ref key, out type, buffer, ref size, 0) != 0 || type != 18) return null;
+        return Encoding.Unicode.GetString(buffer, 0, (int)size).TrimEnd('\0');
+    }
+
+    private static string PhysicalJson(string endpointId) {
+        uint node;
+        bool found = CM_Locate_DevNodeW(out node, "SWD\\MMDEVAPI\\" + endpointId, 0) == 0;
+        string transport = "unknown", role = null, address = null, physical = null, manufacturer = null;
+        string canonical = endpointId;
+        if (found) {
+            for (int hop = 0; hop < 12; hop++) {
+                StringBuilder buffer = new StringBuilder(1024);
+                if (CM_Get_Device_IDW(node, buffer, buffer.Capacity, 0) != 0) break;
+                string id = buffer.ToString().ToUpperInvariant();
+                if (id.StartsWith("BTHLE") || id.StartsWith("BTHLEAUDIO")) transport = "bluetooth-le";
+                else if (transport != "bluetooth-le" && (id.StartsWith("BTHENUM\\") || id.StartsWith("BTHHFENUM\\") || id.StartsWith("BTHA2DP\\"))) transport = "bluetooth";
+                else if (transport == "unknown" && id.StartsWith("USB\\")) transport = "usb";
+                else if (transport == "unknown" && id.StartsWith("HDAUDIO\\")) transport = (id.Contains("VEN_10DE") || id.Contains("VEN_1002")) ? "display-port" : "built-in";
+                else if (transport == "unknown" && (id.StartsWith("ROOT\\") || id.StartsWith("SWD\\DRIVERENUM\\"))) transport = "virtual";
+                if (id.StartsWith("BTHHFENUM\\")) role = "handsfree";
+                if (role == null && (id.StartsWith("BTHA2DP\\") || id.StartsWith("BTHENUM\\{0000110B-"))) role = "a2dp";
+                var match = System.Text.RegularExpressions.Regex.Match(id, @"(?:BTHENUM\\DEV_|DEV_)([0-9A-F]{12})(?:\\|$)");
+                if (match.Success && (transport == "bluetooth" || transport == "bluetooth-le")) {
+                    address = match.Groups[1].Value; canonical = id;
+                    physical = NodeProperty(node, 14) ?? NodeProperty(node, 2);
+                    manufacturer = NodeProperty(node, 13);
+                    break;
+                }
+                uint parent; if (CM_Get_Parent(out parent, node, 0) != 0) break; node = parent;
+            }
+        }
+        return ",\"transport\":" + Escape(transport) + ",\"role\":" + Escape(role)
+            + ",\"bluetoothAddress\":" + Escape(address) + ",\"canonicalId\":" + Escape(canonical)
+            + ",\"physicalName\":" + Escape(physical) + ",\"manufacturer\":" + Escape(manufacturer)
+            + ",\"pnpFound\":" + (found ? "true" : "false");
+    }
+    private static string ReadSessions(IMMDevice device) {
+        Guid iid = new Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
+        object value;
+        Marshal.ThrowExceptionForHR(device.Activate(ref iid, 23, IntPtr.Zero, out value));
+        IAudioSessionManager2 manager = (IAudioSessionManager2)value;
+        try {
+            IAudioSessionEnumerator sessions;
+            Marshal.ThrowExceptionForHR(manager.GetSessionEnumerator(out sessions));
+            try {
+                int count; Marshal.ThrowExceptionForHR(sessions.GetCount(out count));
+                List<string> records = new List<string>();
+                for (int i = 0; i < count; i++) {
+                    IAudioSessionControl2 session;
+                    if (sessions.GetSession(i, out session) != 0) continue;
+                    try {
+                        int state; if (session.GetState(out state) != 0 || state != 1) continue;
+                        uint pid; int pidResult = session.GetProcessId(out pid);
+                        string id; session.GetSessionInstanceIdentifier(out id);
+                        string name = "System";
+                        if (pid > 0) {
+                            try { using (var process = System.Diagnostics.Process.GetProcessById((int)pid)) { name = process.ProcessName; } }
+                            catch { name = "Unknown process"; }
+                        }
+                        // S_FALSE represents a cross-process session: do not attribute it to one PID.
+                        if (pidResult != 0) pid = 0;
+                        records.Add("{\"pid\":" + pid + ",\"name\":" + Escape(name) + ",\"id\":" + Escape(id) + "}");
+                    } finally { Marshal.ReleaseComObject(session); }
+                }
+                return "[" + String.Join(",", records.ToArray()) + "]";
+            } finally { Marshal.ReleaseComObject(sessions); }
+        } finally { Marshal.ReleaseComObject(manager); }
+    }
     [DllImport("ole32.dll")]
     private static extern int PropVariantClear(ref PROPVARIANT pv);
 
@@ -121,6 +235,7 @@ public static class WindowsAudioProbeCore {
             Marshal.FreeCoTaskMem(fmtPtr);
         }
         Marshal.ReleaseComObject(client);
+        try { endpoint.Sessions = ReadSessions(device); endpoint.SessionsKnown = true; } catch { }
         return endpoint;
     }
 
@@ -161,7 +276,7 @@ public static class WindowsAudioProbeCore {
             + ",\"name\":" + Escape(e.Name)
             + ",\"rate\":" + e.Rate
             + ",\"channels\":" + e.Channels
-            + ",\"bits\":" + e.Bits + "}";
+            + ",\"bits\":" + e.Bits + ",\"flow\":" + Escape(e.Flow) + ",\"sessionsKnown\":" + (e.SessionsKnown ? "true" : "false") + ",\"sessions\":" + e.Sessions + PhysicalJson(e.Id) + "}";
     }
 
     private static AudioEndpoint FindById(List<AudioEndpoint> endpoints, string id) {
@@ -174,9 +289,9 @@ public static class WindowsAudioProbeCore {
         StringBuilder sb = new StringBuilder();
         sb.Append("{");
         bool first = true;
-        foreach (string key in new string[] { "renderConsole", "renderComms", "captureConsole" }) {
+        foreach (string key in new string[] { "renderConsole", "renderMultimedia", "renderComms", "captureConsole", "captureMultimedia", "captureComms" }) {
             EDataFlow flow = key.StartsWith("render") ? EDataFlow.eRender : EDataFlow.eCapture;
-            ERole role = key.EndsWith("Comms") ? ERole.eCommunications : ERole.eConsole;
+            ERole role = key.EndsWith("Comms") ? ERole.eCommunications : key.EndsWith("Multimedia") ? ERole.eMultimedia : ERole.eConsole;
             IMMDevice device;
             AudioEndpoint endpoint = null;
             if (enumerator.GetDefaultAudioEndpoint(flow, role, out device) == 0) {
@@ -201,39 +316,10 @@ public static class WindowsAudioProbeCore {
         sb.Append("{\"endpoints\":[");
         for (int i = 0; i < endpoints.Count; i++) {
             if (i > 0) sb.Append(",");
-            sb.Append("{\"flow\":\"" + endpoints[i].Flow + "\",\"endpoint\":" + EndpointJson(endpoints[i]) + "}");
+            sb.Append(EndpointJson(endpoints[i]));
         }
         sb.Append("],\"defaults\":" + DefaultsJson(enumerator, endpoints) + "}");
         return sb.ToString();
     }
 
-    // Realtime watch: prints one JSON line whenever defaults, their mix format, or the endpoint set changes.
-    public static void WatchDefaults(int intervalMs) {
-        IMMDeviceEnumerator enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
-        string lastFingerprint = null;
-        while (true) {
-            try {
-                List<AudioEndpoint> endpoints = EnumerateEndpoints(enumerator);
-                string defaults = DefaultsJson(enumerator, endpoints);
-                StringBuilder ids = new StringBuilder();
-                foreach (AudioEndpoint e in endpoints) { ids.Append(e.Flow); ids.Append(":"); ids.Append(e.Id); ids.Append(";"); }
-                string fingerprint = defaults + "|" + ids.ToString();
-                if (fingerprint != lastFingerprint) {
-                    lastFingerprint = fingerprint;
-                    StringBuilder sb = new StringBuilder();
-                    sb.Append("{\"defaults\":" + defaults + ",\"endpoints\":[");
-                    for (int i = 0; i < endpoints.Count; i++) {
-                        if (i > 0) sb.Append(",");
-                        sb.Append(EndpointJson(endpoints[i]));
-                    }
-                    sb.Append("]}");
-                    Console.Out.WriteLine(sb.ToString());
-                    Console.Out.Flush();
-                }
-            } catch (Exception) {
-                // Transient COM failures must not stop the watch loop.
-            }
-            Thread.Sleep(intervalMs < 100 ? 100 : intervalMs);
-        }
-    }
 }

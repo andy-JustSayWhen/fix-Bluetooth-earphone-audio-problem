@@ -4,6 +4,7 @@ export type SampleRateRange = {
 };
 
 export type RawAudioDevice = {
+  windowsEvidence?: WindowsAudioEvidence;
   id: number;
   name: string;
   uid: string;
@@ -46,6 +47,7 @@ export type BluetoothLinkSnapshot = {
 };
 
 export type AudioModeAssessment = {
+  windowsEvidence?: WindowsAudioEvidence;
   name: string;
   mode: AudioModeCode;
   a2dpSupport: A2dpSupport;
@@ -75,6 +77,16 @@ export type AudioModeAssessment = {
   explanation: string;
   microphoneOccupancy?: MicrophoneOccupancy;
   speakerOccupancy?: SpeakerOccupancy;
+};
+
+export type WindowsAudioEvidence = {
+  transport: string;
+  activeCapture: boolean;
+  activeHandsfreeOutput: boolean;
+  activeOutput: boolean;
+  sessionsKnown: boolean;
+  splitStereoActive?: boolean;
+  mixRate: number | null;
 };
 
 export type SpeakerOutputUser = {

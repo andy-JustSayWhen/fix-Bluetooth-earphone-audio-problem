@@ -10,7 +10,7 @@ import {
 
 test("普通启动默认启用详细日志", () => {
   assert.equal(getDetailedLogStatus().enabled, true);
-  assert.match(getDetailedLogStatus().path, /logs\/app\.jsonl$/);
+  assert.match(getDetailedLogStatus().path, /logs[\\/]app\.jsonl$/);
 });
 
 test("默认轮转配置保留当前文件和四份历史文件", () => {

@@ -34,6 +34,17 @@ const emptyDefaults = {
   captureConsole: null,
 };
 
+test("两台同型号非蓝牙设备保留独立身份和可区分名称", () => {
+  const result: WindowsProbeResult = {endpoints: [
+    endpoint({id: "first", canonicalId: "same-model"}),
+    endpoint({id: "second", canonicalId: "same-model"}),
+  ], defaults: emptyDefaults};
+  const devices = aggregatePhysicalDevices(result);
+  assert.equal(devices.length, 2);
+  assert.notEqual(devices[0].name, devices[1].name);
+  assert.notEqual(devices[0].uid, devices[1].uid);
+});
+
 test("剥离蓝牙端点名称中的角色后缀", () => {
   assert.equal(stripBluetoothRoleSuffix("耳机 (WH-1000XM5 Stereo)"), "WH-1000XM5");
   assert.equal(stripBluetoothRoleSuffix("耳机 (WH-1000XM5 立体声)"), "WH-1000XM5");
@@ -100,13 +111,13 @@ test("同一物理设备的蓝牙免提与立体声端点合并为一条设备�
   assert.equal(device.bluetoothAddress, "AA:BB:CC:DD:EE:FF");
   assert.equal(device.outputChannels, 2);
   assert.equal(device.sampleRateOutput, 48_000);
-  assert.equal(device.maxSupportedOutputRate, 48_000);
+  assert.equal(device.maxSupportedOutputRate, null);
   assert.equal(device.isDefaultOutput, false);
   assert.equal(device.actualSampleRateOutput, null);
   assert.equal(device.inputChannels, 1);
 });
 
-test("免提端点为默认输出时，标称与实际取免提混合格式，能力取全部端点并集", () => {
+test("默认免提端点保留混音格式，实际传输与硬件能力保持未知", () => {
   const result: WindowsProbeResult = {
     endpoints: [
       endpoint({
@@ -140,12 +151,12 @@ test("免提端点为默认输出时，标称与实际取免提混合格式，�
   const devices = aggregatePhysicalDevices(result);
   const device = devices[0];
   assert.equal(device.isDefaultOutput, true);
-  assert.equal(device.isRunning, true);
+  assert.equal(device.isRunning, false);
   assert.equal(device.nominalSampleRateOutput, 16_000);
-  assert.equal(device.actualSampleRateOutput, 16_000);
+  assert.equal(device.actualSampleRateOutput, null);
   assert.equal(device.outputChannels, 1);
   assert.equal(device.sampleRateOutput, 16_000);
-  assert.equal(device.maxSupportedOutputRate, 48_000);
+  assert.equal(device.maxSupportedOutputRate, null);
 });
 
 test("非蓝牙端点按端点单独成记录并标注活动参数", () => {
@@ -166,7 +177,7 @@ test("非蓝牙端点按端点单独成记录并标注活动参数", () => {
   assert.ok(speaker && microphone);
   assert.equal(speaker.transport, "usb");
   assert.equal(speaker.isDefaultOutput, true);
-  assert.equal(speaker.actualSampleRateOutput, 48_000);
+  assert.equal(speaker.actualSampleRateOutput, null);
   assert.equal(microphone.isDefaultInput, false);
   assert.equal(microphone.actualSampleRateInput, null);
   assert.equal(microphone.sampleRateInput, 44_100);

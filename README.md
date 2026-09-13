@@ -67,3 +67,5 @@ Windows 11：
 ## 项目目录
 
 项目目录结构和新增、移动文件的规则统一维护在 [`reference/项目目录树.md`](reference/项目目录树.md)。其中 `test/` 的一级目录按完整测试案例划分；同一案例的原始文件和测试产物放在同一个案例目录内，不按文件类型建立一级目录。
+
+Windows 用户请进入 [蓝牙音频模式检查器目录](tools/bluetooth-audio-mode-checker/)，双击 `run.cmd`。运行要求与操作见该目录说明，平台能力以 [Windows适配规格](reference/SPEC/Windows适配.md) 为原文。

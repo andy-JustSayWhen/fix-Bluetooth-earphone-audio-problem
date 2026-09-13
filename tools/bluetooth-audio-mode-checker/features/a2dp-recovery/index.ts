@@ -1,3 +1,4 @@
+import { recoverWindowsAudio } from "./windows.ts";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +37,17 @@ export async function recoverA2dp(
   releaseBluetoothMicrophoneOccupancy: (deviceName: string) => Promise<RecoveryMicrophoneReleaseResult> = async () => ({
     users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [], protectedPids: [],
   }),
+): Promise<A2dpRecoveryResult> {
+  if (process.platform === "win32") return recoverWindowsAudio(request.name, onProgress, releaseBluetoothMicrophoneOccupancy);
+  return recoverMacAudio(request, onProgress, readModeAssessments, readFormatRequestUsers, releaseBluetoothMicrophoneOccupancy);
+}
+
+export function recoverMacAudio(
+  request: RecoveryRequest,
+  onProgress: (progress: RecoveryProgress) => void,
+  readModeAssessments: () => AudioModeAssessment[],
+  readFormatRequestUsers: () => MicrophoneUser[],
+  releaseBluetoothMicrophoneOccupancy: (deviceName: string) => Promise<RecoveryMicrophoneReleaseResult>,
 ): Promise<A2dpRecoveryResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [runnerPath, JSON.stringify(request)], {

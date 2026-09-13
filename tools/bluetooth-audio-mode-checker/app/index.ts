@@ -1,3 +1,4 @@
+import { startWindowsStateMonitor } from "../features/bluetooth-audio-mode/index.ts";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
@@ -38,8 +39,8 @@ import {
   composeMicrophoneOccupancyState,
   composeSpeakerOccupancyState,
 } from "./state-composition.ts";
-import { setDefaultAudioDevice } from "../core/macos-audio-route/index.ts";
-import { readMicrophoneUsersAsync } from "../core/macos-microphone-usage/index.ts";
+import { setDefaultAudioDevice } from "../features/bluetooth-audio-mode/index.ts";
+import { readMicrophoneUsersAsync } from "../features/microphone-occupancy/index.ts";
 import { detailedLog, getDetailedLogStatus } from "../core/detailed-logging/index.ts";
 
 import type {
@@ -142,7 +143,7 @@ async function serveAsset(assetName: string, response: import("node:http").Serve
 }
 
 function openBrowser(url: string): void {
-  execFile("/usr/bin/open", [url], (error) => {
+  execFile(process.platform === "win32" ? "rundll32.exe" : "/usr/bin/open", process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url], (error) => {
     if (error) {
       detailedLog("error", "browser.open-failed", { url, error });
       console.error(`浏览器未能自动打开，请手动访问：${url}`);
@@ -202,6 +203,7 @@ function main(): void {
   });
 
   let cachedState: AudioModeState | null = null;
+  let scanError: string | null = null;
   let cachedStateUpdatedAt: string | null = null;
   let fullStateUpdatedAtMs = 0;
   let latestSnapshot: ActiveOutputSnapshot | null = null;
@@ -319,6 +321,8 @@ function main(): void {
       const startedAtWallClock = Date.now();
       try {
         const refreshedState = await readAudioModeStateAsync();
+        scanError = null;
+        if (process.platform === "win32") latestRawMicrophoneUsers = await readMicrophoneUsersAsync();
         const changed = applyRefreshedState(refreshedState, startedAtWallClock);
         if (changed) {
           detailedLog("info", "device-state.changed", {
@@ -350,10 +354,12 @@ function main(): void {
         }
         if (inputActivityScanPending) scheduleOccupancyScan(0, "default-input-started");
       } catch (error) {
+        scanError = error instanceof Error ? error.message : "设备读取失败";
         detailedLog("error", "device-state.refresh-failed", {
           durationMs: Number((performance.now() - startedAt).toFixed(3)),
           error,
         });
+        for (const client of eventClients) client.write(`event: status\ndata: ${JSON.stringify({ error: scanError })}\n\n`);
         // Keep the last valid state when a background system scan fails.
       } finally {
         stateRefreshRunning = false;
@@ -391,6 +397,8 @@ function main(): void {
   const scheduleModeTransitionChecks = () => {
     scheduleStateRefreshSequence([0, 700, 1_500, 2_800, 4_500]);
   };
+  const stopWindowsMonitor = process.platform === "win32" ? startWindowsStateMonitor(() => { scheduleStateRefresh(); }) : () => {};
+  const windowsRetryTimer = process.platform === "win32" ? setInterval(() => scheduleStateRefresh(), 3_000) : null;
   const stopRealtimeMonitor = startAudioModeRealtimeMonitor((snapshot) => {
     const inputSnapshot = snapshot.defaultInput;
     if (inputSnapshot !== undefined) {
@@ -556,7 +564,14 @@ function main(): void {
   scheduleStateRefresh();
 
   let requestSequence = 0;
+  let windowsActionBusy = false;
   const server = createServer(async (request, response) => {
+    let ownsWindowsAction = false;
+    try {
+    if (process.platform === "win32" && request.method === "POST") {
+      if (windowsActionBusy) { sendJson(response, 409, {error: "另一个声音操作正在执行，请稍后重试"}); return; }
+      windowsActionBusy = true; ownsWindowsAction = true;
+    }
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const requestId = `${process.pid}-${++requestSequence}`;
     const requestStartedAt = performance.now();
@@ -584,9 +599,14 @@ function main(): void {
 
     if (request.method === "GET" && url.pathname === "/api/devices") {
       try {
+        if (scanError) {
+          scheduleManualStateRefresh();
+          sendJson(response, 503, { error: scanError });
+          return;
+        }
         if (cachedState === null) {
           scheduleManualStateRefresh();
-          sendJson(response, 202, { loading: true });
+          sendJson(response, scanError ? 503 : 202, scanError ? {error: scanError} : { loading: true });
           return;
         }
         sendJson(response, 200, statePayload());
@@ -682,8 +702,9 @@ function main(): void {
           deviceName: body.name,
           users: evidenceUsers,
           ...result,
-          disconnected: true,
-          reconnected: true,
+          disconnected: process.platform === "darwin",
+          reconnected: process.platform === "darwin",
+          targetEndpointAvailable: true,
         });
         scheduleStateRefreshSequence([0, 350, 900, 1_800]);
         sendJson(response, 200, { ok: true, name: body.name, ...result });
@@ -760,7 +781,7 @@ function main(): void {
           alreadyDefault: selectedOption.isDefault,
         });
         if (!selectedOption.isDefault) {
-          setDefaultAudioDevice(body.direction, body.name);
+          await setDefaultAudioDevice(body.direction, body.name);
           scheduleModeTransitionChecks();
         }
         detailedLog("info", "default-device.change-completed", { direction: body.direction, deviceName: body.name });
@@ -782,10 +803,15 @@ function main(): void {
 
     const assetName = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     await serveAsset(assetName, response);
+    } finally {
+      if (ownsWindowsAction) windowsActionBusy = false;
+    }
   });
 
   server.on("error", (error: NodeJS.ErrnoException) => {
     detailedLog("error", "service.server-error", { error, port: options.port });
+    stopWindowsMonitor();
+    if (windowsRetryTimer) clearInterval(windowsRetryTimer);
     stopRealtimeMonitor();
     stopLinkMonitor();
     stopSpeakerOccupancyMonitor();
@@ -800,6 +826,8 @@ function main(): void {
 
   const shutdown = () => {
     detailedLog("info", "service.stopping", { eventClients: eventClients.size });
+    stopWindowsMonitor();
+    if (windowsRetryTimer) clearInterval(windowsRetryTimer);
     stopRealtimeMonitor();
     stopLinkMonitor();
     stopSpeakerOccupancyMonitor();

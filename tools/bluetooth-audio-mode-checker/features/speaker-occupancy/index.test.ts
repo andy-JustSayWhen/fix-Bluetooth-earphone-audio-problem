@@ -65,7 +65,7 @@ test("进程身份不再有效时不保留历史占用", () => {
 test("页面无论是否识别到输出占用都提供一键断开重连", () => {
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
   assert.match(source, /if \(inUse\)[\s\S]*?\} else \{[\s\S]*?\}\s+const button = createElement\(/);
-  assert.match(source, /busyDevices\.has\(device\.name\) \? "正在断开重连…" : "一键断开重连"/);
+  assert.match(source, /"重建设备连接" : "一键断开重连"/);
   assert.match(source, /若当前设备处于A2DP，音频能正常播放但设备端没有声音，可以点击“一键断开重连”尝试修复/);
   assert.match(source, /仅设为系统默认输出不算应用级占用/);
   assert.match(source, /正在通过本设备播放声音/);

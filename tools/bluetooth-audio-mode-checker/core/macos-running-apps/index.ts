@@ -30,6 +30,8 @@ const protectedSystemProcessNames = new Set([
   "bluetoothuserd",
   "coreaudiod",
   "kernel_task",
+  "system", "idle", "svchost", "audiodg", "services", "lsass", "csrss",
+  "wininit", "winlogon", "smss", "dwm", "explorer", "powershell", "pwsh", "node",
   "launchd",
 ]);
 

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { getuid } from "node:process";
+import process from "node:process";
 
 export type AudioChainService =
   | "bluetoothd"
@@ -9,7 +9,7 @@ export type AudioChainService =
   | "audiomxd";
 
 function serviceTarget(service: AudioChainService): string {
-  const uid = getuid?.();
+  const uid = process.getuid?.();
   if (uid === undefined) throw new Error("无法确认当前用户身份");
   const targets: Record<AudioChainService, string> = {
     bluetoothd: "system/com.apple.bluetoothd",

@@ -1,4 +1,6 @@
-import { readMicrophoneUsersAsync } from "../../core/macos-microphone-usage/index.ts";
+import { readWindowsMicrophoneUsers } from "../../core/windows-audio-probe/index.ts";
+import { readWindowsProcess, closeWindowsProcess } from "../../core/windows-audio-control/index.ts";
+import { readMicrophoneUsersAsync as readMacMicrophoneUsers } from "../../core/macos-microphone-usage/index.ts";
 import {
   readRunningProcess,
   terminateAndConfirmRunningProcesses,
@@ -179,8 +181,8 @@ export type MicrophoneReleaseRuntime = {
 
 const systemReleaseRuntime: MicrophoneReleaseRuntime = {
   now: Date.now,
-  readProcess: readRunningProcess,
-  terminateProcess: terminateRunningProcess,
+  readProcess: process.platform === "win32" ? readWindowsProcess : readRunningProcess,
+  terminateProcess: process.platform === "win32" ? closeWindowsProcess : terminateRunningProcess,
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 };
 
@@ -241,3 +243,5 @@ export async function confirmAndReleaseMicrophoneOccupancy(
   }
   return releaseMicrophoneUsersDetailed(confirmedUsers, selectedPids, runtime);
 }
+
+export const readMicrophoneUsersAsync = process.platform === "win32" ? readWindowsMicrophoneUsers : readMacMicrophoneUsers;

@@ -1,3 +1,8 @@
+import { getWindowsProbe, endpointDeviceName, startWindowsProbe, stopWindowsProbe } from "../../core/windows-audio-probe/index.ts";
+import { setWindowsDefaultEndpoint } from "../../core/windows-audio-control/index.ts";
+import { setDefaultAudioDevice as setMacDefault } from "../../core/macos-audio-route/index.ts";
+import { readAudioDevices as readWindowsDevices, readAudioDevicesAsync as readWindowsDevicesAsync } from "../../core/windows-audio-probe/index.ts";
+import { assessWindowsFacts } from "./windows.ts";
 import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { startActiveOutputMonitor } from "../../core/macos-audio-events/index.ts";
 import { startBluetoothLinkMonitor } from "../../core/macos-bluetooth-link/index.ts";
@@ -70,6 +75,7 @@ function groupBluetoothDevices(devices: RawAudioDevice[]): DeviceGroup[] {
 }
 
 function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
+  if (base.windowsEvidence) return assessWindowsFacts(base);
   const maxAvailableOutputRate = Math.max(
     0,
     ...base.availableSampleRateRangesOutput.map((range) => range.maximum),
@@ -153,6 +159,7 @@ function assessGroup(group: DeviceGroup): AudioModeAssessment {
   const bluetoothAddress = output?.bluetoothAddress ?? input?.bluetoothAddress ??
     group.devices.find((device) => device.bluetoothAddress)?.bluetoothAddress ?? null;
   return classifyFacts({
+    windowsEvidence: output?.windowsEvidence ?? input?.windowsEvidence,
     name: group.name,
     isActive: isDefaultOutput,
     isInputActive: false,
@@ -208,7 +215,7 @@ function routeOptions(devices: RawAudioDevice[], direction: "input" | "output"):
 }
 
 export function readAudioModeState(): AudioModeState {
-  const devices = readAudioDevices().devices;
+  const devices = (process.platform === "win32" ? readWindowsDevices() : readAudioDevices()).devices;
   return {
     devices: assessBluetoothDevices(devices),
     routes: {
@@ -219,6 +226,9 @@ export function readAudioModeState(): AudioModeState {
 }
 
 export function readAudioModeStateAsync(): Promise<AudioModeState> {
+  if (process.platform === "win32") return readWindowsDevicesAsync().then(({devices}) => ({
+    devices: assessBluetoothDevices(devices), routes: {input: routeOptions(devices, "input"), output: routeOptions(devices, "output")}
+  }));
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [join(moduleDirectory, "state-reader.ts")], {
       cwd: join(moduleDirectory, "..", ".."),
@@ -256,6 +266,7 @@ export function applyActiveOutputSnapshot(
     devices: state.devices.map((device) => {
       const isDefaultOutput = snapshot.name !== null && device.name === snapshot.name;
       return classifyFacts({
+        windowsEvidence: device.windowsEvidence,
         name: device.name,
         isActive: isDefaultOutput || device.isInputActive,
         isInputActive: device.isInputActive,
@@ -309,6 +320,7 @@ export function applyActiveInputSnapshot(
     devices: state.devices.map((device) => {
       const isInputActive = snapshot.isRunning && snapshot.name !== null && device.name === snapshot.name;
       return classifyFacts({
+        windowsEvidence: device.windowsEvidence,
         name: device.name,
         isActive: device.isDefaultOutput || isInputActive,
         isInputActive,
@@ -361,6 +373,7 @@ export function applyBluetoothLinkSnapshot(
       if (device.audioLinkTypeObservedAt &&
           Date.parse(device.audioLinkTypeObservedAt) > Date.parse(snapshot.timestamp)) return device;
       return classifyFacts({
+        windowsEvidence: device.windowsEvidence,
         name: device.name,
         isActive: device.isActive,
         isInputActive: device.isInputActive,
@@ -399,4 +412,36 @@ export function startAudioModeLinkMonitor(
   onSnapshot: (snapshot: BluetoothLinkSnapshot) => void,
 ): () => void {
   return startBluetoothLinkMonitor(onSnapshot);
+}
+
+export async function setDefaultAudioDevice(direction: "input" | "output", name: string): Promise<void> {
+  if (process.platform !== "win32") { setMacDefault(direction, name); return; }
+  const result = await getWindowsProbe();
+  const flow = direction === "output" ? "eRender" : "eCapture";
+  const candidates = result.endpoints.filter(e => e.flow === flow && endpointDeviceName(e, result) === name);
+  if (!candidates.length) throw new Error("所选声音设备当前不可用");
+  const endpoint = [...candidates].sort((a, b) => Number(b.role === "a2dp") - Number(a.role === "a2dp") || b.rate - a.rate)[0];
+  const keys = direction === "output" ? ["renderConsole", "renderMultimedia", "renderComms"] as const : ["captureConsole", "captureMultimedia", "captureComms"] as const;
+  const before = keys.map(key => result.defaults[key]?.id);
+  try {
+    await setWindowsDefaultEndpoint(endpoint.id);
+    const current = await getWindowsProbe(Date.now());
+    if (!keys.every(key => current.defaults[key]?.id === endpoint.id)) throw new Error("系统默认声音设备读回与选择不一致");
+  } catch (error) {
+    const failures: string[] = [];
+    for (let role = 0; role < before.length; role++) if (before[role]) {
+      try { await setWindowsDefaultEndpoint(before[role]!, role); } catch (restoreError) { failures.push(String(restoreError)); }
+    }
+    if (failures.length) throw new Error(`${String(error)}；部分默认角色恢复失败，请重新选择声音设备：${failures.join("；")}`);
+    throw error;
+  }
+}
+
+export function startWindowsStateMonitor(onChange: () => void): () => void {
+  let fingerprint = "";
+  const stop = startWindowsProbe(result => {
+    const next = JSON.stringify(result);
+    if (next !== fingerprint) { fingerprint = next; onChange(); }
+  });
+  return () => { stop(); stopWindowsProbe(); };
 }

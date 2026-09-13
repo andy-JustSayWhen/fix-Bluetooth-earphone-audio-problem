@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { recoverA2dp } from "./index.ts";
+import { recoverMacAudio as recoverA2dp } from "./index.ts";
 import { runRecovery, type RecoveryRuntime } from "./run-recovery.ts";
 import type { AudioModeAssessment, MicrophoneUser, RawAudioDevice } from "../../shared/audio-device-types/index.ts";
 import type { RunningProcess } from "../../core/macos-running-apps/index.ts";

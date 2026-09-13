@@ -1,11 +1,10 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
   AudioProbeSnapshot,
   RawAudioDevice,
-  SampleRateRange,
 } from "../../shared/audio-device-types/index.ts";
 
 export type WindowsEndpointFacts = {
@@ -22,6 +21,8 @@ export type WindowsEndpointFacts = {
   physicalName: string | null;
   manufacturer: string | null;
   pnpFound: boolean;
+  sessionsKnown?: boolean;
+  sessions?: Array<{ pid: number; name: string; id: string }>;
 };
 
 export type WindowsProbeResult = {
@@ -29,6 +30,9 @@ export type WindowsProbeResult = {
   defaults: {
     renderConsole: EndpointSummary | null;
     renderComms: EndpointSummary | null;
+    renderMultimedia?: EndpointSummary | null;
+    captureMultimedia?: EndpointSummary | null;
+    captureComms?: EndpointSummary | null;
     captureConsole: EndpointSummary | null;
   };
 };
@@ -57,34 +61,13 @@ function runProbeScriptSync(): WindowsProbeResult {
   const output = execFileSync(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1Path, "-CsPath", csPath],
-    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, windowsHide: true },
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, windowsHide: true, timeout: 15_000 },
   );
   return JSON.parse(output.trim()) as WindowsProbeResult;
 }
 
-function runProbeScriptAsync(): Promise<WindowsProbeResult> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1Path, "-CsPath", csPath],
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, windowsHide: true },
-      (error, stdout) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        try {
-          resolve(JSON.parse(String(stdout).trim()) as WindowsProbeResult);
-        } catch (parseError) {
-          reject(parseError instanceof Error ? parseError : new Error(String(parseError)));
-        }
-      },
-    );
-  });
-}
-
 export async function readAudioEndpointFactsAsync(): Promise<WindowsProbeResult> {
-  const result = await runProbeScriptAsync();
+  const result = await getWindowsProbe();
   rememberProbeResult(result);
   return result;
 }
@@ -94,7 +77,9 @@ const physicalNameByEndpointId = new Map<string, string>();
 
 function rememberProbeResult(result: WindowsProbeResult): void {
   lastProbeResult = result;
-  const { devices, endpointNames } = buildPhysicalDevices(result);
+  const devices = aggregatePhysicalDevices(result);
+  const groups = groupEndpointsByPhysicalDevice(result);
+  const endpointNames = groups.flatMap((group, index) => group.endpoints.map(endpoint => [endpoint.id, devices[index].name] as const));
   physicalNameByEndpointId.clear();
   for (const [endpointId, deviceName] of endpointNames) {
     physicalNameByEndpointId.set(endpointId, deviceName);
@@ -125,10 +110,10 @@ type EndpointGroup = {
 export function groupEndpointsByPhysicalDevice(result: WindowsProbeResult): EndpointGroup[] {
   const groups = new Map<string, EndpointGroup>();
   for (const endpoint of result.endpoints) {
-    // 蓝牙设备的免提与立体声端点必须合并成同一物理设备；其余设备按方向拆分，保证路由名称正确。
-    const key = endpoint.transport === "bluetooth"
-      ? (endpoint.canonicalId ?? endpoint.id)
-      : `${endpoint.canonicalId ?? endpoint.id}:${endpoint.flow}`;
+    // 蓝牙设备的免提与立体声端点必须合并成同一物理设备；其余设备按端点拆分，保证路由名称正确。
+    const key = endpoint.transport.startsWith("bluetooth")
+      ? (endpoint.bluetoothAddress ? formatBluetoothAddress(endpoint.bluetoothAddress) : endpoint.canonicalId ?? endpoint.id)
+      : endpoint.id;
     let group = groups.get(key);
     if (!group) {
       group = {
@@ -151,14 +136,6 @@ export function groupEndpointsByPhysicalDevice(result: WindowsProbeResult): Endp
   return [...groups.values()];
 }
 
-function mergeRanges(endpoints: WindowsEndpointFacts[]): SampleRateRange[] {
-  const ranges = new Map<number, SampleRateRange>();
-  for (const endpoint of endpoints) {
-    if (endpoint.rate > 0) ranges.set(endpoint.rate, { minimum: endpoint.rate, maximum: endpoint.rate });
-  }
-  return [...ranges.values()].sort((left, right) => left.maximum - right.maximum);
-}
-
 function selectEndpoint(endpoints: WindowsEndpointFacts[], defaultId: string | null | undefined): WindowsEndpointFacts | null {
   if (endpoints.length === 0) return null;
   if (defaultId) {
@@ -173,7 +150,7 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
   const devices: RawAudioDevice[] = [];
   let sequence = 0;
   for (const group of groups) {
-    const isBluetooth = group.transport === "bluetooth";
+    const isBluetooth = group.transport.startsWith("bluetooth");
     const outputEndpoints = group.endpoints.filter((endpoint) => endpoint.flow === "eRender");
     const inputEndpoints = group.endpoints.filter((endpoint) => endpoint.flow === "eCapture");
     const renderConsole = result.defaults.renderConsole;
@@ -185,13 +162,23 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
     const hostsDefaultOutput = selectedOutput !== null && renderConsole !== null && selectedOutput.id === renderConsole.id;
     const hostsDefaultInput = selectedInput !== null && captureConsole !== null && selectedInput.id === captureConsole.id;
 
-    const name = isBluetooth
+    let name = isBluetooth
       ? (group.physicalName?.trim() || stripBluetoothRoleSuffix(
           (selectedOutput ?? selectedInput ?? group.endpoints[0]).name ?? "未命名蓝牙设备",
         ) || "未命名蓝牙设备")
       : (selectedOutput ?? selectedInput ?? group.endpoints[0]).name ?? "未命名设备";
 
+    if (groups.some(other => other.key !== group.key && (other.physicalName || other.endpoints[0].name) === (group.physicalName || group.endpoints[0].name))) name += ` [${group.key}]`;
     devices.push({
+      windowsEvidence: {
+        transport: group.transport,
+        activeCapture: inputEndpoints.some(e => (e.sessions?.length ?? 0) > 0),
+        activeHandsfreeOutput: outputEndpoints.some(e => e.role === "handsfree" && (e.sessions?.length ?? 0) > 0),
+        activeOutput: outputEndpoints.some(e => (e.sessions?.length ?? 0) > 0),
+        sessionsKnown: group.endpoints.every(e => e.sessionsKnown === true),
+        splitStereoActive: outputEndpoints.some(e => e.role === "handsfree") && outputEndpoints.some(e => e.role === "a2dp" && (e.sessions?.length ?? 0) > 0),
+        mixRate: selectedOutput?.rate || null,
+      },
       id: ++sequence,
       name,
       uid: group.key,
@@ -199,16 +186,16 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
       transport: group.transport,
       sampleRateInput: selectedInput?.rate > 0 ? selectedInput.rate : null,
       sampleRateOutput: selectedOutput?.rate > 0 ? selectedOutput.rate : null,
-      availableSampleRateRangesInput: mergeRanges(inputEndpoints),
+      availableSampleRateRangesInput: [],
       nominalSampleRateInput: hostsDefaultInput && selectedInput?.rate > 0 ? selectedInput.rate : null,
-      actualSampleRateInput: hostsDefaultInput && selectedInput?.rate > 0 ? selectedInput.rate : null,
-      availableSampleRateRangesOutput: mergeRanges(outputEndpoints),
+      actualSampleRateInput: null,
+      availableSampleRateRangesOutput: [],
       nominalSampleRateOutput: hostsDefaultOutput && selectedOutput?.rate > 0 ? selectedOutput.rate : null,
-      actualSampleRateOutput: hostsDefaultOutput && selectedOutput?.rate > 0 ? selectedOutput.rate : null,
-      maxSupportedOutputRate: Math.max(0, ...mergeRanges(outputEndpoints).map((range) => range.maximum)) || null,
+      actualSampleRateOutput: null,
+      maxSupportedOutputRate: null,
       inputChannels: selectedInput?.channels ?? 0,
       outputChannels: selectedOutput?.channels ?? 0,
-      isRunning: hostsDefaultOutput || hostsDefaultInput,
+      isRunning: group.endpoints.some(endpoint => (endpoint.sessions?.length ?? 0) > 0),
       isDefaultInput: hostsDefaultInput,
       isDefaultOutput: hostsDefaultOutput,
       isDefaultSystemOutput: outputEndpoints.some((endpoint) => renderComms !== null && endpoint.id === renderComms.id),
@@ -222,7 +209,7 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
 }
 
 export function readAudioDevices(): AudioProbeSnapshot {
-  const result = runProbeScriptSync();
+  const result = lastProbeResult ?? runProbeScriptSync();
   rememberProbeResult(result);
   return {
     timestamp: new Date().toISOString(),
@@ -231,10 +218,96 @@ export function readAudioDevices(): AudioProbeSnapshot {
 }
 
 export async function readAudioDevicesAsync(): Promise<AudioProbeSnapshot> {
-  const result = await runProbeScriptAsync();
+  const result = await getWindowsProbe();
   rememberProbeResult(result);
   return {
     timestamp: new Date().toISOString(),
     devices: aggregatePhysicalDevices(result),
   };
+}
+
+let worker: ReturnType<typeof spawn> | null = null;
+let updatedAt = 0;
+let workerError = "正在读取 Windows 声音设备";
+const listeners = new Set<(result: WindowsProbeResult) => void>();
+
+export function startWindowsProbe(onResult?: (result: WindowsProbeResult) => void): () => void {
+  if (onResult) listeners.add(onResult);
+  if (!worker) {
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1Path, "-CsPath", csPath, "-Watch", "-ParentPid", String(process.pid)], {
+      windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    });
+    worker = child;
+    child.unref();
+    (child.stdout as unknown as { unref?: () => void }).unref?.();
+    (child.stderr as unknown as { unref?: () => void }).unref?.();
+    let buffer = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      buffer += chunk;
+      if (buffer.length > 10 * 1024 * 1024) { workerError = "声音探测结果超出大小限制"; child.kill(); return; }
+      let newline: number;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);
+        if (!line) continue;
+        try {
+          const result = JSON.parse(line) as WindowsProbeResult;
+          if (!Array.isArray(result.endpoints) || !result.defaults) throw new Error("声音探测结果格式不正确");
+          rememberProbeResult(result); updatedAt = Date.now();
+          for (const listener of listeners) listener(result);
+        } catch (error) { workerError = String(error); }
+      }
+    });
+    child.stderr.on("data", (chunk: string) => { workerError = chunk.slice(-2_000); });
+    child.once("error", error => { workerError = error.message; });
+    child.once("close", () => { if (worker === child) { worker = null; updatedAt = 0; } });
+  }
+  return () => { if (onResult) listeners.delete(onResult); };
+}
+
+process.once("exit", stopWindowsProbe);
+
+export function stopWindowsProbe(): void {
+  const child = worker; worker = null; updatedAt = 0; lastProbeResult = null;
+  child?.kill();
+}
+
+export async function getWindowsProbe(after = 0): Promise<WindowsProbeResult> {
+  startWindowsProbe();
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (lastProbeResult && updatedAt > after && Date.now() - updatedAt < 3_000) return lastProbeResult;
+    if (!worker) throw new Error(workerError);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  stopWindowsProbe();
+  throw new Error(`Windows 声音探测超时：${workerError}`);
+}
+
+export function endpointDeviceName(endpoint: WindowsEndpointFacts, result: WindowsProbeResult): string {
+  const groupIndex = groupEndpointsByPhysicalDevice(result).findIndex(group => group.endpointIds.includes(endpoint.id));
+  return aggregatePhysicalDevices(result)[groupIndex]?.name ?? endpoint.name;
+}
+
+export async function readWindowsMicrophoneUsers() {
+  const result = await getWindowsProbe();
+  return result.endpoints.filter(e => e.flow === "eCapture").flatMap(endpoint =>
+    (endpoint.sessions ?? []).filter(session => session.pid > 0).map(session => {
+      const name = endpointDeviceName(endpoint, result);
+      return {
+        pid: session.pid, name: session.name, bundleId: "", devices: [name],
+        inputActivityKind: "已确认实体麦克风占用" as const,
+        physicalDeviceNames: [name], confirmedDeviceNames: [name],
+        occupancyEvidenceKinds: endpoint.transport.startsWith("bluetooth") ? ["physical-bluetooth-microphone" as const] : [],
+      };
+    }));
+}
+
+export function windowsSpeakerUsers(result: WindowsProbeResult) {
+  return result.endpoints.filter(e => e.flow === "eRender" && e.bluetoothAddress).flatMap(endpoint =>
+    (endpoint.sessions ?? []).filter(session => session.pid > 0).map(session => ({
+      sessionId: session.id, pid: session.pid, name: session.name, deviceUid: endpoint.id,
+      bluetoothAddress: formatBluetoothAddress(endpoint.bluetoothAddress!), observedAt: new Date(updatedAt).toISOString(),
+    })));
 }
