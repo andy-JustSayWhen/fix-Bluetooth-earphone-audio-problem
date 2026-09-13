@@ -79,6 +79,13 @@ export type AudioModeAssessment = {
   speakerOccupancy?: SpeakerOccupancy;
 };
 
+export type WindowsEndpointFormat = {
+  configuredRate: number | null;
+  configuredStatus: "ok" | "unavailable" | "error";
+  supportedRates: number[];
+  supportedStatus: "ok" | "partial" | "unavailable";
+};
+
 export type WindowsAudioEvidence = {
   transport: string;
   activeCapture: boolean;
@@ -87,6 +94,8 @@ export type WindowsAudioEvidence = {
   sessionsKnown: boolean;
   splitStereoActive?: boolean;
   mixRate: number | null;
+  inputFormat?: WindowsEndpointFormat;
+  outputFormat?: WindowsEndpointFormat;
 };
 
 export type SpeakerOutputUser = {

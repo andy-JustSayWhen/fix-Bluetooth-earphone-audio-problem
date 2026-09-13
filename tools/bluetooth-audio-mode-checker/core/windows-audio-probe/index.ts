@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AudioProbeSnapshot,
   RawAudioDevice,
+  WindowsEndpointFormat,
 } from "../../shared/audio-device-types/index.ts";
 
 export type WindowsEndpointFacts = {
@@ -14,6 +15,10 @@ export type WindowsEndpointFacts = {
   rate: number;
   channels: number;
   bits: number;
+  configuredRate?: number;
+  configuredStatus?: string;
+  supportedRates?: number[];
+  supportedStatus?: string;
   transport: string;
   role: "handsfree" | "a2dp" | null;
   bluetoothAddress: string | null;
@@ -149,6 +154,16 @@ function selectEndpoint(endpoints: WindowsEndpointFacts[], defaultId: string | n
   return [...endpoints].sort((left, right) => right.rate - left.rate || right.channels - left.channels)[0];
 }
 
+function endpointFormat(endpoint: WindowsEndpointFacts | null): WindowsEndpointFormat {
+  const rate = endpoint?.configuredRate;
+  return {
+    configuredRate: endpoint?.configuredStatus === "ok" && Number.isFinite(rate) && rate! > 0 ? rate! : null,
+    configuredStatus: endpoint?.configuredStatus === "ok" ? "ok" : endpoint?.configuredStatus?.startsWith("error:") ? "error" : "unavailable",
+    supportedRates: [...new Set((endpoint?.supportedRates ?? []).filter(rate => Number.isFinite(rate) && rate > 0))].sort((a, b) => a - b),
+    supportedStatus: endpoint?.supportedStatus === "ok" ? "ok" : endpoint?.supportedStatus === "partial" ? "partial" : "unavailable",
+  };
+}
+
 export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDevice[] {
   const groups = groupEndpointsByPhysicalDevice(result);
   const devices: RawAudioDevice[] = [];
@@ -182,6 +197,8 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
         sessionsKnown: group.endpoints.every(e => e.sessionsKnown === true),
         splitStereoActive: outputEndpoints.some(e => e.role === "handsfree") && outputEndpoints.some(e => e.role === "a2dp" && (e.sessions?.length ?? 0) > 0),
         mixRate: selectedOutput?.rate || null,
+        inputFormat: endpointFormat(selectedInput),
+        outputFormat: endpointFormat(selectedOutput),
       },
       id: ++sequence,
       name,

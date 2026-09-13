@@ -100,6 +100,48 @@ export function audioLinkTypePresentation(audioLinkType) {
   return "无法确认";
 }
 
+function formatRate(rate) {
+  if (!rate) return "无法读取";
+  return `${rate / 1000} kHz`;
+}
+
+function formatRateRanges(ranges) {
+  if (!Array.isArray(ranges) || ranges.length === 0) return "无法读取";
+  return ranges
+    .filter((range) => range?.minimum > 0 && range?.maximum > 0)
+    .sort((left, right) => left.minimum - right.minimum || left.maximum - right.maximum)
+    .map((range) => range.minimum === range.maximum
+      ? formatRate(range.minimum)
+      : `${formatRate(range.minimum).replace(" kHz", "")}–${formatRate(range.maximum)}`)
+    .join("、") || "无法读取";
+}
+
+export function audioEndpointMetrics(device, direction) {
+  const suffix = direction === "input" ? "Input" : "Output";
+  const channels = direction === "input" ? device.inputChannels : device.outputChannels;
+  const actual = device[`actualSampleRate${suffix}`];
+  if (device.windowsEvidence) {
+    const facts = device.windowsEvidence[`${direction}Format`];
+    const rates = facts?.supportedRates ?? [];
+    const available = rates.length ? rates.map(formatRate).join("、")
+      : facts?.supportedStatus === "ok" ? "已测试格式均不支持"
+      : facts?.supportedStatus === "partial" ? "查询未完成" : "系统未提供";
+    return [
+      ["可用采样率（已验证）", available],
+      ["系统设置采样率", facts?.configuredRate ? formatRate(facts.configuredRate) : facts?.configuredStatus === "error" ? "读取失败" : "系统未提供"],
+      ["实际采样率", actual ? formatRate(actual) : "系统未提供"],
+      ["声道", `${channels} 声道`],
+      ["Windows 混音采样率", formatRate(device[`sampleRate${suffix}`])],
+    ];
+  }
+  return [
+    ["可用采样率", formatRateRanges(device[`availableSampleRateRanges${suffix}`])],
+    ["标称采样率", formatRate(device[`nominalSampleRate${suffix}`])],
+    ["实际采样率", formatRate(actual)],
+    ["声道", `${channels} 声道`],
+  ];
+}
+
 export function startBluetoothAudioModePage(
   createA2dpRecoveryController,
   createSpeakerOccupancyController,
@@ -140,23 +182,6 @@ function createElement(tag, className, text) {
   return element;
 }
 
-function formatRate(rate) {
-  if (!rate) return "无法读取";
-  const value = rate / 1000;
-  return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)} kHz`;
-}
-
-function formatRateRanges(ranges) {
-  if (!Array.isArray(ranges) || ranges.length === 0) return "无法读取";
-  return ranges
-    .filter((range) => range?.minimum > 0 && range?.maximum > 0)
-    .sort((left, right) => left.minimum - right.minimum || left.maximum - right.maximum)
-    .map((range) => range.minimum === range.maximum
-      ? formatRate(range.minimum)
-      : `${formatRate(range.minimum).replace(" kHz", "")}–${formatRate(range.maximum)}`)
-    .join("、") || "无法读取";
-}
-
 function metric(label, value) {
   const item = createElement("div", "metric");
   item.append(createElement("span", "", label), createElement("strong", "", value));
@@ -179,25 +204,13 @@ function audioLinkGroup(device) {
   if (device.outputChannels > 0) {
     directions.append(metricGroup(
       device.isDefaultOutput ? "输出（当前输出）" : "输出",
-      [
-        metric("可用采样率", formatRateRanges(device.availableSampleRateRangesOutput)),
-        metric("标称采样率", formatRate(device.nominalSampleRateOutput)),
-        metric("实际采样率", formatRate(device.actualSampleRateOutput)),
-        metric("声道", `${device.outputChannels} 声道`),
-        ...(device.windowsEvidence ? [metric("Windows 混音采样率", formatRate(device.sampleRateOutput))] : []),
-      ],
+      audioEndpointMetrics(device, "output").map(([label, value]) => metric(label, value)),
     ));
   }
   if (device.inputChannels > 0) {
     directions.append(metricGroup(
       device.isInputActive ? "输入（正在使用）" : "输入",
-      [
-        metric("可用采样率", formatRateRanges(device.availableSampleRateRangesInput)),
-        metric("标称采样率", formatRate(device.nominalSampleRateInput)),
-        metric("实际采样率", formatRate(device.actualSampleRateInput)),
-        metric("声道", `${device.inputChannels} 声道`),
-        ...(device.windowsEvidence ? [metric("Windows 混音采样率", formatRate(device.sampleRateInput))] : []),
-      ],
+      audioEndpointMetrics(device, "input").map(([label, value]) => metric(label, value)),
     ));
   }
   if (!directions.childElementCount) {

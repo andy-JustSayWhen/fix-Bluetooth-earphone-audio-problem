@@ -10,6 +10,7 @@ import {
 } from "./index.ts";
 import {
   audioLinkTypePresentation,
+  audioEndpointMetrics,
   deviceModePresentation,
   describeBluetoothRouteRisk,
   observeBluetoothRouteInstability,
@@ -278,9 +279,10 @@ test("设备卡为输入输出展示三类采样率并使用设备级声音链�
 
   assert.match(source, /createElement\("fieldset", "audio-link-group"\)/);
   assert.match(source, /声音链路类型：/);
-  assert.match(source, /metric\("可用采样率"/);
-  assert.match(source, /metric\("标称采样率"/);
-  assert.match(source, /metric\("实际采样率"/);
+  const [assessment] = assessBluetoothDevices([device({outputChannels: 2, inputChannels: 1})]);
+  for (const direction of ["input", "output"]) {
+    assert.deepEqual(audioEndpointMetrics(assessment, direction).map(([label]) => label), ["可用采样率", "标称采样率", "实际采样率", "声道"]);
+  }
   assert.doesNotMatch(source, /当前未刷新输入输出参数/);
 });
 

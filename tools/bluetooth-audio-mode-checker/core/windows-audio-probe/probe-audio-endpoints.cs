@@ -15,6 +15,30 @@ public class MMDeviceEnumeratorComObject { }
 public interface IMMDeviceEnumerator {
     [PreserveSig] int EnumAudioEndpoints(EDataFlow dataFlow, uint stateMask, out IMMDeviceCollection devices);
     [PreserveSig] int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice device);
+    [PreserveSig] int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IMMDevice device);
+}
+
+[ComImport, Guid("2A07407E-6497-4A18-9787-32F79BD0D98F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IDeviceTopology {
+    [PreserveSig] int GetConnectorCount(out uint count);
+    [PreserveSig] int GetConnector(uint index, out IConnector connector);
+}
+[ComImport, Guid("9c2c4058-23f5-41de-877a-df3af236a09e"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IConnector {
+    [PreserveSig] int GetType(out int type);
+    [PreserveSig] int GetDataFlow(out int flow);
+    [PreserveSig] int ConnectTo(IConnector other);
+    [PreserveSig] int Disconnect();
+    [PreserveSig] int IsConnected([MarshalAs(UnmanagedType.Bool)] out bool connected);
+    [PreserveSig] int GetConnectedTo(out IConnector other);
+    [PreserveSig] int GetConnectorIdConnectedTo([MarshalAs(UnmanagedType.LPWStr)] out string id);
+    [PreserveSig] int GetDeviceIdConnectedTo([MarshalAs(UnmanagedType.LPWStr)] out string id);
+}
+[StructLayout(LayoutKind.Sequential)]
+public struct KSNODEPROPERTY { public Guid Set; public uint Id; public uint Flags; public uint Node; public uint Reserved; }
+[ComImport, Guid("28F54685-06FD-11D2-B27A-00A0C9223196"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IKsControl {
+    [PreserveSig] int KsProperty(ref KSNODEPROPERTY property, uint propertyLength, [Out, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 3)] byte[] data, uint dataLength, out uint bytesReturned);
 }
 
 [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -86,6 +110,11 @@ public class AudioEndpoint {
     public uint Bits;
     public string Sessions = "[]";
     public bool SessionsKnown;
+    public uint ConfiguredRate;
+    public uint ConfiguredChannels;
+    public string ConfiguredStatus = "unavailable";
+    public string SupportedRates = "[]";
+    public string SupportedStatus = "unavailable";
 }
 
 [ComImport, Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -118,6 +147,131 @@ public interface IAudioSessionControl2 {
 }
 
 public static class WindowsAudioProbeCore {
+    // Read-only diagnostic: hardware engine format is not automatically a radio clock.
+    public static string InspectHardwareFormats() {
+        IMMDeviceEnumerator enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+        List<string> records = new List<string>();
+        try {
+            foreach (EDataFlow flow in new EDataFlow[] {EDataFlow.eRender, EDataFlow.eCapture}) {
+                IMMDevice endpoint;
+                if (enumerator.GetDefaultAudioEndpoint(flow, ERole.eConsole, out endpoint) != 0) continue;
+                try {
+                    Guid topologyId = typeof(IDeviceTopology).GUID; object topologyObject;
+                    int hr = endpoint.Activate(ref topologyId, 23, IntPtr.Zero, out topologyObject);
+                    if (hr != 0) { records.Add(Escape(flow + ":topology:" + hr.ToString("X8"))); continue; }
+                    IDeviceTopology topology = (IDeviceTopology)topologyObject;
+                    try {
+                        uint count; if (topology.GetConnectorCount(out count) != 0 || count > 64) continue;
+                        for (uint i = 0; i < count; i++) {
+                            IConnector connector;
+                            if (topology.GetConnector(i, out connector) != 0) continue;
+                            try {
+                                string id; if (connector.GetDeviceIdConnectedTo(out id) != 0) continue;
+                                IMMDevice hardware; if (enumerator.GetDevice(id, out hardware) != 0) continue;
+                                try {
+                                    Guid controlId = typeof(IKsControl).GUID; object controlObject;
+                                    hr = hardware.Activate(ref controlId, 23, IntPtr.Zero, out controlObject);
+                                    if (hr != 0) { records.Add(Escape(flow + ":kernel-control:" + hr.ToString("X8"))); continue; }
+                                    IKsControl control = (IKsControl)controlObject;
+                                    try {
+                                        byte[] data = new byte[65536]; uint returned;
+                                        KSNODEPROPERTY prop = new KSNODEPROPERTY {Set = new Guid("720D4AC0-7533-11D0-A5D6-28DB04C10000"), Id = 1, Flags = 1};
+                                        hr = control.KsProperty(ref prop, 24, data, (uint)data.Length, out returned);
+                                        if (hr != 0 || returned < 8) { records.Add(Escape(flow + ":nodes:" + hr.ToString("X8"))); continue; }
+                                        uint nodes = BitConverter.ToUInt32(data, 4);
+                                        if (nodes > 128 || returned < 8 + nodes * 16) continue;
+                                        records.Add(Escape(flow + ":node-count:" + nodes));
+                                        for (uint node = 0; node < nodes; node++) {
+                                            prop = new KSNODEPROPERTY {Set = new Guid("3A2F82DC-886F-4BAA-9EB4-082B9025C536"), Id = 4, Flags = 0x10000001, Node = node};
+                                            hr = control.KsProperty(ref prop, 32, data, (uint)data.Length, out returned);
+                                            if (hr == 0 && returned >= 82) records.Add(Escape(flow + ":engine-format:" + node + ":rate=" + BitConverter.ToUInt32(data, 68)));
+                                            prop = new KSNODEPROPERTY {Set = new Guid("45FFAAA0-6E1B-11D0-BCF2-444553540000"), Id = 8, Flags = 0x10000001, Node = node};
+                                            hr = control.KsProperty(ref prop, 32, data, (uint)data.Length, out returned);
+                                            records.Add(Escape(flow + ":sampling-rate:" + node + ":" + (hr == 0 && returned >= 4 ? BitConverter.ToUInt32(data, 0).ToString() : "error-" + hr.ToString("X8"))));
+                                        }
+                                    } finally {Marshal.ReleaseComObject(control);}
+                                } finally {Marshal.ReleaseComObject(hardware);}
+                            } finally {Marshal.ReleaseComObject(connector);}
+                        }
+                    } finally {Marshal.ReleaseComObject(topology);}
+                } finally {Marshal.ReleaseComObject(endpoint);}
+            }
+        } finally {Marshal.ReleaseComObject(enumerator);}
+        return "[" + String.Join(",", records.ToArray()) + "]";
+    }
+    private class FormatCache {
+        public string Signature;
+        public DateTime CheckedAt;
+        public string Rates;
+        public string Status;
+    }
+    private static readonly Dictionary<string, FormatCache> formatCache = new Dictionary<string, FormatCache>();
+
+    private static void ReadConfiguredFormat(IPropertyStore store, AudioEndpoint endpoint) {
+        PROPERTYKEY key = new PROPERTYKEY { fmtid = new Guid("f19f064d-082c-4e27-bc73-6882a1bb8e4c"), pid = 0 };
+        PROPVARIANT pv = new PROPVARIANT();
+        try {
+            int hr = store.GetValue(ref key, out pv);
+            if (hr != 0) { endpoint.ConfiguredStatus = "error:" + hr.ToString("X8"); return; }
+            if (pv.vt != 65 || pv.blob.data == IntPtr.Zero || pv.blob.size < 18) return;
+            WAVEFORMATEX format = (WAVEFORMATEX)Marshal.PtrToStructure(pv.blob.data, typeof(WAVEFORMATEX));
+            if (format.sampleRate == 0 || format.channels == 0 || pv.blob.size < 18 + format.extraSize) return;
+            endpoint.ConfiguredRate = format.sampleRate;
+            endpoint.ConfiguredChannels = format.channels;
+            endpoint.ConfiguredStatus = "ok";
+        } finally { PropVariantClear(ref pv); }
+    }
+
+    private static void ReadSupportedFormats(IAudioClient client, AudioEndpoint endpoint) {
+        string signature = endpoint.ConfiguredRate + ":" + endpoint.ConfiguredChannels + ":" + endpoint.Rate + ":" + endpoint.Channels + ":" + endpoint.Bits;
+        FormatCache cached;
+        if (formatCache.TryGetValue(endpoint.Id, out cached) && cached.Signature == signature && (DateTime.UtcNow - cached.CheckedAt).TotalSeconds < 30) {
+            endpoint.SupportedRates = cached.Rates; endpoint.SupportedStatus = cached.Status; return;
+        }
+        uint channels = endpoint.ConfiguredChannels > 0 ? endpoint.ConfiguredChannels : endpoint.Channels;
+        if (channels == 0 || channels > 8) return;
+        SortedSet<uint> rates = new SortedSet<uint>(new uint[] {8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000, 176400, 192000});
+        if (endpoint.ConfiguredRate > 0) rates.Add(endpoint.ConfiguredRate);
+        if (endpoint.Rate > 0) rates.Add(endpoint.Rate);
+        List<string> supported = new List<string>();
+        bool error = false;
+        IntPtr buffer = Marshal.AllocCoTaskMem(40);
+        try {
+            foreach (uint rate in rates) {
+                bool accepted = false;
+                foreach (ushort bits in new ushort[] {16, 24, 32}) {
+                    for (int variant = 0; variant < 4; variant++) {
+                        bool floating = variant >= 2;
+                        if (floating && bits != 32) continue;
+                        bool extended = variant % 2 == 1;
+                        ushort align = (ushort)(channels * bits / 8);
+                        WAVEFORMATEX format = new WAVEFORMATEX {
+                            formatTag = extended ? (ushort)65534 : floating ? (ushort)3 : (ushort)1,
+                            channels = (ushort)channels, sampleRate = rate, bitsPerSample = bits,
+                            blockAlign = align, avgBytesPerSec = rate * align, extraSize = extended ? (ushort)22 : (ushort)0
+                        };
+                        Marshal.StructureToPtr(format, buffer, false);
+                        if (extended) {
+                            Marshal.WriteInt16(buffer, 18, (short)bits);
+                            Marshal.WriteInt32(buffer, 20, channels == 1 ? 4 : channels == 2 ? 3 : 0);
+                            byte[] subFormat = new Guid(floating ? "00000003-0000-0010-8000-00aa00389b71" : "00000001-0000-0010-8000-00aa00389b71").ToByteArray();
+                            Marshal.Copy(subFormat, 0, IntPtr.Add(buffer, 24), 16);
+                        }
+                        IntPtr closest;
+                        int hr = client.IsFormatSupported(1, buffer, out closest);
+                        if (closest != IntPtr.Zero) Marshal.FreeCoTaskMem(closest);
+                        if (hr == 0) { accepted = true; break; }
+                        if (hr != unchecked((int)0x88890008)) error = true;
+                    }
+                    if (accepted) break;
+                }
+                if (accepted) supported.Add(rate.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+        } finally { Marshal.FreeCoTaskMem(buffer); }
+        endpoint.SupportedRates = "[" + String.Join(",", supported.ToArray()) + "]";
+        endpoint.SupportedStatus = error ? "partial" : "ok";
+        formatCache[endpoint.Id] = new FormatCache {Signature = signature, CheckedAt = DateTime.UtcNow, Rates = endpoint.SupportedRates, Status = endpoint.SupportedStatus};
+    }
     [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
     private static extern uint CM_Locate_DevNodeW(out uint node, string id, uint flags);
     [DllImport("cfgmgr32.dll")]
@@ -262,7 +416,7 @@ public static class WindowsAudioProbeCore {
         endpoint.Id = id;
         IPropertyStore store;
         if (device.OpenPropertyStore(0, out store) == 0) {
-            try { endpoint.Name = ReadFriendlyName(store); } finally { Marshal.ReleaseComObject(store); }
+            try { endpoint.Name = ReadFriendlyName(store); ReadConfiguredFormat(store, endpoint); } finally { Marshal.ReleaseComObject(store); }
         }
         Guid audioClientIid = new Guid("1CB9AD4C-DBFA-4c32-B178-C2F568A703B2");
         object unk;
@@ -276,7 +430,7 @@ public static class WindowsAudioProbeCore {
             endpoint.Bits = wfx.bitsPerSample;
             Marshal.FreeCoTaskMem(fmtPtr);
         }
-        Marshal.ReleaseComObject(client);
+        try { ReadSupportedFormats(client, endpoint); } finally { Marshal.ReleaseComObject(client); }
         try { endpoint.Sessions = ReadSessions(device); endpoint.SessionsKnown = true; } catch { }
         return endpoint;
     }
@@ -297,6 +451,9 @@ public static class WindowsAudioProbeCore {
             }
             Marshal.ReleaseComObject(collection);
         }
+        HashSet<string> present = new HashSet<string>();
+        foreach (AudioEndpoint endpoint in endpoints) present.Add(endpoint.Id);
+        foreach (string id in new List<string>(formatCache.Keys)) if (!present.Contains(id)) formatCache.Remove(id);
         return endpoints;
     }
 
@@ -318,6 +475,9 @@ public static class WindowsAudioProbeCore {
             + ",\"name\":" + Escape(e.Name)
             + ",\"rate\":" + e.Rate
             + ",\"channels\":" + e.Channels
+            + ",\"configuredRate\":" + e.ConfiguredRate + ",\"configuredChannels\":" + e.ConfiguredChannels
+            + ",\"configuredStatus\":" + Escape(e.ConfiguredStatus)
+            + ",\"supportedRates\":" + e.SupportedRates + ",\"supportedStatus\":" + Escape(e.SupportedStatus)
             + ",\"bits\":" + e.Bits + ",\"flow\":" + Escape(e.Flow) + ",\"sessionsKnown\":" + (e.SessionsKnown ? "true" : "false") + ",\"sessions\":" + e.Sessions + PhysicalJson(e.Id) + "}";
     }
 
