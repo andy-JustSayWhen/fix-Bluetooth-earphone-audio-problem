@@ -30,7 +30,7 @@ test("原生设置格式及已验证采样率进入页面，输入输出保持�
   ]);
   assert.deepEqual(audioEndpointMetrics(device, "output"), [
     ["可用采样率（已验证）", "44.1 kHz、48 kHz"], ["系统设置采样率", "44.1 kHz"],
-    ["实际采样率", "系统未提供"], ["声道", "2 声道"], ["Windows 混音采样率", "48 kHz"],
+    ["实际采样率", "尚未取得"], ["声道", "2 声道"], ["Windows 混音采样率", "48 kHz"],
   ]);
   assert.equal(audioEndpointMetrics(device, "input")[0][1], "16 kHz");
   assert.equal(audioEndpointMetrics(device, "input")[1][1], "16 kHz");

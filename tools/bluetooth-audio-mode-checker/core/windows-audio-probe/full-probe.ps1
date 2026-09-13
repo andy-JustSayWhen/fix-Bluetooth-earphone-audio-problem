@@ -1,7 +1,8 @@
-param([Parameter(Mandatory = $true)][string]$CsPath, [switch]$Watch, [int]$ParentPid, [switch]$DiagnoseHardware)
+param([Parameter(Mandatory = $true)][string]$CsPath, [switch]$Watch, [int]$ParentPid, [switch]$DiagnoseHardware, [string]$DeviceInterface)
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 Add-Type -Path $CsPath
+if ($DeviceInterface) { [Console]::Out.WriteLine([WindowsAudioProbeCore]::InspectFilterPath($DeviceInterface)); exit 0 }
 if ($DiagnoseHardware) { [Console]::Out.WriteLine([WindowsAudioProbeCore]::InspectHardwareFormats()); exit 0 }
 $parentProcess = if ($ParentPid -gt 0) { [Diagnostics.Process]::GetProcessById($ParentPid) } else { $null }
 do {

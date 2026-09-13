@@ -129,7 +129,7 @@ export function audioEndpointMetrics(device, direction) {
     return [
       ["可用采样率（已验证）", available],
       ["系统设置采样率", facts?.configuredRate ? formatRate(facts.configuredRate) : facts?.configuredStatus === "error" ? "读取失败" : "系统未提供"],
-      ["实际采样率", actual ? formatRate(actual) : "系统未提供"],
+      ["实际采样率", actual ? formatRate(actual) : "尚未取得"],
       ["声道", `${channels} 声道`],
       ["Windows 混音采样率", formatRate(device[`sampleRate${suffix}`])],
     ];

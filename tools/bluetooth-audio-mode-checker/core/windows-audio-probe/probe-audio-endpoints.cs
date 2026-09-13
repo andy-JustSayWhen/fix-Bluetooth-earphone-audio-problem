@@ -156,6 +156,7 @@ public static class WindowsAudioProbeCore {
                 IMMDevice endpoint;
                 if (enumerator.GetDefaultAudioEndpoint(flow, ERole.eConsole, out endpoint) != 0) continue;
                 try {
+                    InspectKernelProperties(endpoint, flow + ":endpoint", records);
                     Guid topologyId = typeof(IDeviceTopology).GUID; object topologyObject;
                     int hr = endpoint.Activate(ref topologyId, 23, IntPtr.Zero, out topologyObject);
                     if (hr != 0) { records.Add(Escape(flow + ":topology:" + hr.ToString("X8"))); continue; }
@@ -169,27 +170,7 @@ public static class WindowsAudioProbeCore {
                                 string id; if (connector.GetDeviceIdConnectedTo(out id) != 0) continue;
                                 IMMDevice hardware; if (enumerator.GetDevice(id, out hardware) != 0) continue;
                                 try {
-                                    Guid controlId = typeof(IKsControl).GUID; object controlObject;
-                                    hr = hardware.Activate(ref controlId, 23, IntPtr.Zero, out controlObject);
-                                    if (hr != 0) { records.Add(Escape(flow + ":kernel-control:" + hr.ToString("X8"))); continue; }
-                                    IKsControl control = (IKsControl)controlObject;
-                                    try {
-                                        byte[] data = new byte[65536]; uint returned;
-                                        KSNODEPROPERTY prop = new KSNODEPROPERTY {Set = new Guid("720D4AC0-7533-11D0-A5D6-28DB04C10000"), Id = 1, Flags = 1};
-                                        hr = control.KsProperty(ref prop, 24, data, (uint)data.Length, out returned);
-                                        if (hr != 0 || returned < 8) { records.Add(Escape(flow + ":nodes:" + hr.ToString("X8"))); continue; }
-                                        uint nodes = BitConverter.ToUInt32(data, 4);
-                                        if (nodes > 128 || returned < 8 + nodes * 16) continue;
-                                        records.Add(Escape(flow + ":node-count:" + nodes));
-                                        for (uint node = 0; node < nodes; node++) {
-                                            prop = new KSNODEPROPERTY {Set = new Guid("3A2F82DC-886F-4BAA-9EB4-082B9025C536"), Id = 4, Flags = 0x10000001, Node = node};
-                                            hr = control.KsProperty(ref prop, 32, data, (uint)data.Length, out returned);
-                                            if (hr == 0 && returned >= 82) records.Add(Escape(flow + ":engine-format:" + node + ":rate=" + BitConverter.ToUInt32(data, 68)));
-                                            prop = new KSNODEPROPERTY {Set = new Guid("45FFAAA0-6E1B-11D0-BCF2-444553540000"), Id = 8, Flags = 0x10000001, Node = node};
-                                            hr = control.KsProperty(ref prop, 32, data, (uint)data.Length, out returned);
-                                            records.Add(Escape(flow + ":sampling-rate:" + node + ":" + (hr == 0 && returned >= 4 ? BitConverter.ToUInt32(data, 0).ToString() : "error-" + hr.ToString("X8"))));
-                                        }
-                                    } finally {Marshal.ReleaseComObject(control);}
+                                    InspectKernelProperties(hardware, flow + ":adapter", records);
                                 } finally {Marshal.ReleaseComObject(hardware);}
                             } finally {Marshal.ReleaseComObject(connector);}
                         }
@@ -198,6 +179,71 @@ public static class WindowsAudioProbeCore {
             }
         } finally {Marshal.ReleaseComObject(enumerator);}
         return "[" + String.Join(",", records.ToArray()) + "]";
+    }
+    private static void InspectKernelProperties(IMMDevice device, string label, List<string> records) {
+        Guid controlId = typeof(IKsControl).GUID; object value;
+        int hr = device.Activate(ref controlId, 23, IntPtr.Zero, out value);
+        records.Add(Escape(label + ":activate:" + hr.ToString("X8")));
+        if (hr != 0) return;
+        IKsControl control = (IKsControl)value;
+        try {InspectProperties(control.KsProperty, label, records);} finally {Marshal.ReleaseComObject(control);}
+    }
+    private delegate int PropertyReader(ref KSNODEPROPERTY property, uint propertyLength, byte[] data, uint dataLength, out uint returned);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle handle, uint code, ref KSNODEPROPERTY input, uint inputLength, [Out] byte[] output, uint outputLength, out uint returned, IntPtr overlapped);
+    public static string InspectFilterPath(string path) {
+        List<string> records = new List<string>();
+        using (var handle = CreateFile(path, 0, 3, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+            if (handle.IsInvalid) return "[" + Escape("filter:open:error-" + Marshal.GetLastWin32Error()) + "]";
+            PropertyReader reader = delegate(ref KSNODEPROPERTY prop, uint size, byte[] data, uint length, out uint returned) {
+                if (DeviceIoControl(handle, 0x002F0003, ref prop, size, data, length, out returned, IntPtr.Zero)) return 0;
+                return unchecked((int)(0x80070000u | (uint)Marshal.GetLastWin32Error()));
+            };
+            InspectProperties(reader, "filter", records);
+        }
+        return "[" + String.Join(",", records.ToArray()) + "]";
+    }
+    private static void InspectProperties(PropertyReader query, string label, List<string> records) {
+        int hr;
+            byte[] data = new byte[65536]; uint returned;
+            Guid pinSet = new Guid("8C134960-51AD-11CF-878A-94F801C10000");
+            KSNODEPROPERTY prop = new KSNODEPROPERTY {Set = pinSet, Id = 1, Flags = 1};
+            hr = query(ref prop, 24, data, (uint)data.Length, out returned);
+            records.Add(Escape(label + ":pin-count-query:" + hr.ToString("X8")));
+            if (hr == 0 && returned >= 4) {
+                uint pins = BitConverter.ToUInt32(data, 0);
+                records.Add(Escape(label + ":pin-count:" + pins));
+                if (pins <= 128) for (uint pin = 0; pin < pins; pin++) {
+                    prop = new KSNODEPROPERTY {Set = pinSet, Id = 10, Flags = 1, Node = pin};
+                    hr = query(ref prop, 32, data, (uint)data.Length, out returned);
+                    records.Add(Escape(label + ":pin:" + pin + ":physical:" + (hr == 0 && returned > 8 ? Encoding.Unicode.GetString(data, 8, (int)returned - 8).TrimEnd('\0') : "error-" + hr.ToString("X8"))));
+                    prop = new KSNODEPROPERTY {Set = pinSet, Id = 8, Flags = 1, Node = pin};
+                    hr = query(ref prop, 32, data, (uint)data.Length, out returned);
+                    records.Add(Escape(label + ":pin:" + pin + ":global-instances:" + (hr == 0 && returned >= 8 ? BitConverter.ToUInt32(data, 4).ToString() : "error-" + hr.ToString("X8"))));
+                }
+            }
+            prop = new KSNODEPROPERTY {Set = new Guid("720D4AC0-7533-11D0-A5D6-28DB04C10000"), Id = 1, Flags = 1};
+            hr = query(ref prop, 24, data, (uint)data.Length, out returned);
+            if (hr != 0 || returned < 8) {records.Add(Escape(label + ":nodes:" + hr.ToString("X8"))); return;}
+            uint nodes = BitConverter.ToUInt32(data, 4);
+            if (nodes > 128 || returned < 8 + nodes * 16) return;
+            byte[] types = (byte[])data.Clone();
+            for (uint node = 0; node < nodes; node++) {
+                byte[] type = new byte[16]; Array.Copy(types, 8 + node * 16, type, 0, 16);
+                records.Add(Escape(label + ":node:" + node + ":type:" + new Guid(type)));
+                foreach (bool engine in new bool[] {true, false}) {
+                    prop = new KSNODEPROPERTY {Set = new Guid(engine ? "3A2F82DC-886F-4BAA-9EB4-082B9025C536" : "45FFAAA0-6E1B-11D0-BCF2-444553540000"), Id = engine ? 4u : 8u, Flags = 0x10000200, Node = node};
+                    hr = query(ref prop, 32, data, 4, out returned);
+                    string name = engine ? "engine-format" : "sampling-rate";
+                    records.Add(Escape(label + ":node:" + node + ":" + name + ":support:" + (hr == 0 && returned >= 4 ? BitConverter.ToUInt32(data, 0).ToString("X8") : "error-" + hr.ToString("X8"))));
+                    prop.Flags = 0x10000001;
+                    hr = query(ref prop, 32, data, (uint)data.Length, out returned);
+                    uint minimum = engine ? 82u : 4u;
+                    records.Add(Escape(label + ":node:" + node + ":" + name + ":read:" + (hr == 0 && returned >= minimum ? BitConverter.ToUInt32(data, engine ? 68 : 0).ToString() : "error-" + hr.ToString("X8"))));
+                }
+            }
     }
     private class FormatCache {
         public string Signature;
