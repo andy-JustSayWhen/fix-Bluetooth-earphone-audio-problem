@@ -2,7 +2,7 @@ import { getWindowsProbe, endpointDeviceName, startWindowsProbe, stopWindowsProb
 import { setWindowsDefaultEndpoint } from "../../core/windows-audio-control/index.ts";
 import { setDefaultAudioDevice as setMacDefault } from "../../core/macos-audio-route/index.ts";
 import { readAudioDevices as readWindowsDevices, readAudioDevicesAsync as readWindowsDevicesAsync } from "../../core/windows-audio-probe/index.ts";
-import { assessWindowsFacts } from "./windows.ts";
+import { prepareWindowsFacts } from "./windows.ts";
 import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { startActiveOutputMonitor } from "../../core/macos-audio-events/index.ts";
 import { startBluetoothLinkMonitor } from "../../core/macos-bluetooth-link/index.ts";
@@ -75,11 +75,12 @@ function groupBluetoothDevices(devices: RawAudioDevice[]): DeviceGroup[] {
 }
 
 function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
-  if (base.windowsEvidence) return assessWindowsFacts(base);
+  if (base.windowsEvidence) base = prepareWindowsFacts(base);
   const maxAvailableOutputRate = Math.max(
     0,
     ...base.availableSampleRateRangesOutput.map((range) => range.maximum),
   ) || null;
+  if (base.windowsEvidence) base = {...base, maxSupportedOutputRate: maxAvailableOutputRate};
   const a2dpSupport = maxAvailableOutputRate === null
     ? "UNKNOWN"
     : maxAvailableOutputRate < 44_100 ? "UNSUPPORTED" : "SUPPORTED";
@@ -95,7 +96,8 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     `A2DP 支持能力：${a2dpSupport === "UNSUPPORTED" ? "不支持" : a2dpSupport === "SUPPORTED" ? "支持" : "无法确认"}`,
   ];
 
-  if (base.audioLinkType === "tsco") {
+  const classicRulesApply = !base.windowsEvidence || base.windowsEvidence.transport === "bluetooth";
+  if (classicRulesApply && base.audioLinkType === "tsco") {
     return {
       ...base,
       a2dpSupport,
@@ -107,7 +109,7 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     };
   }
 
-  if (supportsHighRate && (nominalIsLow || actualIsLow)) {
+  if (classicRulesApply && supportsHighRate && (nominalIsLow || actualIsLow)) {
     return {
       ...base,
       a2dpSupport,
@@ -119,7 +121,7 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     };
   }
 
-  if (base.actualSampleRateOutput !== null && base.actualSampleRateOutput > 16_000 && base.outputChannels >= 2) {
+  if (classicRulesApply && base.actualSampleRateOutput !== null && base.actualSampleRateOutput > 16_000 && base.outputChannels >= 2) {
     return {
       ...base,
       a2dpSupport,
@@ -169,13 +171,13 @@ function assessGroup(group: DeviceGroup): AudioModeAssessment {
     audioLinkTypeObservedAt: null,
     sampleRateOutput: outputRate,
     availableSampleRateRangesOutput: output?.availableSampleRateRangesOutput ?? [],
-    nominalSampleRateOutput: output?.nominalSampleRateOutput ?? outputRate,
+    nominalSampleRateOutput: output?.nominalSampleRateOutput ?? (output?.windowsEvidence ? null : outputRate),
     actualSampleRateOutput: output?.actualSampleRateOutput ?? null,
     maxSupportedOutputRate,
     outputChannels: output?.outputChannels ?? 0,
     sampleRateInput: input?.sampleRateInput ?? null,
     availableSampleRateRangesInput: input?.availableSampleRateRangesInput ?? [],
-    nominalSampleRateInput: input?.nominalSampleRateInput ?? input?.sampleRateInput ?? null,
+    nominalSampleRateInput: input?.nominalSampleRateInput ?? (input?.windowsEvidence ? null : input?.sampleRateInput ?? null),
     actualSampleRateInput: input?.actualSampleRateInput ?? null,
     inputChannels: input?.inputChannels ?? 0,
     isDefaultInput: group.devices.some((device) => device.isDefaultInput),
@@ -259,6 +261,8 @@ export function applyActiveOutputSnapshot(
   state: AudioModeState,
   snapshot: ActiveOutputSnapshot,
 ): AudioModeState {
+  // These snapshots come from the macOS endpoint monitor. Windows uses full probes.
+  if (state.devices.some(device => device.windowsEvidence)) return state;
   const nominalSampleRate = positiveRate(snapshot.nominalSampleRate);
   const actualSampleRate = positiveRate(snapshot.actualSampleRate);
   const sampleRate = actualSampleRate ?? nominalSampleRate;
@@ -313,6 +317,7 @@ export function applyActiveInputSnapshot(
   state: AudioModeState,
   snapshot: ActiveInputSnapshot,
 ): AudioModeState {
+  if (state.devices.some(device => device.windowsEvidence)) return state;
   const nominalSampleRate = positiveRate(snapshot.nominalSampleRate);
   const actualSampleRate = positiveRate(snapshot.actualSampleRate);
   const sampleRate = actualSampleRate ?? nominalSampleRate;

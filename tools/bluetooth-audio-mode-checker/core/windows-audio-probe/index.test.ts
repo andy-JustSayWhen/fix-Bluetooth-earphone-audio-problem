@@ -175,7 +175,7 @@ test("默认免提端点保留混音格式，实际传输与硬件能力保持�
   const device = devices[0];
   assert.equal(device.isDefaultOutput, true);
   assert.equal(device.isRunning, false);
-  assert.equal(device.nominalSampleRateOutput, 16_000);
+  assert.equal(device.nominalSampleRateOutput, null);
   assert.equal(device.actualSampleRateOutput, null);
   assert.equal(device.outputChannels, 1);
   assert.equal(device.sampleRateOutput, 16_000);

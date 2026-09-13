@@ -38,7 +38,7 @@ export async function recoverA2dp(
     users: [], processes: [], requestedPids: [], releasedPids: [], remainingPids: [], protectedPids: [],
   }),
 ): Promise<A2dpRecoveryResult> {
-  if (process.platform === "win32") return recoverWindowsAudio(request.name, onProgress, releaseBluetoothMicrophoneOccupancy);
+  if (process.platform === "win32") return recoverWindowsAudio(request.name, onProgress, releaseBluetoothMicrophoneOccupancy, undefined, readModeAssessments);
   return recoverMacAudio(request, onProgress, readModeAssessments, readFormatRequestUsers, releaseBluetoothMicrophoneOccupancy);
 }
 

@@ -2,12 +2,17 @@ import { getWindowsProbe, endpointDeviceName, type WindowsProbeResult, type Wind
 import { restartWindowsBluetoothDevice, setWindowsDefaultEndpoint } from "../../core/windows-audio-control/index.ts";
 import { detailedLog } from "../../core/detailed-logging/index.ts";
 import type { A2dpRecoveryResult, RecoveryMicrophoneReleaseResult, RecoveryProgress, RecoveryStep } from "./types.ts";
+import type { AudioModeAssessment } from "../../shared/audio-device-types/index.ts";
+import { isA2dpRecoveryEligible } from "./recovery-policy.ts";
+
+type ModeResult = Pick<AudioModeAssessment, "name" | "mode" | "a2dpSupport">;
 
 export type WindowsRecoveryRuntime = {
   read: () => Promise<WindowsProbeResult>;
   set: (id: string, role?: number) => Promise<unknown>;
   restart: (id: string) => Promise<unknown>;
   release: (name: string) => Promise<RecoveryMicrophoneReleaseResult>;
+  assess: () => ModeResult | undefined;
 };
 
 const roles = ["Console", "Multimedia", "Comms"] as const;
@@ -19,25 +24,15 @@ export function targetEndpoints(result: WindowsProbeResult, name: string): Windo
   return matches;
 }
 
-export function hasConfirmedHandsfree(endpoints: WindowsEndpointFacts[]): boolean {
-  return endpoints.some(e => (e.flow === "eCapture" || e.role === "handsfree") && (e.sessions?.length ?? 0) > 0);
-}
-
-// A split stereo/handsfree endpoint pair provides a profile fact. Unified endpoints do not.
-export function hasConfirmedStereo(endpoints: WindowsEndpointFacts[]): boolean {
-  return endpoints.every(e => e.sessionsKnown === true) && !hasConfirmedHandsfree(endpoints)
-    && endpoints.some(e => e.flow === "eRender" && e.role === "handsfree")
-    && endpoints.some(e => e.flow === "eRender" && e.role === "a2dp" && (e.sessions?.length ?? 0) > 0);
-}
-
 export async function recoverWindowsAudio(
   name: string,
   progress: (progress: RecoveryProgress) => void,
   release: WindowsRecoveryRuntime["release"],
   runtime: WindowsRecoveryRuntime = {
     read: () => getWindowsProbe(Date.now()), set: setWindowsDefaultEndpoint,
-    restart: restartWindowsBluetoothDevice, release,
+    restart: restartWindowsBluetoothDevice, release, assess: () => readModeAssessments().find(device => device.name === name),
   },
+  readModeAssessments: () => ModeResult[] = () => [],
 ): Promise<A2dpRecoveryResult> {
   const steps: RecoveryStep[] = [];
   let releasedPrograms: string[] = [], remainingPrograms: string[] = [];
@@ -52,17 +47,23 @@ export async function recoverWindowsAudio(
     diagnosis: {kind: "证据不足", confidence: "无法确认", summary: message, evidence: steps.map(s => s.detail)},
   });
   const verify = async () => {
-    progress({stage: "正在确认稳定", message: "连续读取目标端点和活动会话"});
+    progress({stage: "正在确认稳定", message: "连续读取目标端点与共同模式判定"});
     for (let i = 0; i < 3; i++) {
-      const endpoints = targetEndpoints(await runtime.read(), name);
-      if (!hasConfirmedStereo(endpoints)) return false;
+      targetEndpoints(await runtime.read(), name);
+      const assessment = runtime.assess();
+      if (assessment?.name !== name || assessment.mode !== "A2DP") return false;
     }
     return true;
   };
   const before = await runtime.read();
-  const target = targetEndpoints(before, name);
-  if (!hasConfirmedHandsfree(target)) {
-    if (await verify()) return finish(true, "目标已连续三次确认为独立立体声输出。");
+  targetEndpoints(before, name);
+  const assessment = runtime.assess();
+  if (assessment?.name === name && assessment.a2dpSupport === "UNSUPPORTED") {
+    record("现场复核", "跳过", "该设备不支持 A2DP，无需恢复。");
+    return {...finish(true, "该设备不支持 A2DP，无需恢复。"), outcome: "无需修复"};
+  }
+  if (assessment?.name !== name || !isA2dpRecoveryEligible(assessment)) {
+    if (await verify()) return finish(true, "目标已连续三次确认为高音质输出。");
     record("现场复核", "跳过", "当前没有足够通话模式证据，未执行恢复操作。");
     return finish(false, "当前模式无法确认，请先使用目标设备并刷新。");
   }
@@ -73,7 +74,7 @@ export async function recoverWindowsAudio(
     remainingPrograms = result.processes.filter(p => result.remainingPids.includes(p.pid) || result.protectedPids.includes(p.pid)).map(p => p.name);
     record("解除麦克风占用", remainingPrograms.length ? "失败" : "成功", `已退出 ${releasedPrograms.length} 个程序，仍占用或受保护 ${remainingPrograms.length} 个。`);
   } catch (error) { record("解除麦克风占用", "失败", String(error)); }
-  if (await verify()) return finish(true, "解除占用后，目标连续三次确认为独立立体声输出。");
+  if (await verify()) return finish(true, "解除占用后，目标连续三次确认为高音质输出。");
 
   progress({stage: "正在切换声音设备", message: "通过非蓝牙设备中转并恢复原默认角色"});
   const snapshot = await runtime.read();
@@ -104,7 +105,7 @@ export async function recoverWindowsAudio(
   const mismatch = (Object.keys(snapshot.defaults) as Array<keyof typeof snapshot.defaults>).some(key => snapshot.defaults[key]?.id !== restored.defaults[key]?.id);
   record("默认角色读回", mismatch ? "失败" : "成功", mismatch ? "部分默认角色未恢复，请在页面重新选择。" : "原默认角色已恢复。");
   if (mismatch) return finish(false, "部分默认声音角色未能恢复，请在系统声音设置中确认后再继续。");
-  if (await verify()) return finish(true, "目标连续三次确认为独立立体声输出。");
+  if (await verify()) return finish(true, "目标连续三次确认为高音质输出。");
 
   progress({stage: "正在重建声音链路", message: "重启目标蓝牙物理设备节点"});
   try {
@@ -118,7 +119,7 @@ export async function recoverWindowsAudio(
       if (result.endpoints.some(e => e.canonicalId === id && e.flow === "eRender")) { rebuiltAudioChain = true; break; }
     }
     if (!rebuiltAudioChain) throw new Error("目标输出端点未重新出现");
-    if (await verify()) return finish(true, "目标端点恢复，连续三次确认为独立立体声输出。");
+    if (await verify()) return finish(true, "目标端点恢复，连续三次确认为高音质输出。");
   } catch (error) { record("目标设备重建", "失败", String(error)); }
   return finish(false, "已完成可执行步骤，但当前证据不足以确认高音质恢复；请查看步骤结果并核实实际听感。");
 }

@@ -84,13 +84,6 @@ export function deviceModePresentation(device) {
       text: "A2DP等模式（高音质播放模式）",
     };
   }
-  if (device.windowsEvidence?.sessionsKnown) {
-    return {
-      className: "pending",
-      text: device.windowsEvidence.activeOutput || device.windowsEvidence.activeCapture
-        ? "模式待确认" : "未检测到音频活动",
-    };
-  }
   return {
     className: "unknown",
     text: "模式无法确认",
@@ -191,6 +184,7 @@ function audioLinkGroup(device) {
         metric("标称采样率", formatRate(device.nominalSampleRateOutput)),
         metric("实际采样率", formatRate(device.actualSampleRateOutput)),
         metric("声道", `${device.outputChannels} 声道`),
+        ...(device.windowsEvidence ? [metric("Windows 混音采样率", formatRate(device.sampleRateOutput))] : []),
       ],
     ));
   }
@@ -202,6 +196,7 @@ function audioLinkGroup(device) {
         metric("标称采样率", formatRate(device.nominalSampleRateInput)),
         metric("实际采样率", formatRate(device.actualSampleRateInput)),
         metric("声道", `${device.inputChannels} 声道`),
+        ...(device.windowsEvidence ? [metric("Windows 混音采样率", formatRate(device.sampleRateInput))] : []),
       ],
     ));
   }

@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { aggregatePhysicalDevices, type WindowsEndpointFacts, type WindowsProbeResult } from "../../core/windows-audio-probe/index.ts";
-import { assessBluetoothDevices, applyActiveOutputSnapshot, applyActiveInputSnapshot } from "./index.ts";
+import { assessBluetoothDevices, applyActiveOutputSnapshot, applyActiveInputSnapshot, applyBluetoothLinkSnapshot } from "./index.ts";
 import { deviceModePresentation } from "./web/client.js";
 
-test("无活动与证据不足显示中性提示，通话证据仍优先显示", () => {
+test("模式胶囊只显示模式，不用会话活动替换未知状态", () => {
   const idle = {mode: "UNKNOWN", windowsEvidence: {sessionsKnown: true, activeOutput: false, activeCapture: false}};
-  assert.deepEqual(deviceModePresentation(idle), {className: "pending", text: "未检测到音频活动"});
-  assert.equal(deviceModePresentation({...idle, windowsEvidence: {...idle.windowsEvidence, activeOutput: true}}).text, "模式待确认");
+  assert.deepEqual(deviceModePresentation(idle), {className: "unknown", text: "模式无法确认"});
+  assert.equal(deviceModePresentation({...idle, windowsEvidence: {...idle.windowsEvidence, activeOutput: true}}).text, "模式无法确认");
   assert.equal(deviceModePresentation({...idle, mode: "HFP_HSP"}).className, "hfp_hsp");
   assert.equal(deviceModePresentation({...idle, windowsEvidence: {sessionsKnown: false}}).className, "unknown");
 });
@@ -26,28 +26,30 @@ test("高混音采样率与活动播放不能证明统一端点使用高音质�
   const [device] = assess([endpoint]);
   assert.equal(device.mode, "UNKNOWN");
   assert.equal(device.actualSampleRateOutput, null);
+  assert.equal(device.nominalSampleRateOutput, null);
+  assert.equal(device.maxSupportedOutputRate, null);
   assert.deepEqual(device.availableSampleRateRangesOutput, []);
 });
 test("默认蓝牙麦克风没有活动会话时不能判定通话模式", () => {
   const [device] = assess([endpoint, {...endpoint, id: "input", flow: "eCapture", sessions: []}]);
   assert.equal(device.mode, "UNKNOWN");
 });
-test("传统蓝牙的真实输入活动优先于高混音采样率", () => {
+test("传统蓝牙输入活动更新占用但不替代独立模式证据", () => {
   const [device] = assess([endpoint, {...endpoint, id: "input", flow: "eCapture"}]);
-  assert.equal(device.mode, "HFP_HSP");
+  assert.equal(device.mode, "UNKNOWN");
   assert.equal(device.isInputActive, true);
 });
 test("低功耗蓝牙的输入活动不套用传统蓝牙通话规则", () => {
   const [device] = assess([{...endpoint, transport: "bluetooth-le"}, {...endpoint, id: "input", flow: "eCapture", transport: "bluetooth-le"}]);
   assert.equal(device.mode, "UNKNOWN");
 });
-test("独立免提输出会话能够判定通话模式", () => {
-  assert.equal(assess([{...endpoint, role: "handsfree"}])[0].mode, "HFP_HSP");
+test("独立免提输出会话不冒充链路或输出运行参数", () => {
+  assert.equal(assess([{...endpoint, role: "handsfree"}])[0].mode, "UNKNOWN");
 });
-test("独立双输出端点只有立体声播放且无输入会话时可确认高音质", () => {
+test("独立端点名称与会话不能替代实际输出采样率", () => {
   const endpoints = [endpoint, {...endpoint, id: "handsfree", role: "handsfree" as const, sessions: []}];
-  assert.equal(assess(endpoints)[0].mode, "A2DP");
-  assert.equal(assess([...endpoints, {...endpoint, id: "input", flow: "eCapture"}])[0].mode, "HFP_HSP");
+  assert.equal(assess(endpoints)[0].mode, "UNKNOWN");
+  assert.equal(assess([...endpoints, {...endpoint, id: "input", flow: "eCapture"}])[0].mode, "UNKNOWN");
   assert.equal(assess([endpoint, {...endpoints[1], sessionsKnown: false}])[0].mode, "UNKNOWN");
 });
 test("状态重新组合保留 Windows 证据，不能被高采样率快照覆盖", () => {
@@ -57,4 +59,40 @@ test("状态重新组合保留 Windows 证据，不能被高采样率快照覆�
   const input = applyActiveInputSnapshot(output, {name: "测试耳机", nominalSampleRate: 48000, actualSampleRate: 48000, isRunning: false, timestamp: new Date().toISOString()});
   assert.equal(input.devices[0].mode, "UNKNOWN");
   assert.ok(input.devices[0].windowsEvidence);
+});
+
+test("Windows 的独立语音链路不被平台分支吞掉，按地址及时序隔离", () => {
+  const initial = {devices: assess([endpoint]), routes: {input: [], output: []}};
+  const low = applyBluetoothLinkSnapshot(initial, {address: "AA:BB:CC:DD:EE:FF", profile: "tsco", timestamp: "2026-09-14T01:00:00Z"});
+  assert.equal(low.devices[0].mode, "HFP_HSP");
+  assert.equal(low.devices[0].a2dpSupport, "UNKNOWN");
+  const old = applyBluetoothLinkSnapshot(low, {address: "AA:BB:CC:DD:EE:FF", profile: "tacl", timestamp: "2026-09-14T00:00:00Z"});
+  assert.equal(old.devices[0].mode, "HFP_HSP");
+  const other = applyBluetoothLinkSnapshot(low, {address: "11:22:33:44:55:66", profile: "tacl", timestamp: "2026-09-14T02:00:00Z"});
+  assert.equal(other.devices[0].mode, "HFP_HSP");
+  const playback = applyBluetoothLinkSnapshot(low, {address: "AA:BB:CC:DD:EE:FF", profile: "tacl", timestamp: "2026-09-14T02:00:00Z"});
+  assert.equal(playback.devices[0].mode, "UNKNOWN");
+});
+
+test("Windows 保留经独立采集的输出事实并走共同采样率规则", () => {
+  const raw = aggregatePhysicalDevices({endpoints: [endpoint], defaults: {renderConsole: endpoint, renderComms: null, captureConsole: null}})[0];
+  for (const fields of [
+    {nominalSampleRateOutput: 16000, actualSampleRateOutput: null},
+    {nominalSampleRateOutput: 48000, actualSampleRateOutput: 16000},
+  ]) {
+    const [device] = assessBluetoothDevices([{...raw, ...fields, availableSampleRateRangesOutput: [{minimum: 16000, maximum: 48000}]}]);
+    assert.equal(device.mode, "HFP_HSP");
+    assert.equal(device.a2dpSupport, "SUPPORTED");
+    assert.equal(device.maxSupportedOutputRate, 48000);
+    assert.deepEqual(device.availableSampleRateRangesOutput, [{minimum: 16000, maximum: 48000}]);
+    assert.equal(device.actualSampleRateOutput, fields.actualSampleRateOutput);
+  }
+  const [stereo] = assessBluetoothDevices([{...raw, actualSampleRateOutput: 48000}]);
+  assert.equal(stereo.mode, "A2DP");
+  assert.equal(stereo.a2dpSupport, "UNKNOWN");
+  const voice = applyBluetoothLinkSnapshot({devices: [stereo], routes: {input: [], output: []}}, {address: "AABBCCDDEEFF", profile: "tsco", timestamp: "2026-09-14T01:00:00Z"});
+  assert.equal(voice.devices[0].mode, "HFP_HSP");
+  const [unsupported] = assessBluetoothDevices([{...raw, nominalSampleRateOutput: 16000, availableSampleRateRangesOutput: [{minimum: 16000, maximum: 16000}]}]);
+  assert.equal(unsupported.mode, "UNKNOWN");
+  assert.equal(unsupported.a2dpSupport, "UNSUPPORTED");
 });
