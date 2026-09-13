@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 test("Windows 服务能够从首次加载进入真实设备状态，并处理刷新和无效写请求", {skip: process.platform !== "win32", timeout: 20_000}, async t => {
@@ -46,4 +46,20 @@ test("Windows 服务能够从首次加载进入真实设备状态，并处理刷
   const refreshed = await fetch(`${origin}/api/devices`);
   assert.equal(refreshed.status, 200);
   assert.equal(stderr, "");
+});
+
+
+test("原生控制器解析区分成功、失败、断开和截断事件", {skip: process.platform !== "win32", timeout: 15_000}, () => {
+  const path = fileURLToPath(new URL("../core/windows-audio-probe/probe-audio-endpoints.cs", import.meta.url));
+  const script = `Add-Type -Path $env:PROBE_NATIVE_SOURCE
+$a = '2C1100000EE7003DBC58E4020C043C003C0003'
+[WindowsAudioProbeCore]::InspectControllerEvents(@($a))
+[WindowsAudioProbeCore]::InspectControllerEvents(@($a, '050400000E16'))
+[WindowsAudioProbeCore]::InspectControllerEvents(@('2C1101000EE7003DBC58E4020C043C003C0003'))
+[WindowsAudioProbeCore]::InspectControllerEvents(@('2C1100000E'))
+[WindowsAudioProbeCore]::InspectControllerEvents(@($a, '050400010E16'))`;
+  const lines = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path}, timeout: 12_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  assert.equal(lines[0][0].address, "E458BC3D00E7");
+  assert.deepEqual(lines.slice(1,4), [[], [], []]);
+  assert.equal(lines[4].length, 1);
 });

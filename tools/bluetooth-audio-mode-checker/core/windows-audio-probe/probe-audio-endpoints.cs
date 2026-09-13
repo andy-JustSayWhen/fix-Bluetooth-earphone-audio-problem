@@ -147,6 +147,123 @@ public interface IAudioSessionControl2 {
 }
 
 public static class WindowsAudioProbeCore {
+    // Win64 EVENT_TRACE_LOGFILEW layout from the Windows SDK. Pointer size is checked.
+    [StructLayout(LayoutKind.Explicit, Size = 448)]
+    private struct TraceLog {
+        [FieldOffset(0)] public IntPtr FileName;
+        [FieldOffset(8)] public IntPtr LoggerName;
+        [FieldOffset(28)] public uint Mode;
+        [FieldOffset(400)] public IntPtr BufferCallback;
+        [FieldOffset(424)] public IntPtr EventCallback;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PropertyDescriptor {public ulong Name; public uint ArrayIndex; public uint Reserved;}
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate void TraceCallback(IntPtr record);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate uint BufferCallback(IntPtr log);
+    [DllImport("advapi32.dll", EntryPoint = "OpenTraceW", SetLastError = true)] private static extern ulong OpenTrace(ref TraceLog log);
+    [DllImport("advapi32.dll")] private static extern uint ProcessTrace(ulong[] handles, uint count, IntPtr start, IntPtr end);
+    [DllImport("advapi32.dll")] private static extern uint CloseTrace(ulong handle);
+    [DllImport("tdh.dll")] private static extern uint TdhGetPropertySize(IntPtr record, uint contextCount, IntPtr context, uint count, ref PropertyDescriptor descriptor, out uint size);
+    [DllImport("tdh.dll")] private static extern uint TdhGetProperty(IntPtr record, uint contextCount, IntPtr context, uint count, ref PropertyDescriptor descriptor, uint size, [Out] byte[] value);
+    private class VoiceLink {public string Address; public string Timestamp;}
+    private static readonly object linkLock = new object();
+    private static readonly Dictionary<int, VoiceLink> voiceLinks = new Dictionary<int, VoiceLink>();
+    private static readonly TraceCallback traceCallback = OnTraceEvent;
+    private static readonly BufferCallback bufferCallback = OnTraceBuffer;
+    private static volatile bool traceHealthy;
+    private static ulong traceHandle = UInt64.MaxValue;
+    private static byte[] TraceProperty(IntPtr record, string name) {
+        IntPtr pointer = Marshal.StringToHGlobalUni(name);
+        try {
+            PropertyDescriptor descriptor = new PropertyDescriptor {Name = unchecked((ulong)pointer.ToInt64()), ArrayIndex = UInt32.MaxValue};
+            uint size;
+            if (TdhGetPropertySize(record, 0, IntPtr.Zero, 1, ref descriptor, out size) != 0 || size > 65536) return null;
+            byte[] data = new byte[size];
+            return TdhGetProperty(record, 0, IntPtr.Zero, 1, ref descriptor, size, data) == 0 ? data : null;
+        } finally {Marshal.FreeHGlobal(pointer);}
+    }
+    private static uint OnTraceBuffer(IntPtr log) {
+        // TRACE_LOGFILE_HEADER.EventsLost and BuffersLost in the Win64 layout.
+        if (Marshal.ReadInt32(log, 168) != 0 || Marshal.ReadInt32(log, 396) != 0) {
+            lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}
+        }
+        return 1;
+    }
+    private static void OnTraceEvent(IntPtr record) {
+        try {
+            Guid provider = (Guid)Marshal.PtrToStructure(IntPtr.Add(record, 24), typeof(Guid));
+            if (provider != new Guid("8A1F9517-3A8C-4A9E-A018-4F17A200F277") || Marshal.ReadInt16(record, 40) != 402) return;
+            byte[] type = TraceProperty(record, "BIP_Type");
+            byte[] packet = TraceProperty(record, "BIP_Data");
+            if (type == null || type.Length == 0 || type[0] != 2 || packet == null) return;
+            ObserveControllerEvent(packet, DateTime.FromFileTimeUtc(Marshal.ReadInt64(record, 16)).ToString("o"));
+        } catch {lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}}
+    }
+    public static void ObserveControllerEvent(byte[] packet, string timestamp) {
+        if (packet.Length < 2 || packet.Length != packet[1] + 2) return;
+        lock (linkLock) {
+            if (packet[0] == 0x2C && packet.Length == 19 && packet[2] == 0 && (packet[11] == 0 || packet[11] == 2)) {
+                int handle = BitConverter.ToUInt16(packet, 3) & 0xFFF;
+                byte[] address = new byte[6]; Array.Copy(packet, 5, address, 0, 6); Array.Reverse(address);
+                string text = BitConverter.ToString(address).Replace("-", "");
+                if (text != "000000000000") voiceLinks[handle] = new VoiceLink {Address = text, Timestamp = timestamp};
+            } else if (packet[0] == 0x05 && packet.Length == 6 && packet[2] == 0) {
+                voiceLinks.Remove(BitConverter.ToUInt16(packet, 3) & 0xFFF);
+            }
+        }
+    }
+    private static ulong OpenLinkTrace(string name, bool realtime) {
+        if (IntPtr.Size != 8) throw new PlatformNotSupportedException("Bluetooth trace requires a 64-bit process");
+        IntPtr pointer = Marshal.StringToHGlobalUni(name);
+        try {
+            TraceLog log = new TraceLog {Mode = 0x10000000u | (realtime ? 0x100u : 0u), EventCallback = Marshal.GetFunctionPointerForDelegate(traceCallback), BufferCallback = Marshal.GetFunctionPointerForDelegate(bufferCallback)};
+            if (realtime) log.LoggerName = pointer; else log.FileName = pointer;
+            ulong handle = OpenTrace(ref log);
+            if (handle == UInt64.MaxValue) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            return handle;
+        } finally {Marshal.FreeHGlobal(pointer);}
+    }
+    public static void StartLinkTrace(string name) {
+        lock (linkLock) {voiceLinks.Clear(); traceHealthy = true;}
+        try {traceHandle = OpenLinkTrace(name, true);} catch {traceHealthy = false; throw;}
+        var thread = new System.Threading.Thread(delegate() {
+            try {ProcessTrace(new ulong[] {traceHandle}, 1, IntPtr.Zero, IntPtr.Zero);}
+            finally {lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}}
+        });
+        thread.IsBackground = true; thread.Start();
+    }
+    public static void StopLinkTrace() {
+        if (traceHandle != UInt64.MaxValue) {CloseTrace(traceHandle); traceHandle = UInt64.MaxValue;}
+        lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}
+    }
+    public static string InspectTraceFile(string path) {
+        lock (linkLock) {voiceLinks.Clear(); traceHealthy = true;}
+        ulong handle = OpenLinkTrace(path, false);
+        try {ProcessTrace(new ulong[] {handle}, 1, IntPtr.Zero, IntPtr.Zero); return VoiceLinksJson();}
+        finally {CloseTrace(handle); lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}}
+    }
+    public static string InspectControllerEvents(string[] packets) {
+        if (traceHandle != UInt64.MaxValue) throw new InvalidOperationException("A live trace is active");
+        lock (linkLock) {
+            voiceLinks.Clear(); traceHealthy = true;
+            try {
+                foreach (string hex in packets) {
+                    if (hex.Length % 2 != 0) continue;
+                    byte[] packet = new byte[hex.Length / 2];
+                    for (int i = 0; i < packet.Length; i++) packet[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+                    ObserveControllerEvent(packet, "2026-01-01T00:00:00Z");
+                }
+                return VoiceLinksJson();
+            } finally {voiceLinks.Clear(); traceHealthy = false;}
+        }
+    }
+    private static string VoiceLinksJson() {
+        lock (linkLock) {
+            List<string> values = new List<string>();
+            if (traceHealthy) foreach (VoiceLink link in voiceLinks.Values) values.Add("{\"address\":" + Escape(link.Address) + ",\"timestamp\":" + Escape(link.Timestamp) + "}");
+            return "[" + String.Join(",", values.ToArray()) + "]";
+        }
+    }
     // Read-only diagnostic: hardware engine format is not automatically a radio clock.
     public static string InspectHardwareFormats() {
         IMMDeviceEnumerator enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
@@ -566,7 +683,7 @@ public static class WindowsAudioProbeCore {
             if (i > 0) sb.Append(",");
             sb.Append(EndpointJson(endpoints[i]));
         }
-        sb.Append("],\"defaults\":" + DefaultsJson(enumerator, endpoints) + "}");
+        sb.Append("],\"defaults\":" + DefaultsJson(enumerator, endpoints) + ",\"voiceLinks\":" + VoiceLinksJson() + "}");
         return sb.ToString();
     }
 

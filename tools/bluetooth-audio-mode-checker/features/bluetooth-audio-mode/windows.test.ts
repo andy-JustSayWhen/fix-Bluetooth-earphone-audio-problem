@@ -122,3 +122,17 @@ test("Windows 保留经独立采集的输出事实并走共同采样率规则", 
   assert.equal(unsupported.mode, "UNKNOWN");
   assert.equal(unsupported.a2dpSupport, "UNSUPPORTED");
 });
+
+
+test("Windows 实时同步连接按地址进入共同 HFP 规则，断开快照清除且不虚构采样率", () => {
+  const result: WindowsProbeResult = {endpoints: [endpoint], defaults: {renderConsole: endpoint, renderComms: null, captureConsole: null}, voiceLinks: [{address: endpoint.bluetoothAddress!, timestamp: "2026-09-14T00:00:00Z"}]};
+  const [active] = assessBluetoothDevices(aggregatePhysicalDevices(result));
+  assert.equal(active.mode, "HFP_HSP");
+  assert.equal(active.audioLinkType, "tsco");
+  assert.equal(active.actualSampleRateOutput, null);
+  for (const voiceLinks of [[], [{address: "112233445566", timestamp: "2026-09-14T00:00:00Z"}], [{address: endpoint.bluetoothAddress!, timestamp: "invalid"}]]) {
+    const [unknown] = assessBluetoothDevices(aggregatePhysicalDevices({...result, voiceLinks}));
+    assert.equal(unknown.mode, "UNKNOWN");
+    assert.equal(unknown.audioLinkType, null);
+  }
+});

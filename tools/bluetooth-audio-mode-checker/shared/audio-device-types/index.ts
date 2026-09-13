@@ -87,6 +87,7 @@ export type WindowsEndpointFormat = {
 };
 
 export type WindowsAudioEvidence = {
+  voiceLink?: { timestamp: string };
   transport: string;
   activeCapture: boolean;
   activeHandsfreeOutput: boolean;

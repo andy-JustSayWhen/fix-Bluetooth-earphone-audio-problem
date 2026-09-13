@@ -32,6 +32,7 @@ export type WindowsEndpointFacts = {
 };
 
 export type WindowsProbeResult = {
+  voiceLinks?: Array<{address: string; timestamp: string}>;
   endpoints: WindowsEndpointFacts[];
   defaults: {
     renderConsole: EndpointSummary | null;
@@ -190,6 +191,10 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
     if (groups.some(other => other.key !== group.key && (other.physicalName || other.endpoints[0].name) === (group.physicalName || group.endpoints[0].name))) name += ` [${group.key}]`;
     devices.push({
       windowsEvidence: {
+        voiceLink: result.voiceLinks?.filter(link => group.bluetoothAddress &&
+          link.address.replace(/[^a-f0-9]/gi, "").toUpperCase() === group.bluetoothAddress.replace(/[^a-f0-9]/gi, "").toUpperCase() &&
+          Number.isFinite(Date.parse(link.timestamp)))
+          .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))[0],
         transport: group.transport,
         activeCapture: inputEndpoints.some(e => (e.sessions?.length ?? 0) > 0),
         activeHandsfreeOutput: outputEndpoints.some(e => e.role === "handsfree" && (e.sessions?.length ?? 0) > 0),
@@ -282,16 +287,26 @@ export function startWindowsProbe(onResult?: (result: WindowsProbeResult) => voi
     });
     child.stderr.on("data", (chunk: string) => { workerError = chunk.slice(-2_000); });
     child.once("error", error => { workerError = error.message; });
-    child.once("close", () => { if (worker === child) { worker = null; updatedAt = 0; } });
+    child.once("close", () => { stopWorkerTrace(child); if (worker === child) { worker = null; updatedAt = 0; } });
   }
   return () => { if (onResult) listeners.delete(onResult); };
 }
 
 process.once("exit", stopWindowsProbe);
 
+const cleanedTraceWorkers = new WeakSet<object>();
+function stopWorkerTrace(child: ReturnType<typeof spawn>): void {
+  if (process.platform !== "win32" || !child.pid || cleanedTraceWorkers.has(child)) return;
+  cleanedTraceWorkers.add(child);
+  try {
+    // The helper may be killed while its logman child is still creating the session.
+    const script = `Get-CimInstance Win32_Process -Filter "ParentProcessId = ${child.pid} AND Name = 'logman.exe'" | ForEach-Object { try { [Diagnostics.Process]::GetProcessById($_.ProcessId).WaitForExit(2000) | Out-Null } catch {} }; & logman.exe stop BluetoothAudioMode-${child.pid} -ets`;
+    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, stdio: "ignore", timeout: 5000});
+  } catch { /* Session may already have been stopped by the helper. */ }
+}
 export function stopWindowsProbe(): void {
   const child = worker; worker = null; updatedAt = 0; lastProbeResult = null;
-  child?.kill();
+  if (child) { child.kill(); stopWorkerTrace(child); }
 }
 
 export async function getWindowsProbe(after = 0): Promise<WindowsProbeResult> {
