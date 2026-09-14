@@ -397,7 +397,10 @@ function main(): void {
   const scheduleModeTransitionChecks = () => {
     scheduleStateRefreshSequence([0, 700, 1_500, 2_800, 4_500]);
   };
-  const stopWindowsMonitor = process.platform === "win32" ? startWindowsStateMonitor(() => { scheduleStateRefresh(); }) : () => {};
+  const historyFile = process.platform === "win32"
+    ? join(dirname(fileURLToPath(import.meta.url)), "..", "logs", "bluetooth-audio-history-" + options.port + ".etl")
+    : undefined;
+  const stopWindowsMonitor = process.platform === "win32" ? startWindowsStateMonitor(() => { scheduleStateRefresh(); }, historyFile) : () => {};
   const windowsRetryTimer = process.platform === "win32" ? setInterval(() => scheduleStateRefresh(), 3_000) : null;
   const stopRealtimeMonitor = startAudioModeRealtimeMonitor((snapshot) => {
     const inputSnapshot = snapshot.defaultInput;

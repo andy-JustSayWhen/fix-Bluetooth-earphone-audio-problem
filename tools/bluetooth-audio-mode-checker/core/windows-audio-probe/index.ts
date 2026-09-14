@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -274,10 +275,16 @@ let updatedAt = 0;
 let workerError = "正在读取 Windows 声音设备";
 const listeners = new Set<(result: WindowsProbeResult) => void>();
 
-export function startWindowsProbe(onResult?: (result: WindowsProbeResult) => void): () => void {
+export function startWindowsProbe(onResult?: (result: WindowsProbeResult) => void, options?: {historyFile?: string}): () => void {
   if (onResult) listeners.add(onResult);
   if (!worker) {
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1Path, "-CsPath", csPath, "-Watch", "-ParentPid", String(process.pid)], {
+    const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1Path, "-CsPath", csPath, "-Watch", "-ParentPid", String(process.pid)];
+    if (options?.historyFile) {
+      // Per-port history file keeps parallel instances (tests, second service) from clashing.
+      mkdirSync(dirname(options.historyFile), {recursive: true});
+      args.push("-HistoryFile", options.historyFile);
+    }
+    const child = spawn("powershell.exe", args, {
       windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     });
     worker = child;

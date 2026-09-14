@@ -84,3 +84,23 @@ test("原生高音质流状态机区分协商、流开始与停止", {skip: proc
   assert.equal(lines[2].length, 1);
   assert.equal(lines[2][0].negotiatedAt, "2026-09-14T11:43:47Z");
 });
+
+test("历史文件回放补读协商参数，超窗事件不充当正在传输", {skip: process.platform !== "win32", timeout: 20_000}, () => {
+  const path = fileURLToPath(new URL("../core/windows-audio-probe/probe-audio-endpoints.cs", import.meta.url));
+  const source = fileURLToPath(new URL("../../../artifacts/bose-negotiation-20260914-114148-A2dp.etl", import.meta.url));
+  const script = `Add-Type -Path $env:PROBE_NATIVE_SOURCE
+[WindowsAudioProbeCore]::ReplayHistoryFile($env:HISTORY_ETL, [int]::MaxValue)
+[WindowsAudioProbeCore]::InspectA2dpState()
+[WindowsAudioProbeCore]::ReplayHistoryFile($env:HISTORY_ETL, 0)
+[WindowsAudioProbeCore]::InspectA2dpState()`;
+  const lines = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path, HISTORY_ETL: source}, timeout: 16_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  assert.equal(lines[0].voiceLinks.length, 0);
+  assert.equal(lines[0].a2dpStreams[0].address, "E458BC3D00E7");
+  assert.equal(lines[0].a2dpStreams[0].streaming, true);
+  assert.equal(lines[0].a2dpStreams[0].codec, 2);
+  assert.equal(lines[0].a2dpStreams[0].sampleRate, 48000);
+  // 窗口外事件不充当当前状态，但协商参数保留展示。（输出共 4 行：两次回放、两次检查）
+  assert.equal(lines[3][0].streaming, false);
+  assert.equal(lines[3][0].sampleRate, 48000);
+  assert.equal(lines[3][0].negotiatedAt, "2026-09-14T03:43:47.3546883Z");
+});

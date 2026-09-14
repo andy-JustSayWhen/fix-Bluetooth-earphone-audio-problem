@@ -214,6 +214,7 @@ public static class WindowsAudioProbeCore {
         public uint SampleRate;
         public uint Channels;
         public string NegotiatedAt;
+        public string LastEventAt;
     }
     private static readonly Dictionary<string, A2dpStream> a2dpStreams = new Dictionary<string, A2dpStream>();
     private static bool TraceNumber(IntPtr record, string name, out ulong value) {
@@ -254,6 +255,7 @@ public static class WindowsAudioProbeCore {
                 stream.Codec = (uint)codec; stream.VendorId = (uint)vendor;
                 stream.SampleRate = (uint)rate; stream.Channels = (uint)channels;
                 stream.NegotiatedAt = timestamp;
+                stream.LastEventAt = timestamp;
             }
             return;
         }
@@ -266,6 +268,25 @@ public static class WindowsAudioProbeCore {
             A2dpStream stream = A2dpStreamFor(address);
             if (TraceNumber(record, "DurationInMilliseconds", out duration)) stream.Streaming = false;
             else { stream.Streaming = true; stream.StartedAt = timestamp; }
+            stream.LastEventAt = timestamp;
+        }
+    }
+    private static bool TryParseUtc(string text, out DateTime value) {
+        return DateTime.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out value);
+    }
+    // History replay only trusts fresh events as "current"; older ones keep display values only.
+    private static void TrimHistoryOlderThan(DateTime cutoffUtc) {
+        lock (linkLock) {
+            List<int> staleHandles = new List<int>();
+            foreach (KeyValuePair<int, VoiceLink> entry in voiceLinks) {
+                DateTime parsed;
+                if (!TryParseUtc(entry.Value.Timestamp, out parsed) || parsed < cutoffUtc) staleHandles.Add(entry.Key);
+            }
+            foreach (int handle in staleHandles) voiceLinks.Remove(handle);
+            foreach (A2dpStream stream in a2dpStreams.Values) {
+                DateTime parsed;
+                if (stream.LastEventAt == null || !TryParseUtc(stream.LastEventAt, out parsed) || parsed < cutoffUtc) stream.Streaming = false;
+            }
         }
     }
     // Diagnostic entries keep the state machine testable without an EVENT_RECORD.
@@ -275,6 +296,7 @@ public static class WindowsAudioProbeCore {
             A2dpStream stream = A2dpStreamFor(address);
             stream.HasNegotiation = true; stream.Codec = codec; stream.VendorId = vendorId;
             stream.SampleRate = rate; stream.Channels = channels; stream.NegotiatedAt = timestamp;
+            stream.LastEventAt = timestamp;
         }
     }
     public static void ObserveA2dpStream(string address, bool start, string timestamp) {
@@ -283,6 +305,7 @@ public static class WindowsAudioProbeCore {
             A2dpStream stream = A2dpStreamFor(address);
             if (start) { stream.Streaming = true; stream.StartedAt = timestamp; }
             else stream.Streaming = false;
+            stream.LastEventAt = timestamp;
         }
     }
     public static string InspectA2dpState() {
@@ -314,14 +337,28 @@ public static class WindowsAudioProbeCore {
             return handle;
         } finally {Marshal.FreeHGlobal(pointer);}
     }
-    public static void StartLinkTrace(string name) {
-        lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = true;}
+    public static void StartLinkTrace(string name, bool keepState = false) {
+        lock (linkLock) {
+            if (!keepState) {voiceLinks.Clear(); a2dpStreams.Clear();}
+            traceHealthy = true;
+        }
         try {traceHandle = OpenLinkTrace(name, true);} catch {traceHealthy = false; throw;}
         var thread = new System.Threading.Thread(delegate() {
             try {ProcessTrace(new ulong[] {traceHandle}, 1, IntPtr.Zero, IntPtr.Zero);}
             finally {lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}}
         });
         thread.IsBackground = true; thread.Start();
+    }
+    // Startup backfill: replay the circular history file, then keep only fresh events as current state.
+    public static string ReplayHistoryFile(string path, int maxAgeSeconds) {
+        if (traceHandle != UInt64.MaxValue) throw new InvalidOperationException("A live trace is active");
+        lock (linkLock) {traceHealthy = true;}
+        ulong handle = OpenLinkTrace(path, false);
+        try {
+            ProcessTrace(new ulong[] {handle}, 1, IntPtr.Zero, IntPtr.Zero);
+            TrimHistoryOlderThan(DateTime.UtcNow.AddSeconds(-maxAgeSeconds));
+            return "{\"voiceLinks\":" + VoiceLinksJson() + ",\"a2dpStreams\":" + A2dpStreamsJson() + "}";
+        } finally {CloseTrace(handle);}
     }
     public static void StopLinkTrace() {
         if (traceHandle != UInt64.MaxValue) {CloseTrace(traceHandle); traceHandle = UInt64.MaxValue;}

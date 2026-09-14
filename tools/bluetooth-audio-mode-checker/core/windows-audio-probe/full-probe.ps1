@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$CsPath, [switch]$Watch, [int]$ParentPid, [switch]$DiagnoseHardware, [string]$DeviceInterface, [string]$TraceFile)
+param([Parameter(Mandatory = $true)][string]$CsPath, [switch]$Watch, [int]$ParentPid, [switch]$DiagnoseHardware, [string]$DeviceInterface, [string]$TraceFile, [string]$HistoryFile)
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 Add-Type -Path $CsPath
@@ -19,13 +19,24 @@ try {
                 }
             }
         }
-        & logman.exe create trace $traceName -rt -ft 1 -p "{8A1F9517-3A8C-4A9E-A018-4F17A200F277}" 0xffffffffffffffff 5 -ets *> $null
+        # Startup history backfill: replay the previous run's events before opening a new session.
+        $historyKept = $false
+        if ($HistoryFile -and (Test-Path -LiteralPath $HistoryFile)) {
+            try { [WindowsAudioProbeCore]::ReplayHistoryFile($HistoryFile, 1800) | Out-Null; $historyKept = $true }
+            catch { [Console]::Error.WriteLine("History replay unavailable: " + $_.Exception.Message) }
+            Remove-Item -LiteralPath $HistoryFile -Force -ErrorAction SilentlyContinue
+        }
+        # logman rejects two -p parameters in one command; write a circular history file and
+        # add the A2DP stream provider via update.
+        $createArgs = @("create", "trace", $traceName, "-rt", "-ft", "1")
+        if ($HistoryFile) { $createArgs += @("-f", "bincirc", "-max", "16", "-o", $HistoryFile) }
+        $createArgs += @("-p", "{8A1F9517-3A8C-4A9E-A018-4F17A200F277}", "0xffffffffffffffff", "5", "-ets")
+        & logman.exe @createArgs *> $null
         $traceStarted = $LASTEXITCODE -eq 0
         if ($traceStarted) {
-            # logman rejects two -p parameters in one command; add the A2DP stream provider via update.
             & logman.exe update trace $traceName -p "{8776AD1E-5022-4451-A566-F47E708B9075}" 0xffffffffffffffff 5 -ets *> $null
             if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("A2DP stream provider unavailable: logman update exit " + $LASTEXITCODE) }
-            try { [WindowsAudioProbeCore]::StartLinkTrace($traceName) }
+            try { [WindowsAudioProbeCore]::StartLinkTrace($traceName, $historyKept) }
             catch { [Console]::Error.WriteLine("Bluetooth trace unavailable: " + $_.Exception.Message) }
         }
     }
