@@ -18,7 +18,9 @@ export function prepareWindowsFacts(base: AssessmentFacts): AssessmentFacts {
 
 const a2dpCodecNames: Record<number, string> = {0: "SBC", 1: "MPEG-1,2 音频", 2: "AAC", 3: "ATRAC"};
 
-export function describeNegotiatedA2dpStream(stream: WindowsA2dpStreamEvidence | null | undefined): string {
+export function describeNegotiatedA2dpStream(stream: WindowsA2dpStreamEvidence | null | undefined, voiceLinkActive = false): string {
+  // The voice link is the active radio path during HFP; stale A2DP notes only confuse here.
+  if (voiceLinkActive) return "语音链路传输中（编码尚未取得）";
   if (!stream || (stream.negotiatedAt === null && !stream.streaming)) return "尚未取得";
   const parts: string[] = [];
   if (stream.codec !== null) {

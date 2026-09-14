@@ -114,7 +114,9 @@ function a2dpCodecPresentation(codec, vendorId) {
   return a2dpCodecNames[codec] ?? `编码 ${codec}`;
 }
 
-export function negotiatedA2dpPresentation(stream) {
+export function negotiatedA2dpPresentation(stream, voiceLinkActive) {
+  // The voice link is the active radio path during HFP; stale A2DP notes only confuse here.
+  if (voiceLinkActive) return "语音链路传输中（编码尚未取得）";
   if (!stream || (stream.negotiatedAt === null && !stream.streaming)) return "尚未取得";
   const parts = [];
   if (stream.codec !== null && stream.codec !== undefined) parts.push(a2dpCodecPresentation(stream.codec, stream.vendorId));
@@ -149,7 +151,7 @@ export function audioEndpointMetrics(device, direction) {
     const activity = active || users.length ? (input ? "正在采集" : "正在播放")
       : facts.sessionsKnown ? "未检测到活动" : "尚未取得";
     return [
-      ...(input ? [] : [["蓝牙协商格式", negotiatedA2dpPresentation(facts.a2dpStream)]]),
+      ...(input ? [] : [["蓝牙协商格式", negotiatedA2dpPresentation(facts.a2dpStream, Boolean(facts.voiceLink))]]),
       [input ? "麦克风活动" : "播放活动", activity],
       [input ? "使用程序" : "播放程序", [...new Set(users.map(user => user.name))].join("、") || "未识别到"],
     ];

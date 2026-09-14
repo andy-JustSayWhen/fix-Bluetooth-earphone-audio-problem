@@ -37,6 +37,18 @@ test("Windows 页面显示输入输出活动及程序，不把格式能力当运
   assert.deepEqual(device.availableSampleRateRangesOutput, []);
 });
 
+test("语音链路活跃时协商格式行显示语音路径，语音结束后回到高音质记录", () => {
+  const voiceResult: WindowsProbeResult = {endpoints: [endpoint], defaults: {renderConsole: endpoint, renderComms: null, captureConsole: null},
+    voiceLinks: [{address: "AABBCCDDEEFF", timestamp: "2026-09-14T11:44:12Z"}],
+    a2dpStreams: [{address: "AABBCCDDEEFF", streaming: false, startedAt: "2026-09-14T11:43:49Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"}]};
+  const [voice] = assessBluetoothDevices(aggregatePhysicalDevices(voiceResult));
+  assert.deepEqual(audioEndpointMetrics(voice, "output")[0], ["蓝牙协商格式", "语音链路传输中（编码尚未取得）"]);
+  assert.equal(voice.mode, "HFP_HSP");
+  const [recovered] = assessBluetoothDevices(aggregatePhysicalDevices({...voiceResult, voiceLinks: []}));
+  assert.equal(recovered.mode, "UNKNOWN");
+  assert.equal(audioEndpointMetrics(recovered, "output")[0][1], "未在传输，最近协商 AAC · 48 kHz · 2 声道");
+});
+
 test("格式查询失败或不支持不影响独立活动展示及模式边界", () => {
   const [device] = assess([{...endpoint, configuredRate: 16000, configuredStatus: "error:80070490", supportedStatus: "partial", supportedRates: []}]);
   assert.equal(audioEndpointMetrics(device, "output")[1][1], "正在播放");
@@ -160,4 +172,7 @@ test("协商格式展示区分编码、厂商编码与状态", () => {
   assert.equal(negotiatedA2dpPresentation({...stream, streaming: false}), "未在传输，最近协商 AAC · 48 kHz · 2 声道");
   assert.equal(negotiatedA2dpPresentation(null), "尚未取得");
   assert.equal(negotiatedA2dpPresentation({...stream, streaming: false, negotiatedAt: null}), "尚未取得");
+  // 语音链路活跃时显示当前真实传输路径，不再堆砌过时的高音质协商记录。
+  assert.equal(negotiatedA2dpPresentation({...stream, streaming: false}, true), "语音链路传输中（编码尚未取得）");
+  assert.equal(negotiatedA2dpPresentation(null, true), "语音链路传输中（编码尚未取得）");
 });
