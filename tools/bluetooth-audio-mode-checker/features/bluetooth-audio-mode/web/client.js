@@ -142,21 +142,6 @@ export function audioEndpointMetrics(device, direction) {
   ];
 }
 
-export function observeWindowsActivity(previous, device, observedAt) {
-  const names = (users) => [...new Set((users ?? []).map(user => `${user.name}（进程 ${user.pid}）`))].sort().join("、");
-  const state = {
-    模式: deviceModePresentation(device).text,
-    通话连接: device.windowsEvidence?.voiceLink ? "已检测到" : "无当前证据",
-    麦克风活动: device.windowsEvidence?.activeCapture ? "正在采集" : device.windowsEvidence?.sessionsKnown ? "未检测到活动" : "尚未取得",
-    录音进程: names(device.microphoneOccupancy?.users) || "未识别到",
-    播放进程: names(device.speakerOccupancy?.users) || "未识别到",
-  };
-  const changes = Object.entries(state).filter(([key, value]) => previous?.state[key] !== value);
-  if (!changes.length) return previous;
-  const text = (previous ? "" : "初始状态：") + changes.map(([key, value]) => `${key}：${value}`).join("；");
-  return {state, entries: [{observedAt, text}, ...(previous?.entries ?? [])].slice(0, 10)};
-}
-
 export function startBluetoothAudioModePage(
   createA2dpRecoveryController,
   createSpeakerOccupancyController,
@@ -179,7 +164,6 @@ const occupancyFeedback = new Map();
 const occupancyFeedbackTimers = new Map();
 const occupancyBusyDevices = new Set();
 let lastRenderedDevices = [];
-const windowsActivity = new Map();
 let lastMicrophoneUsers = [];
 let lastRenderedRoutes = null;
 let lastRenderedStateFingerprint = "";
@@ -465,24 +449,6 @@ function createDeviceCard(device) {
   header.append(summary);
 
   const details = createElement("div", "device-card__details");
-  if (device.windowsEvidence) {
-    const activity = windowsActivity.get(device.bluetoothAddress || device.name);
-    if (activity) {
-      const section = createElement("section", "occupancy-section");
-      section.append(createElement("h3", "", "当前活动"));
-      for (const [key, value] of Object.entries(activity.state)) {
-        section.append(createElement("p", "", `${key}：${value}`));
-      }
-      const history = createElement("details", "");
-      history.open = true;
-      history.append(createElement("summary", "", "最近变化（本次打开页面）"));
-      for (const entry of activity.entries) {
-        history.append(createElement("p", "", `${new Date(entry.observedAt).toLocaleTimeString("zh-CN", {hour12: false})} · ${entry.text}`));
-      }
-      section.append(history);
-      details.append(section);
-    }
-  }
   details.append(audioLinkGroup(device));
   details.append(microphoneOccupancySection(device));
   details.append(speakerOccupancyController.section(device));
@@ -627,11 +593,6 @@ function renderRealtimeState(result) {
 
 function renderDevices(devices) {
   lastRenderedDevices = devices;
-  for (const device of devices) {
-    if (!device.windowsEvidence) continue;
-    const key = device.bluetoothAddress || device.name;
-    windowsActivity.set(key, observeWindowsActivity(windowsActivity.get(key), device, new Date().toISOString()));
-  }
   const occupiedDevice = devices.find((device) => device.microphoneOccupancy?.isInUse);
   const speakerOccupiedDevice = devices.find((device) => device.speakerOccupancy?.isInUse);
   if (occupiedDevice) {
