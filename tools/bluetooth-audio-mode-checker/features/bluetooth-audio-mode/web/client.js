@@ -203,7 +203,7 @@ function audioLinkGroup(device) {
   const directions = createElement("div", "metric-groups");
   if (device.outputChannels > 0) {
     directions.append(metricGroup(
-      device.isDefaultOutput ? "输出（当前输出）" : "输出",
+      "输出",
       audioEndpointMetrics(device, "output").map(([label, value]) => metric(label, value)),
     ));
   }
