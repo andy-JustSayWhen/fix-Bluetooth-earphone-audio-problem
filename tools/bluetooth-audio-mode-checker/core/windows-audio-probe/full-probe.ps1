@@ -19,9 +19,12 @@ try {
                 }
             }
         }
-        & logman.exe create trace $traceName -rt -ft 1 -p "{8A1F9517-3A8C-4A9E-A018-4F17A200F277}" 0xffffffffffffffff 5 -p "{8776AD1E-5022-4451-A566-F47E708B9075}" 0xffffffffffffffff 5 -ets *> $null
+        & logman.exe create trace $traceName -rt -ft 1 -p "{8A1F9517-3A8C-4A9E-A018-4F17A200F277}" 0xffffffffffffffff 5 -ets *> $null
         $traceStarted = $LASTEXITCODE -eq 0
         if ($traceStarted) {
+            # logman rejects two -p parameters in one command; add the A2DP stream provider via update.
+            & logman.exe update trace $traceName -p "{8776AD1E-5022-4451-A566-F47E708B9075}" 0xffffffffffffffff 5 -ets *> $null
+            if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("A2DP stream provider unavailable: logman update exit " + $LASTEXITCODE) }
             try { [WindowsAudioProbeCore]::StartLinkTrace($traceName) }
             catch { [Console]::Error.WriteLine("Bluetooth trace unavailable: " + $_.Exception.Message) }
         }
