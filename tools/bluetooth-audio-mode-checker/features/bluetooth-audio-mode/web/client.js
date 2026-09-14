@@ -125,13 +125,13 @@ export function audioEndpointMetrics(device, direction) {
     const rates = facts?.supportedRates ?? [];
     const available = rates.length ? rates.map(formatRate).join("、")
       : facts?.supportedStatus === "ok" ? "已测试格式均不支持"
-      : facts?.supportedStatus === "partial" ? "查询未完成" : "系统未提供";
+      : facts?.supportedStatus === "partial" ? "查询未完成" : "未取得数据";
     return [
-      ["可用采样率（已验证）", available],
-      ["系统设置采样率", facts?.configuredRate ? formatRate(facts.configuredRate) : facts?.configuredStatus === "error" ? "读取失败" : "系统未提供"],
-      ["实际采样率", actual ? formatRate(actual) : "尚未取得"],
-      ["声道", `${channels} 声道`],
-      ["Windows 混音采样率", formatRate(device[`sampleRate${suffix}`])],
+      ["格式支持查询：采样率", available],
+      ["设备格式：采样率", facts?.configuredRate ? formatRate(facts.configuredRate) : facts?.configuredStatus === "error" ? "读取失败" : "未取得数据"],
+      ["端点实际运行采样率", actual ? formatRate(actual) : "尚未取得"],
+      ["共享模式混音格式：声道数", `${channels} 声道`],
+      ["共享模式混音格式：采样率", formatRate(device[`sampleRate${suffix}`])],
     ];
   }
   return [
@@ -217,6 +217,9 @@ function audioLinkGroup(device) {
     directions.append(createElement("p", "audio-link-group__empty", "系统未返回可展示的输入或输出端点。"));
   }
   linkGroup.append(directions);
+  if (device.windowsEvidence) {
+    linkGroup.append(createElement("p", "audio-link-group__empty", "格式支持查询只表示 Windows 接受所查询的候选格式，列表可能不完整，未做实际播放测试。设备格式与共享模式混音格式均不代表蓝牙当前传输格式。"));
+  }
   return linkGroup;
 }
 
