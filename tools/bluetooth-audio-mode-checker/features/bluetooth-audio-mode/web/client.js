@@ -105,6 +105,27 @@ function formatRate(rate) {
   return `${rate / 1000} kHz`;
 }
 
+const a2dpCodecNames = {0: "SBC", 1: "MPEG-1,2 音频", 2: "AAC", 3: "ATRAC"};
+
+function a2dpCodecPresentation(codec, vendorId) {
+  if (codec === 4) {
+    return vendorId ? `厂商编码 0x${vendorId.toString(16).toUpperCase().padStart(8, "0")}` : "厂商自定义编码";
+  }
+  return a2dpCodecNames[codec] ?? `编码 ${codec}`;
+}
+
+export function negotiatedA2dpPresentation(stream) {
+  if (!stream || (stream.negotiatedAt === null && !stream.streaming)) return "尚未取得";
+  const parts = [];
+  if (stream.codec !== null && stream.codec !== undefined) parts.push(a2dpCodecPresentation(stream.codec, stream.vendorId));
+  if (stream.sampleRate) parts.push(`${stream.sampleRate / 1000} kHz`);
+  if (stream.channels) parts.push(stream.channels === 1 ? "单声道" : `${stream.channels} 声道`);
+  const description = parts.join(" · ");
+  return stream.streaming
+    ? (description || "传输中（协商参数尚未取得）")
+    : `未在传输${description ? `，最近协商 ${description}` : ""}`;
+}
+
 function formatRateRanges(ranges) {
   if (!Array.isArray(ranges) || ranges.length === 0) return "无法读取";
   return ranges
@@ -128,6 +149,7 @@ export function audioEndpointMetrics(device, direction) {
     const activity = active || users.length ? (input ? "正在采集" : "正在播放")
       : facts.sessionsKnown ? "未检测到活动" : "尚未取得";
     return [
+      ...(input ? [] : [["蓝牙协商格式", negotiatedA2dpPresentation(facts.a2dpStream)]]),
       [input ? "麦克风活动" : "播放活动", activity],
       [input ? "使用程序" : "播放程序", [...new Set(users.map(user => user.name))].join("、") || "未识别到"],
     ];

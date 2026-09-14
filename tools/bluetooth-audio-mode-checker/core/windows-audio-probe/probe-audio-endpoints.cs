@@ -185,21 +185,112 @@ public static class WindowsAudioProbeCore {
     private static uint OnTraceBuffer(IntPtr log) {
         // TRACE_LOGFILE_HEADER.EventsLost and BuffersLost in the Win64 layout.
         if (Marshal.ReadInt32(log, 168) != 0 || Marshal.ReadInt32(log, 396) != 0) {
-            lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}
+            lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}
         }
         return 1;
     }
+    private static readonly Guid BthPortProvider = new Guid("8A1F9517-3A8C-4A9E-A018-4F17A200F277");
+    private static readonly Guid BthA2dpProvider = new Guid("8776AD1E-5022-4451-A566-F47E708B9075");
     private static void OnTraceEvent(IntPtr record) {
         try {
             Guid provider = (Guid)Marshal.PtrToStructure(IntPtr.Add(record, 24), typeof(Guid));
-            if (provider != new Guid("8A1F9517-3A8C-4A9E-A018-4F17A200F277") || Marshal.ReadInt16(record, 40) != 402) return;
-            byte[] type = TraceProperty(record, "BIP_Type");
-            byte[] packet = TraceProperty(record, "BIP_Data");
-            if (type == null || type.Length == 0 || type[0] != 2 || packet == null) return;
-            ObserveControllerEvent(packet, DateTime.FromFileTimeUtc(Marshal.ReadInt64(record, 16)).ToString("o"));
-        } catch {lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}}
+            if (provider == BthPortProvider) {
+                if (Marshal.ReadInt16(record, 40) != 402) return;
+                byte[] type = TraceProperty(record, "BIP_Type");
+                byte[] packet = TraceProperty(record, "BIP_Data");
+                if (type == null || type.Length == 0 || type[0] != 2 || packet == null) return;
+                ObserveControllerEvent(packet, DateTime.FromFileTimeUtc(Marshal.ReadInt64(record, 16)).ToString("o"));
+            } else if (provider == BthA2dpProvider) {
+                ObserveA2dpTraceEvent(record, DateTime.FromFileTimeUtc(Marshal.ReadInt64(record, 16)).ToString("o"));
+            }
+        } catch {lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}}
     }
-    public static void ObserveControllerEvent(byte[] packet, string timestamp) {
+    private class A2dpStream {
+        public bool Streaming;
+        public string StartedAt;
+        public bool HasNegotiation;
+        public uint Codec;
+        public uint VendorId;
+        public uint SampleRate;
+        public uint Channels;
+        public string NegotiatedAt;
+    }
+    private static readonly Dictionary<string, A2dpStream> a2dpStreams = new Dictionary<string, A2dpStream>();
+    private static bool TraceNumber(IntPtr record, string name, out ulong value) {
+        value = 0;
+        byte[] data = TraceProperty(record, name);
+        if (data == null || data.Length == 0 || data.Length > 8) return false;
+        for (int i = data.Length - 1; i >= 0; i--) value = (value << 8) | data[i];
+        return true;
+    }
+    private static bool TraceFlag(IntPtr record, string name, out bool value) {
+        value = false;
+        byte[] data = TraceProperty(record, name);
+        if (data == null || data.Length == 0) return false;
+        value = data[0] != 0;
+        return true;
+    }
+    private static A2dpStream A2dpStreamFor(string address) {
+        A2dpStream stream;
+        if (!a2dpStreams.TryGetValue(address, out stream)) { stream = new A2dpStream(); a2dpStreams[address] = stream; }
+        return stream;
+    }
+    private static void ObserveA2dpTraceEvent(IntPtr record, string timestamp) {
+        ulong addressValue;
+        if ((!TraceNumber(record, "BTDeviceAddress", out addressValue) || addressValue == 0)
+            && (!TraceNumber(record, "BTDeviceAddressRemote", out addressValue) || addressValue == 0)) return;
+        string address = addressValue.ToString("X12");
+        ulong rate;
+        if (TraceNumber(record, "SampleRate", out rate)) {
+            // AvdtpSetConfigInfo: the radio-level media configuration agreed by both sides.
+            ulong resultCode, codec, vendor, channels;
+            if (!TraceNumber(record, "ResultCode", out resultCode) || resultCode != 0 || rate == 0 || rate > 0x100000) return;
+            TraceNumber(record, "A2dpStandardCodecId", out codec);
+            TraceNumber(record, "A2dpVendorId", out vendor);
+            TraceNumber(record, "ChannelCount", out channels);
+            lock (linkLock) {
+                A2dpStream stream = A2dpStreamFor(address);
+                stream.HasNegotiation = true;
+                stream.Codec = (uint)codec; stream.VendorId = (uint)vendor;
+                stream.SampleRate = (uint)rate; stream.Channels = (uint)channels;
+                stream.NegotiatedAt = timestamp;
+            }
+            return;
+        }
+        ulong session;
+        bool sink;
+        // Only the streaming start/stop events carry both an L2CAP session and the sink flag.
+        if (!TraceNumber(record, "L2capChannelHandleSessionId", out session) || !TraceFlag(record, "A2dpIsSink", out sink)) return;
+        ulong duration;
+        lock (linkLock) {
+            A2dpStream stream = A2dpStreamFor(address);
+            if (TraceNumber(record, "DurationInMilliseconds", out duration)) stream.Streaming = false;
+            else { stream.Streaming = true; stream.StartedAt = timestamp; }
+        }
+    }
+    // Diagnostic entries keep the state machine testable without an EVENT_RECORD.
+    public static void ObserveA2dpNegotiation(string address, uint resultCode, uint codec, uint vendorId, uint rate, uint channels, string timestamp) {
+        if (string.IsNullOrEmpty(address) || resultCode != 0 || rate == 0 || rate > 0x100000) return;
+        lock (linkLock) {
+            A2dpStream stream = A2dpStreamFor(address);
+            stream.HasNegotiation = true; stream.Codec = codec; stream.VendorId = vendorId;
+            stream.SampleRate = rate; stream.Channels = channels; stream.NegotiatedAt = timestamp;
+        }
+    }
+    public static void ObserveA2dpStream(string address, bool start, string timestamp) {
+        if (string.IsNullOrEmpty(address)) return;
+        lock (linkLock) {
+            A2dpStream stream = A2dpStreamFor(address);
+            if (start) { stream.Streaming = true; stream.StartedAt = timestamp; }
+            else stream.Streaming = false;
+        }
+    }
+    public static string InspectA2dpState() {
+        if (traceHandle != UInt64.MaxValue) throw new InvalidOperationException("A live trace is active");
+        traceHealthy = true;
+        return A2dpStreamsJson();
+    }
+    private static void ObserveControllerEvent(byte[] packet, string timestamp) {
         if (packet.Length < 2 || packet.Length != packet[1] + 2) return;
         lock (linkLock) {
             if (packet[0] == 0x2C && packet.Length == 19 && packet[2] == 0 && (packet[11] == 0 || packet[11] == 2)) {
@@ -224,23 +315,26 @@ public static class WindowsAudioProbeCore {
         } finally {Marshal.FreeHGlobal(pointer);}
     }
     public static void StartLinkTrace(string name) {
-        lock (linkLock) {voiceLinks.Clear(); traceHealthy = true;}
+        lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = true;}
         try {traceHandle = OpenLinkTrace(name, true);} catch {traceHealthy = false; throw;}
         var thread = new System.Threading.Thread(delegate() {
             try {ProcessTrace(new ulong[] {traceHandle}, 1, IntPtr.Zero, IntPtr.Zero);}
-            finally {lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}}
+            finally {lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}}
         });
         thread.IsBackground = true; thread.Start();
     }
     public static void StopLinkTrace() {
         if (traceHandle != UInt64.MaxValue) {CloseTrace(traceHandle); traceHandle = UInt64.MaxValue;}
-        lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}
+        lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}
     }
     public static string InspectTraceFile(string path) {
-        lock (linkLock) {voiceLinks.Clear(); traceHealthy = true;}
+        lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = true;}
         ulong handle = OpenLinkTrace(path, false);
-        try {ProcessTrace(new ulong[] {handle}, 1, IntPtr.Zero, IntPtr.Zero); return VoiceLinksJson();}
-        finally {CloseTrace(handle); lock (linkLock) {voiceLinks.Clear(); traceHealthy = false;}}
+        try {
+            ProcessTrace(new ulong[] {handle}, 1, IntPtr.Zero, IntPtr.Zero);
+            return "{\"voiceLinks\":" + VoiceLinksJson() + ",\"a2dpStreams\":" + A2dpStreamsJson() + "}";
+        }
+        finally {CloseTrace(handle); lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}}
     }
     public static string InspectControllerEvents(string[] packets) {
         if (traceHandle != UInt64.MaxValue) throw new InvalidOperationException("A live trace is active");
@@ -261,6 +355,24 @@ public static class WindowsAudioProbeCore {
         lock (linkLock) {
             List<string> values = new List<string>();
             if (traceHealthy) foreach (VoiceLink link in voiceLinks.Values) values.Add("{\"address\":" + Escape(link.Address) + ",\"timestamp\":" + Escape(link.Timestamp) + "}");
+            return "[" + String.Join(",", values.ToArray()) + "]";
+        }
+    }
+    private static string A2dpStreamsJson() {
+        lock (linkLock) {
+            List<string> values = new List<string>();
+            if (traceHealthy) foreach (KeyValuePair<string, A2dpStream> entry in a2dpStreams) {
+                A2dpStream stream = entry.Value;
+                if (!stream.Streaming && !stream.HasNegotiation) continue;
+                values.Add("{\"address\":" + Escape(entry.Key)
+                    + ",\"streaming\":" + (stream.Streaming ? "true" : "false")
+                    + ",\"startedAt\":" + Escape(stream.StartedAt)
+                    + ",\"codec\":" + (stream.HasNegotiation ? stream.Codec.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
+                    + ",\"vendorId\":" + (stream.HasNegotiation ? stream.VendorId.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
+                    + ",\"sampleRate\":" + (stream.HasNegotiation ? stream.SampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
+                    + ",\"channels\":" + (stream.HasNegotiation ? stream.Channels.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
+                    + ",\"negotiatedAt\":" + Escape(stream.HasNegotiation ? stream.NegotiatedAt : null) + "}");
+            }
             return "[" + String.Join(",", values.ToArray()) + "]";
         }
     }
@@ -683,7 +795,7 @@ public static class WindowsAudioProbeCore {
             if (i > 0) sb.Append(",");
             sb.Append(EndpointJson(endpoints[i]));
         }
-        sb.Append("],\"defaults\":" + DefaultsJson(enumerator, endpoints) + ",\"voiceLinks\":" + VoiceLinksJson() + "}");
+        sb.Append("],\"defaults\":" + DefaultsJson(enumerator, endpoints) + ",\"voiceLinks\":" + VoiceLinksJson() + ",\"a2dpStreams\":" + A2dpStreamsJson() + "}");
         return sb.ToString();
     }
 

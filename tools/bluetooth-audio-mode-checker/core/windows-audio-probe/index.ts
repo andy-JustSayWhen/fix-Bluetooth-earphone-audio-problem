@@ -31,8 +31,20 @@ export type WindowsEndpointFacts = {
   sessions?: Array<{ pid: number; name: string; id: string }>;
 };
 
+export type WindowsA2dpStreamFacts = {
+  address: string;
+  streaming: boolean;
+  startedAt: string | null;
+  codec: number | null;
+  vendorId: number | null;
+  sampleRate: number | null;
+  channels: number | null;
+  negotiatedAt: string | null;
+};
+
 export type WindowsProbeResult = {
   voiceLinks?: Array<{address: string; timestamp: string}>;
+  a2dpStreams?: WindowsA2dpStreamFacts[];
   endpoints: WindowsEndpointFacts[];
   defaults: {
     renderConsole: EndpointSummary | null;
@@ -165,6 +177,11 @@ function endpointFormat(endpoint: WindowsEndpointFacts | null): WindowsEndpointF
   };
 }
 
+function matchesDeviceAddress(candidate: string | null | undefined, deviceAddress: string | null | undefined): boolean {
+  if (!candidate || !deviceAddress) return false;
+  return candidate.replace(/[^a-f0-9]/gi, "").toUpperCase() === deviceAddress.replace(/[^a-f0-9]/gi, "").toUpperCase();
+}
+
 export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDevice[] {
   const groups = groupEndpointsByPhysicalDevice(result);
   const devices: RawAudioDevice[] = [];
@@ -191,10 +208,10 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
     if (groups.some(other => other.key !== group.key && (other.physicalName || other.endpoints[0].name) === (group.physicalName || group.endpoints[0].name))) name += ` [${group.key}]`;
     devices.push({
       windowsEvidence: {
-        voiceLink: result.voiceLinks?.filter(link => group.bluetoothAddress &&
-          link.address.replace(/[^a-f0-9]/gi, "").toUpperCase() === group.bluetoothAddress.replace(/[^a-f0-9]/gi, "").toUpperCase() &&
+        voiceLink: result.voiceLinks?.filter(link => matchesDeviceAddress(link.address, group.bluetoothAddress) &&
           Number.isFinite(Date.parse(link.timestamp)))
           .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))[0],
+        a2dpStream: (result.a2dpStreams ?? []).find(stream => matchesDeviceAddress(stream.address, group.bluetoothAddress)) ?? null,
         transport: group.transport,
         activeCapture: inputEndpoints.some(e => (e.sessions?.length ?? 0) > 0),
         activeHandsfreeOutput: outputEndpoints.some(e => e.role === "handsfree" && (e.sessions?.length ?? 0) > 0),

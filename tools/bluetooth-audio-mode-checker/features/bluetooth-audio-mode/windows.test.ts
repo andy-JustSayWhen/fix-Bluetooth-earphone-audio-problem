@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { aggregatePhysicalDevices, type WindowsEndpointFacts, type WindowsProbeResult } from "../../core/windows-audio-probe/index.ts";
 import { assessBluetoothDevices, applyActiveOutputSnapshot, applyActiveInputSnapshot, applyBluetoothLinkSnapshot } from "./index.ts";
-import { deviceModePresentation, audioEndpointMetrics } from "./web/client.js";
+import { deviceModePresentation, audioEndpointMetrics, negotiatedA2dpPresentation } from "./web/client.js";
 
 test("模式胶囊只显示模式，不用会话活动替换未知状态", () => {
   const idle = {mode: "UNKNOWN", windowsEvidence: {sessionsKnown: true, activeOutput: false, activeCapture: false}};
@@ -28,7 +28,7 @@ test("Windows 页面显示输入输出活动及程序，不把格式能力当运
     {...endpoint, configuredRate: 44100, configuredStatus: "ok", supportedRates: [44100, 48000], supportedStatus: "ok"},
     {...endpoint, id: "input", flow: "eCapture", rate: 16000, channels: 1, configuredRate: 16000, configuredStatus: "ok", supportedRates: [16000], supportedStatus: "ok", sessions: []},
   ]);
-  assert.deepEqual(audioEndpointMetrics(device, "output"), [["播放活动", "正在播放"], ["播放程序", "未识别到"]]);
+  assert.deepEqual(audioEndpointMetrics(device, "output"), [["蓝牙协商格式", "尚未取得"], ["播放活动", "正在播放"], ["播放程序", "未识别到"]]);
   assert.equal(audioEndpointMetrics(device, "input")[0][1], "未检测到活动");
   assert.equal(audioEndpointMetrics({...device, windowsEvidence: {...device.windowsEvidence, activeCapture: true}, microphoneOccupancy: {users: [{name: "wetype_update"}]}}, "input")[1][1], "wetype_update");
   assert.equal(device.mode, "UNKNOWN");
@@ -39,10 +39,10 @@ test("Windows 页面显示输入输出活动及程序，不把格式能力当运
 
 test("格式查询失败或不支持不影响独立活动展示及模式边界", () => {
   const [device] = assess([{...endpoint, configuredRate: 16000, configuredStatus: "error:80070490", supportedStatus: "partial", supportedRates: []}]);
-  assert.equal(audioEndpointMetrics(device, "output")[0][1], "正在播放");
-  assert.equal(audioEndpointMetrics(device, "output")[1][1], "未识别到");
+  assert.equal(audioEndpointMetrics(device, "output")[1][1], "正在播放");
+  assert.equal(audioEndpointMetrics(device, "output")[2][1], "未识别到");
   const [unsupported] = assess([{...endpoint, supportedRates: [], supportedStatus: "ok"}]);
-  assert.equal(audioEndpointMetrics(unsupported, "output")[0][1], "正在播放");
+  assert.equal(audioEndpointMetrics(unsupported, "output")[1][1], "正在播放");
   assert.equal(unsupported.a2dpSupport, "UNKNOWN");
 });
 test("高混音采样率与活动播放不能证明统一端点使用高音质模式", () => {
@@ -132,4 +132,32 @@ test("Windows 实时同步连接按地址进入共同 HFP 规则，断开快照�
     assert.equal(unknown.mode, "UNKNOWN");
     assert.equal(unknown.audioLinkType, null);
   }
+});
+
+test("高音质流传输事实正面判定 A2DP，流停止只保留协商展示", () => {
+  const stream = {address: "AABBCCDDEEFF", streaming: true, startedAt: "2026-09-14T11:43:49Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"};
+  const result: WindowsProbeResult = {endpoints: [endpoint], defaults: {renderConsole: endpoint, renderComms: null, captureConsole: null}, a2dpStreams: [stream]};
+  const [device] = assessBluetoothDevices(aggregatePhysicalDevices(result));
+  assert.equal(device.mode, "A2DP");
+  assert.equal(device.confidence, "高");
+  assert.equal(device.a2dpSupport, "SUPPORTED");
+  assert.match(device.explanation, /48 kHz/);
+  assert.equal(device.windowsEvidence?.a2dpStream?.codec, 2);
+  const [stopped] = assessBluetoothDevices(aggregatePhysicalDevices({...result, a2dpStreams: [{...stream, streaming: false}]}));
+  assert.equal(stopped.mode, "UNKNOWN");
+  const [other] = assessBluetoothDevices(aggregatePhysicalDevices({...result, a2dpStreams: [{...stream, address: "112233445566"}]}));
+  assert.equal(other.mode, "UNKNOWN");
+  const [voice] = assessBluetoothDevices(aggregatePhysicalDevices({...result, voiceLinks: [{address: "AABBCCDDEEFF", timestamp: "2026-09-14T11:44:12Z"}]}));
+  assert.equal(voice.mode, "HFP_HSP");
+});
+
+test("协商格式展示区分编码、厂商编码与状态", () => {
+  const stream = {streaming: true, startedAt: null, codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"};
+  assert.equal(negotiatedA2dpPresentation(stream), "AAC · 48 kHz · 2 声道");
+  assert.equal(negotiatedA2dpPresentation({...stream, codec: 0, sampleRate: 44100, channels: 1}), "SBC · 44.1 kHz · 单声道");
+  assert.equal(negotiatedA2dpPresentation({...stream, codec: 4, vendorId: 0x0000000f}), "厂商编码 0x0000000F · 48 kHz · 2 声道");
+  assert.equal(negotiatedA2dpPresentation({...stream, codec: null, sampleRate: null, channels: null}), "传输中（协商参数尚未取得）");
+  assert.equal(negotiatedA2dpPresentation({...stream, streaming: false}), "未在传输，最近协商 AAC · 48 kHz · 2 声道");
+  assert.equal(negotiatedA2dpPresentation(null), "尚未取得");
+  assert.equal(negotiatedA2dpPresentation({...stream, streaming: false, negotiatedAt: null}), "尚未取得");
 });

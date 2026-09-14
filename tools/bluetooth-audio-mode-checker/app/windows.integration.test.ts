@@ -63,3 +63,24 @@ $a = '2C1100000EE7003DBC58E4020C043C003C0003'
   assert.deepEqual(lines.slice(1,4), [[], [], []]);
   assert.equal(lines[4].length, 1);
 });
+
+test("原生高音质流状态机区分协商、流开始与停止", {skip: process.platform !== "win32", timeout: 15_000}, () => {
+  const path = fileURLToPath(new URL("../core/windows-audio-probe/probe-audio-endpoints.cs", import.meta.url));
+  const script = `Add-Type -Path $env:PROBE_NATIVE_SOURCE
+[WindowsAudioProbeCore]::ObserveA2dpNegotiation('E458BC3D00E7', [uint32]0, [uint32]2, [uint32]0, [uint32]48000, [uint32]2, '2026-09-14T11:43:47Z')
+[WindowsAudioProbeCore]::ObserveA2dpStream('E458BC3D00E7', $true, '2026-09-14T11:43:49Z')
+[WindowsAudioProbeCore]::InspectA2dpState()
+[WindowsAudioProbeCore]::ObserveA2dpStream('E458BC3D00E7', $false, '2026-09-14T11:44:12Z')
+[WindowsAudioProbeCore]::InspectA2dpState()
+[WindowsAudioProbeCore]::ObserveA2dpNegotiation('E458BC3D00E7', [uint32]5, [uint32]0, [uint32]0, [uint32]44100, [uint32]2, '2026-09-14T11:45:00Z')
+[WindowsAudioProbeCore]::ObserveA2dpNegotiation('', [uint32]0, [uint32]2, [uint32]0, [uint32]48000, [uint32]2, '2026-09-14T11:45:01Z')
+[WindowsAudioProbeCore]::InspectA2dpState()`;
+  const lines = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path}, timeout: 12_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  assert.equal(lines[0].length, 1);
+  assert.deepEqual(lines[0][0], {address: "E458BC3D00E7", streaming: true, startedAt: "2026-09-14T11:43:49Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"});
+  assert.equal(lines[1][0].streaming, false);
+  assert.equal(lines[1][0].sampleRate, 48000);
+  assert.equal(lines[1][0].negotiatedAt, "2026-09-14T11:43:47Z");
+  assert.equal(lines[2].length, 1);
+  assert.equal(lines[2][0].negotiatedAt, "2026-09-14T11:43:47Z");
+});

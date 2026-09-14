@@ -2,7 +2,7 @@ import { getWindowsProbe, endpointDeviceName, startWindowsProbe, stopWindowsProb
 import { setWindowsDefaultEndpoint } from "../../core/windows-audio-control/index.ts";
 import { setDefaultAudioDevice as setMacDefault } from "../../core/macos-audio-route/index.ts";
 import { readAudioDevices as readWindowsDevices, readAudioDevicesAsync as readWindowsDevicesAsync } from "../../core/windows-audio-probe/index.ts";
-import { prepareWindowsFacts } from "./windows.ts";
+import { prepareWindowsFacts, describeNegotiatedA2dpStream } from "./windows.ts";
 import { readAudioDevices } from "../../core/macos-audio-probe/index.ts";
 import { startActiveOutputMonitor } from "../../core/macos-audio-events/index.ts";
 import { startBluetoothLinkMonitor } from "../../core/macos-bluetooth-link/index.ts";
@@ -76,14 +76,17 @@ function groupBluetoothDevices(devices: RawAudioDevice[]): DeviceGroup[] {
 
 function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
   if (base.windowsEvidence) base = prepareWindowsFacts(base);
+  const a2dpStream = base.windowsEvidence?.a2dpStream ?? null;
   const maxAvailableOutputRate = Math.max(
     0,
     ...base.availableSampleRateRangesOutput.map((range) => range.maximum),
   ) || null;
   if (base.windowsEvidence) base = {...base, maxSupportedOutputRate: maxAvailableOutputRate};
-  const a2dpSupport = maxAvailableOutputRate === null
-    ? "UNKNOWN"
-    : maxAvailableOutputRate < 44_100 ? "UNSUPPORTED" : "SUPPORTED";
+  const a2dpSupport = a2dpStream?.streaming === true
+    ? "SUPPORTED"
+    : maxAvailableOutputRate === null
+      ? "UNKNOWN"
+      : maxAvailableOutputRate < 44_100 ? "UNSUPPORTED" : "SUPPORTED";
   const supportsHighRate = maxAvailableOutputRate !== null && maxAvailableOutputRate > 16_000;
   const nominalIsLow = base.nominalSampleRateOutput !== null && base.nominalSampleRateOutput <= 16_000;
   const actualIsLow = base.actualSampleRateOutput !== null && base.actualSampleRateOutput <= 16_000;
@@ -93,6 +96,8 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     `输出实际采样率：${base.actualSampleRateOutput === null ? "无法读取" : formatRate(base.actualSampleRateOutput)}`,
     `输出声道：${base.outputChannels > 0 ? `${base.outputChannels} 声道` : "无法读取"}`,
     `设备最新声音链路：${base.audioLinkType ?? "无法确认"}`,
+    `高音质流（A2DP）：${a2dpStream === null ? "尚未取得" : a2dpStream.streaming ? "传输中" : "未在传输"}`,
+    `蓝牙协商格式：${describeNegotiatedA2dpStream(a2dpStream)}`,
     `A2DP 支持能力：${a2dpSupport === "UNSUPPORTED" ? "不支持" : a2dpSupport === "SUPPORTED" ? "支持" : "无法确认"}`,
   ];
 
@@ -106,6 +111,19 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
       label: "HFP等模式（低音质语音模式）",
       confidence: "高",
       explanation: "该设备最新的独立链路事实仍为 tsco，因此直接判定为 HFP/HSP 等低音质语音模式。",
+    };
+  }
+
+  if (classicRulesApply && a2dpStream?.streaming === true) {
+    const negotiated = describeNegotiatedA2dpStream(a2dpStream);
+    return {
+      ...base,
+      a2dpSupport,
+      evidence,
+      mode: "A2DP",
+      label: "A2DP等模式（高音质播放模式）",
+      confidence: "高",
+      explanation: `系统蓝牙栈报告该设备的高音质（A2DP）流正在传输，且没有更新的语音链路事实，因此判定为 A2DP 等高音质播放模式。${negotiated === "尚未取得" ? "" : `最近协商：${negotiated}。`}`,
     };
   }
 

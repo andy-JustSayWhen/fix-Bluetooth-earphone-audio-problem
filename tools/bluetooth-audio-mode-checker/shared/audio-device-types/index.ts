@@ -86,8 +86,19 @@ export type WindowsEndpointFormat = {
   supportedStatus: "ok" | "partial" | "unavailable";
 };
 
+export type WindowsA2dpStreamEvidence = {
+  streaming: boolean;
+  startedAt: string | null;
+  codec: number | null;
+  vendorId: number | null;
+  sampleRate: number | null;
+  channels: number | null;
+  negotiatedAt: string | null;
+};
+
 export type WindowsAudioEvidence = {
   voiceLink?: { timestamp: string };
+  a2dpStream?: WindowsA2dpStreamEvidence | null;
   transport: string;
   activeCapture: boolean;
   activeHandsfreeOutput: boolean;
