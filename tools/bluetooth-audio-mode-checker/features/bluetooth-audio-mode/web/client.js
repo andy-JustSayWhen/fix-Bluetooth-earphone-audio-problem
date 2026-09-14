@@ -148,8 +148,8 @@ export function audioEndpointMetrics(device, direction) {
     const facts = device.windowsEvidence;
     const users = (input ? device.microphoneOccupancy : device.speakerOccupancy)?.users ?? [];
     const active = input ? facts.activeCapture : facts.activeOutput;
-    const activity = active || users.length ? (input ? "正在采集" : "正在播放")
-      : facts.sessionsKnown ? "未检测到活动" : "尚未取得";
+    const activity = active || users.length ? (input ? "正在被占用" : "正在被使用")
+      : facts.sessionsKnown ? (input ? "未被占用" : "未被使用") : "尚未取得";
     return [
       ...(input ? [] : [["蓝牙协商格式", negotiatedA2dpPresentation(facts.a2dpStream, Boolean(facts.voiceLink))]]),
       [input ? "麦克风活动" : "播放活动", activity],
