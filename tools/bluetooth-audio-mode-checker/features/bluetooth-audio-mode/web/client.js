@@ -114,18 +114,36 @@ function a2dpCodecPresentation(codec, vendorId) {
   return a2dpCodecNames[codec] ?? `编码 ${codec}`;
 }
 
-export function negotiatedA2dpPresentation(stream, voiceLinkActive) {
-  // The voice link is the active radio path during HFP; stale A2DP notes only confuse here.
-  if (voiceLinkActive) return "语音链路传输中（编码尚未取得）";
-  if (!stream || (stream.negotiatedAt === null && !stream.streaming)) return "尚未取得";
-  const parts = [];
-  if (stream.codec !== null && stream.codec !== undefined) parts.push(a2dpCodecPresentation(stream.codec, stream.vendorId));
-  if (stream.sampleRate) parts.push(`${stream.sampleRate / 1000} kHz`);
-  if (stream.channels) parts.push(stream.channels === 1 ? "单声道" : `${stream.channels} 声道`);
-  const description = parts.join(" · ");
-  return stream.streaming
-    ? (description || "传输中（协商参数尚未取得）")
-    : `未在传输${description ? `，最近协商 ${description}` : ""}`;
+export function negotiatedA2dpFields(stream, voiceLinkActive) {
+  // 每行一个字段；语音链路活跃时显示当前真实传输路径，过时的高音质记录不冒充当前状态。
+  if (voiceLinkActive) {
+    return [["状态", "语音链路传输中"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]];
+  }
+  if (!stream || (stream.negotiatedAt === null && !stream.streaming)) {
+    return [["状态", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]];
+  }
+  const codec = stream.codec !== null && stream.codec !== undefined ? a2dpCodecPresentation(stream.codec, stream.vendorId) : "尚未取得";
+  const rate = stream.sampleRate ? formatRate(stream.sampleRate) : "尚未取得";
+  const channels = stream.channels ? (stream.channels === 1 ? "单声道" : `${stream.channels} 声道`) : "尚未取得";
+  const complete = codec !== "尚未取得" && rate !== "尚未取得" && channels !== "尚未取得";
+  const status = stream.streaming
+    ? (complete ? "高音质流传输中" : "高音质流传输中（协商参数尚未取得）")
+    : "未在传输（以下为最近协商）";
+  return [["状态", status], ["编　码", codec], ["采样率", rate], ["声道数", channels]];
+}
+
+function negotiatedMetricCard(device, createElement) {
+  const facts = device.windowsEvidence;
+  const card = createElement("div", "metric metric--negotiated");
+  card.append(createElement("span", "", "蓝牙协商格式"));
+  const rows = createElement("div", "negotiated-rows");
+  for (const [label, value] of negotiatedA2dpFields(facts.a2dpStream, Boolean(facts.voiceLink))) {
+    const row = createElement("div", "negotiated-row");
+    row.append(createElement("span", "", `${label}：`), createElement("strong", "", value));
+    rows.append(row);
+  }
+  card.append(rows);
+  return card;
 }
 
 function formatRateRanges(ranges) {
@@ -151,7 +169,6 @@ export function audioEndpointMetrics(device, direction) {
     const activity = active || users.length ? (input ? "正在被占用" : "正在被使用")
       : facts.sessionsKnown ? (input ? "未被占用" : "未被使用") : "尚未取得";
     return [
-      ...(input ? [] : [["蓝牙协商格式", negotiatedA2dpPresentation(facts.a2dpStream, Boolean(facts.voiceLink))]]),
       [input ? "麦克风活动" : "播放活动", activity],
       [input ? "使用程序" : "播放程序", [...new Set(users.map(user => user.name))].join("、") || "未识别到"],
     ];
@@ -224,10 +241,17 @@ function audioLinkGroup(device) {
   linkGroup.append(createElement("legend", "", `声音链路类型：${audioLinkTypePresentation(device.audioLinkType)}`));
   const directions = createElement("div", "metric-groups");
   if (device.outputChannels > 0) {
-    directions.append(metricGroup(
-      "输出",
-      audioEndpointMetrics(device, "output").map(([label, value]) => metric(label, value)),
-    ));
+    const outputMetrics = audioEndpointMetrics(device, "output").map(([label, value]) => metric(label, value));
+    if (device.windowsEvidence) {
+      // Windows 输出区：左侧协商格式卡片竖跨两行，右侧活动与程序两张卡片。
+      const items = createElement("div", "metric-group__items metric-group__items--negotiated");
+      items.append(negotiatedMetricCard(device, createElement), ...outputMetrics);
+      const group = createElement("fieldset", "metric-group");
+      group.append(createElement("legend", "", "输出"), items);
+      directions.append(group);
+    } else {
+      directions.append(metricGroup("输出", outputMetrics));
+    }
   }
   if (device.inputChannels > 0) {
     directions.append(metricGroup(
