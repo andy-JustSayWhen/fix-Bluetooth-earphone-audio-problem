@@ -23,29 +23,26 @@ function assess(endpoints: WindowsEndpointFacts[]) {
   return assessBluetoothDevices(aggregatePhysicalDevices(result));
 }
 
-test("原生设置格式及已验证采样率进入页面，输入输出保持独立且不冒充实际时钟", () => {
+test("Windows 页面显示输入输出活动及程序，不把格式能力当运行状态", () => {
   const [device] = assess([
     {...endpoint, configuredRate: 44100, configuredStatus: "ok", supportedRates: [44100, 48000], supportedStatus: "ok"},
     {...endpoint, id: "input", flow: "eCapture", rate: 16000, channels: 1, configuredRate: 16000, configuredStatus: "ok", supportedRates: [16000], supportedStatus: "ok", sessions: []},
   ]);
-  assert.deepEqual(audioEndpointMetrics(device, "output"), [
-    ["格式支持查询：采样率", "44.1 kHz、48 kHz"], ["设备格式：采样率", "44.1 kHz"],
-    ["端点实际运行采样率", "尚未取得"], ["共享模式混音格式：声道数", "2 声道"], ["共享模式混音格式：采样率", "48 kHz"],
-  ]);
-  assert.equal(audioEndpointMetrics(device, "input")[0][1], "16 kHz");
-  assert.equal(audioEndpointMetrics(device, "input")[1][1], "16 kHz");
+  assert.deepEqual(audioEndpointMetrics(device, "output"), [["播放活动", "正在播放"], ["播放程序", "未识别到"]]);
+  assert.equal(audioEndpointMetrics(device, "input")[0][1], "未检测到活动");
+  assert.equal(audioEndpointMetrics({...device, windowsEvidence: {...device.windowsEvidence, activeCapture: true}, microphoneOccupancy: {users: [{name: "wetype_update"}]}}, "input")[1][1], "wetype_update");
   assert.equal(device.mode, "UNKNOWN");
   assert.equal(device.a2dpSupport, "UNKNOWN");
   assert.equal(device.actualSampleRateOutput, null);
   assert.deepEqual(device.availableSampleRateRangesOutput, []);
 });
 
-test("设备格式读取失败不能回填混音值，部分查询和完全不支持分别显示", () => {
+test("格式查询失败或不支持不影响独立活动展示及模式边界", () => {
   const [device] = assess([{...endpoint, configuredRate: 16000, configuredStatus: "error:80070490", supportedStatus: "partial", supportedRates: []}]);
-  assert.equal(audioEndpointMetrics(device, "output")[0][1], "查询未完成");
-  assert.equal(audioEndpointMetrics(device, "output")[1][1], "读取失败");
+  assert.equal(audioEndpointMetrics(device, "output")[0][1], "正在播放");
+  assert.equal(audioEndpointMetrics(device, "output")[1][1], "未识别到");
   const [unsupported] = assess([{...endpoint, supportedRates: [], supportedStatus: "ok"}]);
-  assert.equal(audioEndpointMetrics(unsupported, "output")[0][1], "已测试格式均不支持");
+  assert.equal(audioEndpointMetrics(unsupported, "output")[0][1], "正在播放");
   assert.equal(unsupported.a2dpSupport, "UNKNOWN");
 });
 test("高混音采样率与活动播放不能证明统一端点使用高音质模式", () => {
