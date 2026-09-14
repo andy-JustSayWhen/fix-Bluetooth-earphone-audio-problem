@@ -121,8 +121,25 @@ Windows 端点框展示实时活动而非格式查询数值。输出框显示“
 
 ### 设备声明能力的采集路径
 
-Windows 设备支持能力取自重连时远端返回的蓝牙能力响应，不使用应用侧候选格式查询代替。A2DP（含义见共同模式规格）按设备地址关联普通连接编号，再关联声音信令通道及请求事务编号；解析 GetAllCapabilities（获取端点完整能力的协议请求）成功响应中的媒体编码能力。保留各远端声音端点及编码对应的采样率集合、声道模式和原始响应，不能只保存最高值或把不同编码的组合任意拼接。能力与当前选定配置分开存储；有能力不代表当前正在传输。
+Windows 设备支持能力取自设备的蓝牙能力响应或可验证的服务声明，不使用应用侧候选格式查询代替。已连接设备优先进行下文的主动服务查询。A2DP（含义见共同模式规格）按设备地址关联普通连接编号，再关联声音信令通道及请求事务编号；解析 GetAllCapabilities（获取端点完整能力的协议请求）成功响应中的媒体编码能力。保留各远端声音端点及编码对应的采样率集合、声道模式和原始响应，不能只保存最高值或把不同编码的组合任意拼接。能力与当前选定配置分开存储；有能力不代表当前正在传输。
 
 2026-09-14 本机 Bose 重连记录包含三个成功响应：SBC 为 44.1 kHz，支持单声道、立体声和联合立体声（后二者均为两个声道）；aptX 为 44.1 kHz、两个声道；AAC 为 44.1/48 kHz、一个或两个声道。本机解码结果及原始字节保存在 artifacts/bose-supported-audio-capabilities.json，原始事件位于 artifacts/bose-negotiation-20260914-114148-Port.etl。此为本次声明的 A2DP 输出能力，不是所有固件、连接方式下的型号规格，也不代表完整的 HFP 输入能力。字段位定义核对来源：https://raw.githubusercontent.com/bluez/bluez/master/profiles/audio/a2dp-codecs.h 。
 
-当前仅完成原始记录解码，尚未将能力解析接入常驻探测。正式采集应在连接前开启事件监听；没有捕获过声明能力时保持未知，不能用当前协商值补成能力列表。连接中断、事件丢失、数据包分片及多设备通道必须分别处理，禁止将固定连接编号或本机地址写入正式解析器。
+当前仅完成原始记录解码，尚未将能力解析接入常驻探测。事件监听应尽早开启，并与主动服务查询互补；没有取得相应声明能力时保持未知，不能用当前协商值补成能力列表。连接中断、事件丢失、数据包分片及多设备通道必须分别处理，禁止将固定连接编号或本机地址写入正式解析器。
+
+#### 已连接设备的主动服务查询与本机核验
+
+SDP（蓝牙设备用来声明自己提供哪些服务及功能的协议）可在设备已连接时查询。使用 `WSALookupServiceBeginW`，指定目标地址、蓝牙命名空间和服务编号；省略查询限制结构时返回该服务的全部属性。`LUP_FLUSHCACHE` 要求向设备重新查询，未设置时读取缓存。两类结果必须分别标记来源，不能用缓存冒充最新声明。查询结束码 10110 表示记录枚举结束，不表示接口不可用。
+
+2026-09-14 对本机 Bose 和 DJI Mic Mini 执行了缓存与主动查询，没有要求用户重连：
+
+- 按共同基础协议编号 0x0100 遍历含该协议的全部服务、读取完整属性：Bose 缓存与主动结果各 7 条，DJI 各 4 条；另分别查询 HFP 0x111E 和 A2DP 0x110B。公共浏览组 0x1002 没有返回记录，因此不能只查询浏览组就判定没有服务。
+- DJI 的 HFP 版本为 1.7，属性 0x0311 为 0x003F；Bose 同属性为 0x00FF。两者的 0x0020 位均置位，声明支持宽带语音。按 HFP 的编码要求，支持 mSBC 的 16 kHz、单声道；基础 CVSD 对应 8 kHz、单声道。这是按设备声明与协议映射确定的能力，不是对当前选中编码或实际时钟的测量。DJI 存在系统输出端点，不因此推导存在实体扬声器。
+- DJI 的这次完整服务查询未返回 A2DP 服务，Bose 返回 A2DP 服务。服务记录没有给出 Bose 的完整 A2DP 编码采样率集合；该集合仍以此前实际能力响应解码为依据。
+- Bose 缓存的 HFP 记录编号和通信通道分别为 0x0001000C、12，主动查询为 0x00010000、10，证明本机缓存不能自动视为本次连接的最新声明。
+- 递归读取两设备在蓝牙设备注册表目录下的全部子项：Bose 16 项、69 个非敏感值，DJI 10 项、45 个非敏感值；找到服务记录二进制缓存。只读取这两台目标设备，未读取配对密钥目录。BthA2dp 服务根目录枚举被拒绝访问，其 Parameters 路径查询返回不存在；这些结果不能代表整个系统没有缓存。
+- 两个现有蓝牙事件会话的状态补发请求均返回 0，但该轮记录没有补出 DJI 的编码协商列表；请求成功不能当作能力读取成功。会话已停止。A2DP 记录中的播放事件属于 Bose，不能因文件名含 DJI 就归给 DJI。
+
+本机原始证据：`artifacts/connected-sdp-audit.json`（按服务分别查询）、`artifacts/connected-sdp-all-services.json`（完整服务响应）、`artifacts/connected-sdp-decoded.json`（全部属性解码）、`artifacts/connected-registry-audit.json`（注册表遍历范围）、`artifacts/connected-sdp-cache-records.json`（服务记录缓存）。这些本机诊断产物不随代码提交；正式采集尚未接入服务和页面。
+
+查询接口依据：https://learn.microsoft.com/en-us/windows/win32/bluetooth/bluetooth-and-wsalookupservicebegin-for-service-discovery 。宽带声明字段交叉核对：https://github.com/google/bumble/blob/main/bumble/hfp.py 中 `HfSdpFeature.WIDE_BAND_SPEECH` 及服务记录构造；编码采样率依据：https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio 。
