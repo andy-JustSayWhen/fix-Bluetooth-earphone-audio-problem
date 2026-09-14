@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { spawn, execFileSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 test("Windows 服务能够从首次加载进入真实设备状态，并处理刷新和无效写请求", {skip: process.platform !== "win32", timeout: 20_000}, async t => {
@@ -15,7 +16,11 @@ test("Windows 服务能够从首次加载进入真实设备状态，并处理刷
   let stderr = "";
   child.stderr.setEncoding("utf8"); child.stderr.on("data", chunk => {stderr += chunk;});
   child.stdout.resume();
-  t.after(() => child.kill());
+  t.after(() => {
+    child.kill();
+    // 测试端口对应的历史跟踪文件属于本测试，结束时一并清理。
+    rmSync(fileURLToPath(new URL(`../logs/bluetooth-audio-history-${port}.etl`, import.meta.url)), {force: true});
+  });
   const origin = `http://127.0.0.1:${port}`;
   let state: any = null;
   const deadline = Date.now() + 12_000;
