@@ -15,7 +15,7 @@
 
 ## 环境信息操作
 
-Windows 环境配置位于 `.codex/environments/environment-windows.toml`；在环境信息的“更改环境”中选择 Windows。提供“重启服务”和“关闭服务”两个 Windows 专用操作，平台字段为 `win32`；原有 macOS 命令使用 `darwin`，其他环境操作保持原配置。
+Windows 环境配置位于 `.codex/environments/environment-2.toml`；在环境信息的“更改环境”中选择 Windows。提供“重启服务”和“关闭服务”两个 Windows 专用操作，平台字段为 `win32`；原有 macOS 命令使用 `darwin`，其他环境操作保持原配置。
 
 关闭操作查找本机 4173 端口的监听进程，并复核其为本工具入口进程后结束；未运行时正常返回，端口被其他程序占用时报告错误。重启操作先执行同样的关闭逻辑，再从项目根目录进入工具目录启动服务，保持在操作终端中运行。所有路径均相对项目根目录。
 
