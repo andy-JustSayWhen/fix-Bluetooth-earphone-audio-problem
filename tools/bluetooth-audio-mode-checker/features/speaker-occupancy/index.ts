@@ -111,7 +111,7 @@ export function attachSpeakerOccupancy(
 ): AudioModeAssessment[] {
   return devices.map((device) => {
     const address = normalizeBluetoothAddress(device.bluetoothAddress ?? "");
-    const assigned = address ? users.filter((user) => user.bluetoothAddress === address) : [];
+    const assigned = address ? users.filter((user) => normalizeBluetoothAddress(user.bluetoothAddress) === address) : [];
     return {
       ...device,
       speakerOccupancy: {

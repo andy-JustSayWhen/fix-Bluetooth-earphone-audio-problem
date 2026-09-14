@@ -87,3 +87,14 @@ test("断开确认后立即重连且不保留固定等待", () => {
   assert.doesNotMatch(source.slice(disconnectConfirmedAt, reconnectStartedAt), /sleepForTimeInterval/);
   assert.match(source.slice(reconnectStartedAt), /\[target openConnection\]/);
 });
+
+test("Windows 带分隔符的播放地址正确归属，且不串到其他设备", () => {
+  const sessions = new Map();
+  reduceSpeakerSessions(sessions, parseSpeakerSessionLine(activeLine)!);
+  const users = flattenSpeakerSessions(sessions).map(user => ({...user, bluetoothAddress: "50:c0:f0:f3:6a:66"}));
+  const devices = [{bluetoothAddress: "50-C0-F0-F3-6A-66"}, {bluetoothAddress: "AA:BB:CC:DD:EE:FF"}] as AudioModeAssessment[];
+  const assigned = attachSpeakerOccupancy(devices, users);
+  assert.equal(assigned[0].speakerOccupancy?.users[0]?.pid, 4206);
+  assert.equal(assigned[1].speakerOccupancy?.isInUse, false);
+  assert.equal(attachSpeakerOccupancy(devices, [])[0].speakerOccupancy?.isInUse, false);
+});
