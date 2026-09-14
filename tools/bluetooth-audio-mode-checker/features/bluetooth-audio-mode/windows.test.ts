@@ -29,7 +29,7 @@ test("Windows 页面显示输入输出活动及程序，不把格式能力当运
     {...endpoint, id: "input", flow: "eCapture", rate: 16000, channels: 1, configuredRate: 16000, configuredStatus: "ok", supportedRates: [16000], supportedStatus: "ok", sessions: []},
   ]);
   assert.deepEqual(audioEndpointMetrics(device, "output"), [["播放活动", "正在被使用"], ["播放程序", "未识别到"]]);
-  assert.deepEqual(negotiatedA2dpFields(device.windowsEvidence?.a2dpStream, false), [["状态", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields(device.windowsEvidence?.a2dpStream, false), [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
   assert.equal(audioEndpointMetrics(device, "input")[0][1], "未被占用");
   assert.equal(audioEndpointMetrics({...device, windowsEvidence: {...device.windowsEvidence, activeCapture: true}, microphoneOccupancy: {users: [{name: "wetype_update"}]}}, "input")[1][1], "wetype_update");
   assert.equal(device.mode, "UNKNOWN");
@@ -43,21 +43,21 @@ test("协商格式卡片按字段分行展示，语音链路优先于过时记�
     voiceLinks: [{address: "AABBCCDDEEFF", timestamp: "2026-09-14T11:44:12Z"}],
     a2dpStreams: [{address: "AABBCCDDEEFF", streaming: false, startedAt: "2026-09-14T11:43:49Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"}]};
   const [voice] = assessBluetoothDevices(aggregatePhysicalDevices(voiceResult));
-  assert.deepEqual(negotiatedA2dpFields(voice.windowsEvidence?.a2dpStream, true), [["状态", "语音链路传输中"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields(voice.windowsEvidence?.a2dpStream, true), [["格　式", "低音质通话"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
   assert.equal(voice.mode, "HFP_HSP");
   const [recovered] = assessBluetoothDevices(aggregatePhysicalDevices({...voiceResult, voiceLinks: []}));
   assert.equal(recovered.mode, "UNKNOWN");
-  assert.deepEqual(negotiatedA2dpFields(recovered.windowsEvidence?.a2dpStream, false), [["状态", "未在传输（以下为最近协商）"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
+  assert.deepEqual(negotiatedA2dpFields(recovered.windowsEvidence?.a2dpStream, false), [["格　式", "高音质播放（未在传输）"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
   const [streaming] = assessBluetoothDevices(aggregatePhysicalDevices({...voiceResult, voiceLinks: [], a2dpStreams: [{...voiceResult.a2dpStreams![0], streaming: true}]}));
   assert.equal(streaming.mode, "A2DP");
-  assert.deepEqual(negotiatedA2dpFields(streaming.windowsEvidence?.a2dpStream, false), [["状态", "高音质流传输中"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
+  assert.deepEqual(negotiatedA2dpFields(streaming.windowsEvidence?.a2dpStream, false), [["格　式", "高音质播放"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
 });
 
 test("协商格式字段区分编码、厂商编码与缺失状态", () => {
   const stream = {streaming: true, startedAt: null, codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"};
-  assert.deepEqual(negotiatedA2dpFields({...stream, codec: 0, sampleRate: 44100, channels: 1}, false), [["状态", "高音质流传输中"], ["编　码", "SBC"], ["采样率", "44.1 kHz"], ["声道数", "单声道"]]);
-  assert.deepEqual(negotiatedA2dpFields({...stream, codec: 4, vendorId: 0x0000000f}, false), [["状态", "高音质流传输中"], ["编　码", "厂商编码 0x0000000F"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
-  assert.deepEqual(negotiatedA2dpFields({...stream, codec: null, sampleRate: null, channels: null}, false), [["状态", "高音质流传输中（协商参数尚未取得）"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields({...stream, codec: 0, sampleRate: 44100, channels: 1}, false), [["格　式", "高音质播放"], ["编　码", "SBC"], ["采样率", "44.1 kHz"], ["声道数", "单声道"]]);
+  assert.deepEqual(negotiatedA2dpFields({...stream, codec: 4, vendorId: 0x0000000f}, false), [["格　式", "高音质播放"], ["编　码", "厂商编码 0x0000000F"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
+  assert.deepEqual(negotiatedA2dpFields({...stream, codec: null, sampleRate: null, channels: null}, false), [["格　式", "高音质播放（协商参数尚未取得）"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
 });
 
 test("格式查询失败或不支持不影响独立活动展示及模式边界", () => {
@@ -176,10 +176,10 @@ test("高音质流传输事实正面判定 A2DP，流停止只保留协商展示
 
 test("协商格式字段保留语音链路优先与证据边界语义", () => {
   const stream = {streaming: true, startedAt: null, codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"};
-  assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false}, false), [["状态", "未在传输（以下为最近协商）"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
-  assert.deepEqual(negotiatedA2dpFields(null, false), [["状态", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
-  assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false, negotiatedAt: null}, false), [["状态", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false}, false), [["格　式", "高音质播放（未在传输）"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
+  assert.deepEqual(negotiatedA2dpFields(null, false), [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false, negotiatedAt: null}, false), [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
   // 语音链路活跃时显示当前真实传输路径，不再堆砌过时的高音质协商记录。
-  assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false}, true), [["状态", "语音链路传输中"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
-  assert.deepEqual(negotiatedA2dpFields(null, true), [["状态", "语音链路传输中"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false}, true), [["格　式", "低音质通话"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields(null, true), [["格　式", "低音质通话"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
 });

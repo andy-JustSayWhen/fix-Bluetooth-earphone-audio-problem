@@ -115,21 +115,21 @@ function a2dpCodecPresentation(codec, vendorId) {
 }
 
 export function negotiatedA2dpFields(stream, voiceLinkActive) {
-  // 每行一个字段；语音链路活跃时显示当前真实传输路径，过时的高音质记录不冒充当前状态。
+  // 每行一个字段；格式只有两种：高音质播放、低音质通话。语音链路活跃时优先显示当前真实路径。
   if (voiceLinkActive) {
-    return [["状态", "语音链路传输中"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]];
+    return [["格　式", "低音质通话"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]];
   }
   if (!stream || (stream.negotiatedAt === null && !stream.streaming)) {
-    return [["状态", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]];
+    return [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]];
   }
   const codec = stream.codec !== null && stream.codec !== undefined ? a2dpCodecPresentation(stream.codec, stream.vendorId) : "尚未取得";
   const rate = stream.sampleRate ? formatRate(stream.sampleRate) : "尚未取得";
   const channels = stream.channels ? (stream.channels === 1 ? "单声道" : `${stream.channels} 声道`) : "尚未取得";
   const complete = codec !== "尚未取得" && rate !== "尚未取得" && channels !== "尚未取得";
-  const status = stream.streaming
-    ? (complete ? "高音质流传输中" : "高音质流传输中（协商参数尚未取得）")
-    : "未在传输（以下为最近协商）";
-  return [["状态", status], ["编　码", codec], ["采样率", rate], ["声道数", channels]];
+  const format = stream.streaming
+    ? (complete ? "高音质播放" : "高音质播放（协商参数尚未取得）")
+    : "高音质播放（未在传输）";
+  return [["格　式", format], ["编　码", codec], ["采样率", rate], ["声道数", channels]];
 }
 
 function negotiatedMetricCard(device, createElement) {
