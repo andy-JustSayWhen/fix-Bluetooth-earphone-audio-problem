@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { spawn, execFileSync } from "node:child_process";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { powershellExecutable } from "../shared/windows-powershell/index.ts";
@@ -90,6 +92,33 @@ test("原生高音质流状态机区分协商、流开始与停止", {skip: proc
   assert.equal(lines[1][0].negotiatedAt, "2026-09-14T11:43:47Z");
   assert.equal(lines[2].length, 1);
   assert.equal(lines[2][0].negotiatedAt, "2026-09-14T11:43:47Z");
+});
+
+test("原生高音质流合并输出格式事件和流结束编码", {skip: process.platform !== "win32", timeout: 15_000}, () => {
+  const path = fileURLToPath(new URL("../core/windows-audio-probe/probe-audio-endpoints.cs", import.meta.url));
+  const script = `Add-Type -Path $env:PROBE_NATIVE_SOURCE
+[WindowsAudioProbeCore]::ObserveA2dpFormat('50C0F0F36A66', [uint32]48000, [uint32]2, '2026-09-15T07:24:05Z')
+[WindowsAudioProbeCore]::ObserveA2dpStream('50C0F0F36A66', $true, '2026-09-15T07:24:05Z')
+[WindowsAudioProbeCore]::InspectA2dpState()
+[WindowsAudioProbeCore]::ObserveA2dpCodec('50C0F0F36A66', [uint32]2, [uint32]0, '2026-09-15T07:24:13Z')
+[WindowsAudioProbeCore]::ObserveA2dpStream('50C0F0F36A66', $false, '2026-09-15T07:24:13Z')
+[WindowsAudioProbeCore]::ObserveA2dpStream('50C0F0F36A66', $true, '2026-09-15T07:24:27Z')
+[WindowsAudioProbeCore]::InspectA2dpState()`;
+  const lines = execFileSync(powershellExecutable(), ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path}, timeout: 12_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  assert.deepEqual(lines[0][0], {address: "50C0F0F36A66", streaming: true, startedAt: "2026-09-15T07:24:05Z", codec: null, vendorId: null, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-15T07:24:05Z"});
+  assert.deepEqual(lines[1][0], {address: "50C0F0F36A66", streaming: true, startedAt: "2026-09-15T07:24:27Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-15T07:24:13Z"});
+});
+
+test("高音质协商参数缓存跨服务重启恢复但不冒充正在传输", {skip: process.platform !== "win32", timeout: 15_000}, t => {
+  const directory = mkdtempSync(join(tmpdir(), "bluetooth-audio-parameters-"));
+  t.after(() => rmSync(directory, {recursive: true, force: true}));
+  const cache = join(directory, "parameters.json");
+  writeFileSync(cache, JSON.stringify([{address: "50C0F0F36A66", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-15T07:24:27Z"}]), "utf8");
+  const source = fileURLToPath(new URL("../core/windows-audio-probe/probe-audio-endpoints.cs", import.meta.url));
+  const script = fileURLToPath(new URL("../core/windows-audio-probe/full-probe.ps1", import.meta.url));
+  const output = execFileSync(powershellExecutable(), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-CsPath", source, "-NegotiationCacheFile", cache, "-InspectNegotiationCache"], {windowsHide: true, encoding: "utf8", timeout: 12_000});
+  const stream = JSON.parse(output.trim())[0];
+  assert.deepEqual(stream, {address: "50C0F0F36A66", streaming: false, startedAt: null, codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-15T07:24:27Z"});
 });
 
 const historyEvidence = fileURLToPath(new URL("../../../artifacts/bose-negotiation-20260914-114148-A2dp.etl", import.meta.url));

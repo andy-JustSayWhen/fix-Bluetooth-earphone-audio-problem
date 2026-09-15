@@ -289,6 +289,7 @@ export function startWindowsProbe(onResult?: (result: WindowsProbeResult) => voi
       // Per-port history file keeps parallel instances (tests, second service) from clashing.
       mkdirSync(dirname(options.historyFile), {recursive: true});
       args.push("-HistoryFile", options.historyFile);
+      args.push("-NegotiationCacheFile", `${options.historyFile}.parameters.json`);
     }
     const child = spawn(powershellExecutable(), args, {
       windowsHide: true, stdio: ["ignore", "pipe", "pipe"],

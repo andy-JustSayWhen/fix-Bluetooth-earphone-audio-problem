@@ -185,6 +185,23 @@ public static class WindowsAudioProbeCore {
             return TdhGetProperty(record, 0, IntPtr.Zero, 1, ref descriptor, size, data) == 0 ? data : null;
         } finally {Marshal.FreeHGlobal(pointer);}
     }
+    private static byte[] TraceProperty(IntPtr record, string parent, string child) {
+        IntPtr parentPointer = Marshal.StringToHGlobalUni(parent);
+        IntPtr childPointer = Marshal.StringToHGlobalUni(child);
+        try {
+            PropertyDescriptor[] descriptors = new PropertyDescriptor[] {
+                new PropertyDescriptor {Name = unchecked((ulong)parentPointer.ToInt64()), ArrayIndex = UInt32.MaxValue},
+                new PropertyDescriptor {Name = unchecked((ulong)childPointer.ToInt64()), ArrayIndex = UInt32.MaxValue},
+            };
+            uint size;
+            if (TdhGetPropertySize(record, 0, IntPtr.Zero, 2, ref descriptors[0], out size) != 0 || size > 65536) return null;
+            byte[] data = new byte[size];
+            return TdhGetProperty(record, 0, IntPtr.Zero, 2, ref descriptors[0], size, data) == 0 ? data : null;
+        } finally {
+            Marshal.FreeHGlobal(childPointer);
+            Marshal.FreeHGlobal(parentPointer);
+        }
+    }
     private static uint OnTraceBuffer(IntPtr log) {
         // TRACE_LOGFILE_HEADER.EventsLost and BuffersLost in the Win64 layout.
         if (Marshal.ReadInt32(log, 168) != 0 || Marshal.ReadInt32(log, 396) != 0) {
@@ -211,7 +228,8 @@ public static class WindowsAudioProbeCore {
     private class A2dpStream {
         public bool Streaming;
         public string StartedAt;
-        public bool HasNegotiation;
+        public bool HasCodec;
+        public bool HasFormat;
         public uint Codec;
         public uint VendorId;
         public uint SampleRate;
@@ -223,6 +241,13 @@ public static class WindowsAudioProbeCore {
     private static bool TraceNumber(IntPtr record, string name, out ulong value) {
         value = 0;
         byte[] data = TraceProperty(record, name);
+        if (data == null || data.Length == 0 || data.Length > 8) return false;
+        for (int i = data.Length - 1; i >= 0; i--) value = (value << 8) | data[i];
+        return true;
+    }
+    private static bool TraceNumber(IntPtr record, string parent, string child, out ulong value) {
+        value = 0;
+        byte[] data = TraceProperty(record, parent, child);
         if (data == null || data.Length == 0 || data.Length > 8) return false;
         for (int i = data.Length - 1; i >= 0; i--) value = (value << 8) | data[i];
         return true;
@@ -254,9 +279,23 @@ public static class WindowsAudioProbeCore {
             TraceNumber(record, "ChannelCount", out channels);
             lock (linkLock) {
                 A2dpStream stream = A2dpStreamFor(address);
-                stream.HasNegotiation = true;
+                stream.HasCodec = true; stream.HasFormat = true;
                 stream.Codec = (uint)codec; stream.VendorId = (uint)vendor;
                 stream.SampleRate = (uint)rate; stream.Channels = (uint)channels;
+                stream.NegotiatedAt = timestamp;
+                stream.LastEventAt = timestamp;
+            }
+            return;
+        }
+        ulong formatRate, formatChannels, statusCode;
+        if (TraceNumber(record, "SampleRate", "Value", out formatRate)
+            && TraceNumber(record, "ChannelCount", "Value", out formatChannels)) {
+            if ((TraceNumber(record, "StatusErrorCode", out statusCode) && statusCode != 0)
+                || formatRate == 0 || formatRate > 0x100000 || formatChannels == 0 || formatChannels > 8) return;
+            lock (linkLock) {
+                A2dpStream stream = A2dpStreamFor(address);
+                stream.HasFormat = true;
+                stream.SampleRate = (uint)formatRate; stream.Channels = (uint)formatChannels;
                 stream.NegotiatedAt = timestamp;
                 stream.LastEventAt = timestamp;
             }
@@ -269,6 +308,13 @@ public static class WindowsAudioProbeCore {
         ulong duration;
         lock (linkLock) {
             A2dpStream stream = A2dpStreamFor(address);
+            ulong streamCodec, streamVendor;
+            if (TraceNumber(record, "A2dpStandardCodecId", out streamCodec)) {
+                TraceNumber(record, "A2dpVendorId", out streamVendor);
+                stream.HasCodec = true;
+                stream.Codec = (uint)streamCodec; stream.VendorId = (uint)streamVendor;
+                stream.NegotiatedAt = timestamp;
+            }
             if (TraceNumber(record, "DurationInMilliseconds", out duration)) stream.Streaming = false;
             else { stream.Streaming = true; stream.StartedAt = timestamp; }
             stream.LastEventAt = timestamp;
@@ -297,9 +343,25 @@ public static class WindowsAudioProbeCore {
         if (string.IsNullOrEmpty(address) || resultCode != 0 || rate == 0 || rate > 0x100000) return;
         lock (linkLock) {
             A2dpStream stream = A2dpStreamFor(address);
-            stream.HasNegotiation = true; stream.Codec = codec; stream.VendorId = vendorId;
+            stream.HasCodec = true; stream.HasFormat = true; stream.Codec = codec; stream.VendorId = vendorId;
             stream.SampleRate = rate; stream.Channels = channels; stream.NegotiatedAt = timestamp;
             stream.LastEventAt = timestamp;
+        }
+    }
+    public static void ObserveA2dpFormat(string address, uint rate, uint channels, string timestamp) {
+        if (string.IsNullOrEmpty(address) || rate == 0 || rate > 0x100000 || channels == 0 || channels > 8) return;
+        lock (linkLock) {
+            A2dpStream stream = A2dpStreamFor(address);
+            stream.HasFormat = true; stream.SampleRate = rate; stream.Channels = channels;
+            stream.NegotiatedAt = timestamp; stream.LastEventAt = timestamp;
+        }
+    }
+    public static void ObserveA2dpCodec(string address, uint codec, uint vendorId, string timestamp) {
+        if (string.IsNullOrEmpty(address)) return;
+        lock (linkLock) {
+            A2dpStream stream = A2dpStreamFor(address);
+            stream.HasCodec = true; stream.Codec = codec; stream.VendorId = vendorId;
+            stream.NegotiatedAt = timestamp; stream.LastEventAt = timestamp;
         }
     }
     public static void ObserveA2dpStream(string address, bool start, string timestamp) {
@@ -403,15 +465,15 @@ public static class WindowsAudioProbeCore {
             List<string> values = new List<string>();
             if (traceHealthy) foreach (KeyValuePair<string, A2dpStream> entry in a2dpStreams) {
                 A2dpStream stream = entry.Value;
-                if (!stream.Streaming && !stream.HasNegotiation) continue;
+                if (!stream.Streaming && !stream.HasCodec && !stream.HasFormat) continue;
                 values.Add("{\"address\":" + Escape(entry.Key)
                     + ",\"streaming\":" + (stream.Streaming ? "true" : "false")
                     + ",\"startedAt\":" + Escape(stream.StartedAt)
-                    + ",\"codec\":" + (stream.HasNegotiation ? stream.Codec.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
-                    + ",\"vendorId\":" + (stream.HasNegotiation ? stream.VendorId.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
-                    + ",\"sampleRate\":" + (stream.HasNegotiation ? stream.SampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
-                    + ",\"channels\":" + (stream.HasNegotiation ? stream.Channels.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
-                    + ",\"negotiatedAt\":" + Escape(stream.HasNegotiation ? stream.NegotiatedAt : null) + "}");
+                    + ",\"codec\":" + (stream.HasCodec ? stream.Codec.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
+                    + ",\"vendorId\":" + (stream.HasCodec ? stream.VendorId.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
+                    + ",\"sampleRate\":" + (stream.HasFormat ? stream.SampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
+                    + ",\"channels\":" + (stream.HasFormat ? stream.Channels.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")
+                    + ",\"negotiatedAt\":" + Escape((stream.HasCodec || stream.HasFormat) ? stream.NegotiatedAt : null) + "}");
             }
             return "[" + String.Join(",", values.ToArray()) + "]";
         }
