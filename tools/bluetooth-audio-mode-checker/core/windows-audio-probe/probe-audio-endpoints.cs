@@ -205,7 +205,7 @@ public static class WindowsAudioProbeCore {
     private static uint OnTraceBuffer(IntPtr log) {
         // TRACE_LOGFILE_HEADER.EventsLost and BuffersLost in the Win64 layout.
         if (Marshal.ReadInt32(log, 168) != 0 || Marshal.ReadInt32(log, 396) != 0) {
-            lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}
+            lock (linkLock) {InvalidateLiveTraceState();}
         }
         return 1;
     }
@@ -223,7 +223,7 @@ public static class WindowsAudioProbeCore {
             } else if (provider == BthA2dpProvider) {
                 ObserveA2dpTraceEvent(record, DateTime.FromFileTimeUtc(Marshal.ReadInt64(record, 16)).ToString("o"));
             }
-        } catch {lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}}
+        } catch {lock (linkLock) {InvalidateLiveTraceState();}}
     }
     private class A2dpStream {
         public bool Streaming;
@@ -238,6 +238,14 @@ public static class WindowsAudioProbeCore {
         public string LastEventAt;
     }
     private static readonly Dictionary<string, A2dpStream> a2dpStreams = new Dictionary<string, A2dpStream>();
+    private static void InvalidateLiveTraceState() {
+        voiceLinks.Clear();
+        foreach (A2dpStream stream in a2dpStreams.Values) {
+            stream.Streaming = false;
+            stream.StartedAt = null;
+        }
+        traceHealthy = false;
+    }
     private static bool TraceNumber(IntPtr record, string name, out ulong value) {
         value = 0;
         byte[] data = TraceProperty(record, name);
@@ -378,6 +386,9 @@ public static class WindowsAudioProbeCore {
         traceHealthy = true;
         return A2dpStreamsJson();
     }
+    public static void ObserveA2dpTraceLoss() {
+        lock (linkLock) {InvalidateLiveTraceState();}
+    }
     private static void ObserveControllerEvent(byte[] packet, string timestamp) {
         if (packet.Length < 2 || packet.Length != packet[1] + 2) return;
         lock (linkLock) {
@@ -410,7 +421,7 @@ public static class WindowsAudioProbeCore {
         try {traceHandle = OpenLinkTrace(name, true);} catch {traceHealthy = false; throw;}
         var thread = new System.Threading.Thread(delegate() {
             try {ProcessTrace(new ulong[] {traceHandle}, 1, IntPtr.Zero, IntPtr.Zero);}
-            finally {lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}}
+            finally {lock (linkLock) {InvalidateLiveTraceState();}}
         });
         thread.IsBackground = true; thread.Start();
     }
@@ -427,7 +438,7 @@ public static class WindowsAudioProbeCore {
     }
     public static void StopLinkTrace() {
         if (traceHandle != UInt64.MaxValue) {CloseTrace(traceHandle); traceHandle = UInt64.MaxValue;}
-        lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = false;}
+        lock (linkLock) {InvalidateLiveTraceState();}
     }
     public static string InspectTraceFile(string path) {
         lock (linkLock) {voiceLinks.Clear(); a2dpStreams.Clear(); traceHealthy = true;}

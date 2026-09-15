@@ -109,6 +109,17 @@ test("原生高音质流合并输出格式事件和流结束编码", {skip: proc
   assert.deepEqual(lines[1][0], {address: "50C0F0F36A66", streaming: true, startedAt: "2026-09-15T07:24:27Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-15T07:24:13Z"});
 });
 
+test("事件失效只清除实时流而保留完整协商参数", {skip: process.platform !== "win32", timeout: 15_000}, () => {
+  const path = fileURLToPath(new URL("../core/windows-audio-probe/probe-audio-endpoints.cs", import.meta.url));
+  const script = `Add-Type -Path $env:PROBE_NATIVE_SOURCE
+[WindowsAudioProbeCore]::ObserveA2dpNegotiation('50C0F0F36A66', [uint32]0, [uint32]2, [uint32]0, [uint32]48000, [uint32]2, '2026-09-15T07:24:13Z')
+[WindowsAudioProbeCore]::ObserveA2dpStream('50C0F0F36A66', $true, '2026-09-15T07:24:27Z')
+[WindowsAudioProbeCore]::ObserveA2dpTraceLoss()
+[WindowsAudioProbeCore]::InspectA2dpState()`;
+  const stream = JSON.parse(execFileSync(powershellExecutable(), ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path}, timeout: 12_000}).trim())[0];
+  assert.deepEqual(stream, {address: "50C0F0F36A66", streaming: false, startedAt: null, codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-15T07:24:13Z"});
+});
+
 test("高音质协商参数缓存跨服务重启恢复但不冒充正在传输", {skip: process.platform !== "win32", timeout: 15_000}, t => {
   const directory = mkdtempSync(join(tmpdir(), "bluetooth-audio-parameters-"));
   t.after(() => rmSync(directory, {recursive: true, force: true}));
