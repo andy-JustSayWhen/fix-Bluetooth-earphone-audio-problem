@@ -163,10 +163,10 @@ export function audioEndpointMetrics(device, direction) {
     const facts = device.windowsEvidence;
     const users = (input ? device.microphoneOccupancy : device.speakerOccupancy)?.users ?? [];
     const active = input ? facts.activeCapture : facts.activeOutput;
-    const activity = active || users.length ? (input ? "正在被占用" : "正在被使用")
-      : facts.sessionsKnown ? (input ? "未被占用" : "未被使用") : "尚未取得";
+    const activity = active || users.length ? "正在被占用"
+      : facts.sessionsKnown ? "未被占用" : "尚未取得";
     return [
-      [input ? "麦克风活动" : "播放活动", activity],
+      ["被占用情况", activity],
       [input ? "使用程序" : "播放程序", [...new Set(users.map(user => user.name))].join("、") || "未识别到"],
     ];
   }

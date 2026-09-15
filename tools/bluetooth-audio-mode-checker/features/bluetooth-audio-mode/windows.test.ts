@@ -28,7 +28,7 @@ test("Windows 页面显示输入输出活动及程序，不把格式能力当运
     {...endpoint, configuredRate: 44100, configuredStatus: "ok", supportedRates: [44100, 48000], supportedStatus: "ok"},
     {...endpoint, id: "input", flow: "eCapture", rate: 16000, channels: 1, configuredRate: 16000, configuredStatus: "ok", supportedRates: [16000], supportedStatus: "ok", sessions: []},
   ]);
-  assert.deepEqual(audioEndpointMetrics(device, "output"), [["播放活动", "正在被使用"], ["播放程序", "未识别到"]]);
+  assert.deepEqual(audioEndpointMetrics(device, "output"), [["被占用情况", "正在被占用"], ["播放程序", "未识别到"]]);
   assert.deepEqual(negotiatedA2dpFields(device.windowsEvidence?.a2dpStream, false), [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
   assert.equal(audioEndpointMetrics(device, "input")[0][1], "未被占用");
   assert.equal(audioEndpointMetrics({...device, windowsEvidence: {...device.windowsEvidence, activeCapture: true}, microphoneOccupancy: {users: [{name: "wetype_update"}]}}, "input")[1][1], "wetype_update");
@@ -62,10 +62,10 @@ test("协商格式字段区分编码、厂商编码与缺失状态", () => {
 
 test("格式查询失败或不支持不影响独立活动展示及模式边界", () => {
   const [device] = assess([{...endpoint, configuredRate: 16000, configuredStatus: "error:80070490", supportedStatus: "partial", supportedRates: []}]);
-  assert.equal(audioEndpointMetrics(device, "output")[0][1], "正在被使用");
+  assert.equal(audioEndpointMetrics(device, "output")[0][1], "正在被占用");
   assert.equal(audioEndpointMetrics(device, "output")[1][1], "未识别到");
   const [unsupported] = assess([{...endpoint, supportedRates: [], supportedStatus: "ok"}]);
-  assert.equal(audioEndpointMetrics(unsupported, "output")[0][1], "正在被使用");
+  assert.equal(audioEndpointMetrics(unsupported, "output")[0][1], "正在被占用");
   assert.equal(unsupported.a2dpSupport, "UNKNOWN");
 });
 test("高混音采样率与活动播放不能证明统一端点使用高音质模式", () => {
