@@ -399,3 +399,33 @@ macOS 还会为这类麦克风暴露同名输出端点。若该端点不是当�
 - 11:44:29.171，通话连接编号 0x0e00 断开；11:44:29.255，目标再次出现 A2dpStreamingStart。此次捕获了高音质播放、通话和返回高音质播放的时序。
 
 编号映射依据：Bluetooth SIG 的 HFP 编码参数表 https://docs.bluetooth.com/download/hfp_v1-10_showing_changes_since_hfp_v1-9/ 。本次仅证明取证路径可行，尚未接入常驻采集和页面；当前代码没有完成对应能力。
+
+### 2026-09-15 Windows 新机 K03S 微信输入法语音输入后进入 HFP
+
+宿主机：`WinAndyWu`（换机后的 Windows 新机，2026-09-15 首次在本机运行工具；与 2026-09-14 Bose 取证的旧 Windows 机不是同一台，两机实例不得合并）。
+
+输入设备：
+`XIBERIA K03S`
+
+输出设备：
+`XIBERIA K03S`
+
+问题现象：09:49:40 重连后设备处于 A2DP，协商参数（AAC、48 kHz、2 声道）已实时落库。用户使用微信输入法语音输入后，09:50:14 目标出现同步语音链路、A2DP 流停止，页面格式显示"低音质通话"，编码、采样率、声道显示"尚未取得"。09:50:59 语音结束，链路清除、流恢复。
+
+原因归并：麦克风占用类（与 C1 同类，Windows 侧实例）。两次服务快照均确认微信输入法进程明确关联 K03S 实体蓝牙麦克风端点，满足"进程明确关联实体蓝牙麦克风端点"的判定特征。
+
+关键日志：
+
+```text
+01:50:22.479Z microphone-occupancy.changed source=low-output-state
+  pid=20048 name=wetype_update devices="XIBERIA K03S"
+  inputActivityKind="已确认实体麦克风占用" occupancyEvidenceKinds="physical-bluetooth-microphone"
+01:50:33.002Z microphone-occupancy.changed source=occupancy-still-present microphoneUsers=[]
+01:50:42.226Z microphone-occupancy.changed（pid=20048 同进程再次占用）
+01:50:55.007Z microphone-occupancy.changed microphoneUsers=[]
+## 注释：时间为服务日志 UTC 记录，本机显示时间 +8 小时。
+```
+
+退出 HFP 的方法：本次语音结束后系统自行释放语音链路并恢复 A2DP，属正常释放，未调用修复功能。
+
+本次附带事实：语音链路期间协商参数行为符合 Windows 适配规格——语音链路活跃时格式行显示"低音质通话"，编码、采样率、声道因同步语音连接事件不含参数字段而显示"尚未取得"；系统事件流中通话编码的可行获取路径（AT+BCS 原始数据、同步连接事件 Air Mode 字节）见本机 2026-09-14 旧机取证结论，尚未接入常驻采集。
