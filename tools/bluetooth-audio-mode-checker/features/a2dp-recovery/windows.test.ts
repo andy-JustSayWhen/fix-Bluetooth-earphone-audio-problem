@@ -84,3 +84,18 @@ test("权限失败保留具体步骤且不报告重建完成", async () => {
   assert.equal(result.rebuiltAudioChain, false);
   assert.ok(result.steps.some(s => s.status === "失败" && s.detail.includes("管理员权限不足")));
 });
+
+test("链路残留先只中转输入，再中转输入输出，最后才重启目标", async () => {
+  const h = harness();
+  const alternateInput = {...input, id: "other-in", name: "内置麦克风", physicalName: "内置麦克风", canonicalId: "other-in", bluetoothAddress: null, transport: "built-in"};
+  const alternateOutput = {...output, id: "other-out", name: "内置扬声器", physicalName: "内置扬声器", canonicalId: "other-out", bluetoothAddress: null, transport: "built-in"};
+  h.state.endpoints.push(alternateInput, alternateOutput);
+  await recoverWindowsAudio("耳机", () => {}, h.runtime.release, h.runtime);
+  assert.deepEqual(h.actions, [
+    "release",
+    "route:other-in:0", "route:in:0",
+    "route:other-in:0", "route:other-out:0", "route:other-out:2",
+    "route:out:2", "route:out:0", "route:in:0",
+    "restart:BTHENUM\\DEV_AABBCCDDEEFF\\1",
+  ]);
+});

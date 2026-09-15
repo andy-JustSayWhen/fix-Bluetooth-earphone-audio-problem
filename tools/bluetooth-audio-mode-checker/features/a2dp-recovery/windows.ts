@@ -76,6 +76,42 @@ export async function recoverWindowsAudio(
   } catch (error) { record("解除麦克风占用", "失败", String(error)); }
   if (await verify()) return finish(true, "解除占用后，目标连续三次确认为高音质输出。");
 
+  progress({stage: "正在切换声音设备", message: "先通过另一非蓝牙输入中转并恢复原默认输入"});
+  const inputSnapshot = await runtime.read();
+  const inputDefaults = roles.map((_, role) => ({
+    role,
+    endpoint: inputSnapshot.defaults[`capture${roles[role]}` as keyof typeof inputSnapshot.defaults],
+  })).filter((item): item is {role: number; endpoint: WindowsEndpointFacts} => Boolean(item.endpoint));
+  const originalInputIds = new Set(inputDefaults.map(item => item.endpoint.id));
+  const inputCandidate = inputSnapshot.endpoints
+    .filter(e => e.flow === "eCapture" && !e.transport.startsWith("bluetooth") && !["unknown", "virtual"].includes(e.transport) && !originalInputIds.has(e.id))
+    .sort((a, b) => Number(b.transport === "built-in") - Number(a.transport === "built-in"))[0];
+  if (!inputCandidate || inputDefaults.length === 0) {
+    record("默认输入中转", "跳过", "没有可用的另一非蓝牙输入或没有可恢复的默认输入。");
+  } else {
+    let inputSwitchFailed = false;
+    try {
+      for (const item of inputDefaults) await runtime.set(inputCandidate.id, item.role);
+      await runtime.read();
+      record("默认输入中转", "成功", `完成 ${inputDefaults.length} 个默认输入角色的中转请求。`);
+    } catch (error) {
+      inputSwitchFailed = true;
+      record("默认输入中转", "失败", String(error));
+    } finally {
+      for (const item of [...inputDefaults].reverse()) {
+        try { await runtime.set(item.endpoint.id, item.role); }
+        catch (error) { inputSwitchFailed = true; record("恢复默认输入", "失败", String(error)); }
+      }
+    }
+    const inputRestored = await runtime.read();
+    const inputMismatch = inputDefaults.some(item =>
+      inputRestored.defaults[`capture${roles[item.role]}` as keyof typeof inputRestored.defaults]?.id !== item.endpoint.id
+    );
+    record("默认输入读回", inputMismatch ? "失败" : "成功", inputMismatch ? "部分默认输入角色未恢复。" : "原默认输入角色已恢复。");
+    if (inputMismatch) return finish(false, "部分默认输入角色未能恢复，请在系统声音设置中确认后再继续。");
+    if (!inputSwitchFailed && await verify()) return finish(true, "默认输入中转后，目标连续三次确认为高音质输出。");
+  }
+
   progress({stage: "正在切换声音设备", message: "通过非蓝牙设备中转并恢复原默认角色"});
   const snapshot = await runtime.read();
   const changed: Array<{id: string; role: number}> = [];
