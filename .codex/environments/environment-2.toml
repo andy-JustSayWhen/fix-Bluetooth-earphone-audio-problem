@@ -10,17 +10,7 @@ name = "关闭服务"
 icon = "tool"
 platform = "win32"
 command = '''
-$ErrorActionPreference = 'Stop'
-if ($env:OS -ne 'Windows_NT') { throw 'This action requires Windows.' }
-$serviceIds = @(Get-NetTCPConnection -LocalPort 4173 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
-foreach ($serviceId in $serviceIds) {
-    $serviceProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $serviceId"
-    if ($serviceProcess.Name -ne 'node.exe' -or $serviceProcess.CommandLine -notmatch 'app[\\/]index\.ts') {
-        throw "Port 4173 is owned by another application (PID $serviceId)."
-    }
-    Stop-Process -Id $serviceId
-    Wait-Process -Id $serviceId -Timeout 10 -ErrorAction SilentlyContinue
-}
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "tools\bluetooth-audio-mode-checker\app\windows-service-action.ps1" -Operation Stop
 '''
 
 [[actions]]
@@ -28,17 +18,5 @@ name = "重启服务"
 icon = "tool"
 platform = "win32"
 command = '''
-$ErrorActionPreference = 'Stop'
-if ($env:OS -ne 'Windows_NT') { throw 'This action requires Windows.' }
-$serviceIds = @(Get-NetTCPConnection -LocalPort 4173 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
-foreach ($serviceId in $serviceIds) {
-    $serviceProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $serviceId"
-    if ($serviceProcess.Name -ne 'node.exe' -or $serviceProcess.CommandLine -notmatch 'app[\\/]index\.ts') {
-        throw "Port 4173 is owned by another application (PID $serviceId)."
-    }
-    Stop-Process -Id $serviceId
-    Wait-Process -Id $serviceId -Timeout 10 -ErrorAction SilentlyContinue
-}
-Set-Location (Join-Path (Get-Location) 'tools/bluetooth-audio-mode-checker')
-& node.exe app/index.ts --port 4173 --no-open
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "tools\bluetooth-audio-mode-checker\app\windows-service-action.ps1" -Operation Restart
 '''
