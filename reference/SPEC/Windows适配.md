@@ -109,7 +109,7 @@ Windows 端点框展示蓝牙协商格式与实时活动，而非格式查询数
 - 实际输出运行采样率及完整硬件可用范围尚未取得；系统设置格式、混音格式和已验证格式集合只按各自来源展示。
 - 链路历史补读已通过循环历史文件实现：启动回放只信任最近 30 分钟内的事件作为当前状态，服务停机期间发生的状态变化（如停机期间重连）无法补读，由下一次实时事件修正。这是采集能力的边界，不是取消历史补读要求。
 - 断开语音链路只清除语音证据；恢复高音质以新的流开始事件为准。高音质流实时采集的实机页面验收、真实跨设备切换及目标节点重建的实机验收仍待完成。
-- 语音链路 Air Mode 通话参数展示已接入常驻采集与页面，实机页面验收待完成；AT+BCS（免提协议通话编码协商命令）原始数据的取证级解析尚未接入。
+- 语音链路 Air Mode 通话参数展示已接入常驻采集与页面，并于 2026-09-15 本机完成实机页面验收（K03S 语音链路实时捕获 Air Mode=3，页面按标准映射显示 mSBC、16 kHz、单声道）；AT+BCS（免提协议通话编码协商命令）原始数据的取证级解析尚未接入。
 
 ## 2026-09-14 本机验收
 
@@ -157,3 +157,10 @@ SDP（蓝牙设备用来声明自己提供哪些服务及功能的协议）可�
 本机原始证据：`artifacts/connected-sdp-audit.json`（按服务分别查询）、`artifacts/connected-sdp-all-services.json`（完整服务响应）、`artifacts/connected-sdp-decoded.json`（全部属性解码）、`artifacts/connected-registry-audit.json`（注册表遍历范围）、`artifacts/connected-sdp-cache-records.json`（服务记录缓存）。这些本机诊断产物不随代码提交；正式采集尚未接入服务和页面。依赖本机证据文件的测试（如历史回放补读）只在对应文件存在时运行，文件缺失的电脑上自动跳过，不报告为失败。
 
 查询接口依据：https://learn.microsoft.com/en-us/windows/win32/bluetooth/bluetooth-and-wsalookupservicebegin-for-service-discovery 。宽带声明字段交叉核对：https://github.com/google/bumble/blob/main/bumble/hfp.py 中 `HfSdpFeature.WIDE_BAND_SPEECH` 及服务记录构造；编码采样率依据：https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio 。
+
+## 2026-09-15 本机验收（换机后的第二台 Windows 机）
+
+- PowerShell 位置解析修复后本机首次完整运行：页面实时列出 K03S，模式判定与设备读取正常。
+- 09:49:40 重连后 A2DP 协商参数实时落库（AAC、48 kHz、2 声道），页面三格正确显示。
+- Air Mode 通话参数实机页面验收通过：10:31:41 语音链路事件被常驻探测实时捕获（Air Mode=3），页面格式行显示“低音质通话”，编码、采样率、声道数按 HFP 标准映射显示 mSBC（宽带语音）、16 kHz、单声道；实时接口证据文本为“语音链路传输中（mSBC（宽带语音） · 16 kHz · 单声道）”。编码类别来自事件实测，采样率与声道数为标准映射值，不是端点实测。
+- 173 项自动验证中 169 项通过、0 失败、4 项跳过（3 项苹果实机、1 项本机旧机证据文件缺失自动跳过）；12 次刷新为 1.7 至 2.3 毫秒（首次 30 毫秒）。
