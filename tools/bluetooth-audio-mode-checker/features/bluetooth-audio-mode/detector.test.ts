@@ -13,6 +13,7 @@ import {
   audioEndpointMetrics,
   deviceModePresentation,
   describeBluetoothRouteRisk,
+  inputActivityPresentation,
   observeBluetoothRouteInstability,
 } from "./web/client.js";
 import {
@@ -566,7 +567,9 @@ test("无法形成占用证据的声音活动必须脱离具体设备卡片展�
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
 
   assert.match(source, /其他声音输入活动/);
-  assert.match(source, /不属于任何蓝牙设备的麦克风占用/);
+  assert.match(source, /以下活动不属于当前蓝牙设备/);
+  assert.match(source, /正在占用其他输入设备/);
+  assert.match(source, /存在输入活动，具体麦克风未确认/);
   assert.doesNotMatch(source, /存在未归属读取/);
   assert.match(source, /lastMicrophoneUsers/);
   assert.match(source, /microphoneUsers: lastMicrophoneUsers/);
@@ -575,6 +578,24 @@ test("无法形成占用证据的声音活动必须脱离具体设备卡片展�
   assert.match(source, /\$\{user\.name\}（格式请求）/);
   assert.doesNotMatch(source, /formatRequestOccupancyOverview/);
   assert.doesNotMatch(source, /releaseOccupancy\(null/);
+});
+
+test("其他输入活动明确显示已关联的非蓝牙设备", () => {
+  assert.equal(inputActivityPresentation({
+    pid: 40276,
+    name: "RiotClientServices",
+    bundleId: "",
+    devices: ["麦克风 (Redmi 电脑音箱)"],
+    inputActivityKind: "未确认麦克风占用的输入活动",
+  }), "正在占用其他输入设备：麦克风 (Redmi 电脑音箱) · 进程 40276");
+
+  assert.equal(inputActivityPresentation({
+    pid: 100,
+    name: "未知程序",
+    bundleId: "",
+    devices: [],
+    inputActivityKind: "未确认麦克风占用的输入活动",
+  }), "存在输入活动，具体麦克风未确认 · 进程 100");
 });
 
 test("不同经典蓝牙输入输出在语音前显示风险提示", () => {

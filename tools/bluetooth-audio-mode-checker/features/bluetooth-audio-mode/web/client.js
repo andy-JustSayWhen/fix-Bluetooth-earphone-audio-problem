@@ -172,8 +172,9 @@ export function audioEndpointMetrics(device, direction) {
     const facts = device.windowsEvidence;
     const users = (input ? device.microphoneOccupancy : device.speakerOccupancy)?.users ?? [];
     const active = input ? facts.activeCapture : facts.activeOutput;
-    const activity = active || users.length ? "正在被占用"
-      : facts.sessionsKnown ? "未被占用" : "尚未取得";
+    const activity = active || users.length
+      ? input ? "此设备正在被占用" : "正在被占用"
+      : facts.sessionsKnown ? input ? "此设备未被占用" : "未被占用" : "尚未取得";
     return [
       ["被占用情况", activity],
       [input ? "使用程序" : "播放程序", [...new Set(users.map(user => user.name))].join("、") || "未识别到"],
@@ -185,6 +186,17 @@ export function audioEndpointMetrics(device, direction) {
     ["实际采样率", formatRate(actual)],
     ["声道", `${channels} 声道`],
   ];
+}
+
+export function inputActivityPresentation(user) {
+  const processIdentity = user.bundleId || `进程 ${user.pid}`;
+  if (user.inputActivityKind === "系统声音采集") {
+    return `系统声音采集 · ${processIdentity}`;
+  }
+  const deviceNames = [...new Set((user.devices ?? []).filter(Boolean))];
+  return deviceNames.length > 0
+    ? `正在占用其他输入设备：${deviceNames.join("、")} · ${processIdentity}`
+    : `存在输入活动，具体麦克风未确认 · ${processIdentity}`;
 }
 
 export function startBluetoothAudioModePage(
@@ -367,7 +379,7 @@ function microphoneOccupancySection(device) {
     createElement(
       "span",
       hasAssignedUsers ? "occupancy-status is-busy" : "occupancy-status is-free",
-      hasAssignedUsers ? "正在占用" : device.windowsEvidence && (!device.windowsEvidence.sessionsKnown || device.windowsEvidence.activeCapture) ? "占用归属无法确认" : "未被本机占用",
+      hasAssignedUsers ? "正在占用" : device.windowsEvidence && (!device.windowsEvidence.sessionsKnown || device.windowsEvidence.activeCapture) ? "占用归属无法确认" : "此设备未被本机占用",
     ),
   );
   section.append(heading);
@@ -451,7 +463,7 @@ function inputActivityOverview() {
     createElement(
       "p",
       "",
-      "以下活动没有形成“进程明确关联实体蓝牙麦克风端点”的完整占用证据，不属于任何蓝牙设备的麦克风占用，也不提供解除按钮。",
+      "以下活动不属于当前蓝牙设备。已关联其他输入设备时会显示设备名称；无法归属时会明确标为未确认。这里不提供蓝牙麦克风解除按钮。",
     ),
   );
   const list = createElement("div", "input-activity-overview__list");
@@ -459,9 +471,7 @@ function inputActivityOverview() {
     const row = createElement("div", "input-activity-overview__item");
     row.append(
       createElement("strong", "", user.name),
-      createElement("span", "", user.inputActivityKind === "系统声音采集"
-        ? `系统声音采集 · ${user.bundleId || `进程 ${user.pid}`}`
-        : `未确认麦克风占用 · ${user.bundleId || `进程 ${user.pid}`}`),
+      createElement("span", "", inputActivityPresentation(user)),
     );
     list.append(row);
   }
