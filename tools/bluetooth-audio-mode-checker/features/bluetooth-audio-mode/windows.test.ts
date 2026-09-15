@@ -31,7 +31,7 @@ test("Windows 页面显示输入输出活动及程序，不把格式能力当运
   ]);
   assert.deepEqual(audioEndpointMetrics(device, "output"), [["被占用情况", "正在被占用"], ["播放程序", "未识别到"]]);
   assert.deepEqual(negotiatedA2dpFields(device.windowsEvidence?.a2dpStream, false), [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
-  assert.equal(audioEndpointMetrics(device, "input")[0][1], "此设备未被占用");
+  assert.equal(audioEndpointMetrics(device, "input")[0][1], "未被占用");
   assert.equal(audioEndpointMetrics({...device, windowsEvidence: {...device.windowsEvidence, activeCapture: true}, microphoneOccupancy: {users: [{name: "wetype_update"}]}}, "input")[1][1], "wetype_update");
   assert.equal(device.mode, "UNKNOWN");
   assert.equal(device.a2dpSupport, "UNKNOWN");

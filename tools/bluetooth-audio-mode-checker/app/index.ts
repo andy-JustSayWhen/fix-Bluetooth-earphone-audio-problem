@@ -397,7 +397,13 @@ function main(): void {
   const historyFile = process.platform === "win32"
     ? join(dirname(fileURLToPath(import.meta.url)), "..", "logs", "bluetooth-audio-history-" + options.port + ".etl")
     : undefined;
-  const stopWindowsMonitor = process.platform === "win32" ? startWindowsStateMonitor(() => { scheduleStateRefresh(); }, historyFile) : () => {};
+  const stopWindowsMonitor = process.platform === "win32" ? startWindowsStateMonitor((result) => {
+    scheduleStateRefresh();
+    if ((result.microphonePrivacyUsers?.length ?? 0) > 0) {
+      inputActivityScanPending = true;
+      scheduleOccupancyScan(0, "windows-privacy-usage");
+    }
+  }, historyFile) : () => {};
   const windowsRetryTimer = process.platform === "win32" ? setInterval(() => scheduleStateRefresh(), 3_000) : null;
   const stopRealtimeMonitor = startAudioModeRealtimeMonitor((snapshot) => {
     const inputSnapshot = snapshot.defaultInput;

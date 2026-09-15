@@ -2,8 +2,11 @@
 // Compiled at runtime via PowerShell Add-Type; must stay C# 5 compatible and ASCII only.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32;
 
 public enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
 public enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
@@ -689,7 +692,7 @@ public static class WindowsAudioProbeCore {
                     IAudioSessionControl2 session;
                     if (sessions.GetSession(i, out session) != 0) continue;
                     try {
-                        int state; if (session.GetState(out state) != 0 || state != 1) continue;
+                        int state; if (session.GetState(out state) != 0 || state == 2) continue;
                         uint pid; int pidResult = session.GetProcessId(out pid);
                         string id; session.GetSessionInstanceIdentifier(out id);
                         string name = "System";
@@ -699,7 +702,8 @@ public static class WindowsAudioProbeCore {
                         }
                         // S_FALSE represents a cross-process session: do not attribute it to one PID.
                         if (pidResult != 0) pid = 0;
-                        records.Add("{\"pid\":" + pid + ",\"name\":" + Escape(name) + ",\"id\":" + Escape(id) + "}");
+                        records.Add("{\"pid\":" + pid + ",\"name\":" + Escape(name) + ",\"id\":" + Escape(id)
+                            + ",\"state\":" + Escape(state == 1 ? "active" : "inactive") + "}");
                     } finally { Marshal.ReleaseComObject(session); }
                 }
                 return "[" + String.Join(",", records.ToArray()) + "]";
@@ -822,6 +826,70 @@ public static class WindowsAudioProbeCore {
         return sb.ToString();
     }
 
+    private static int ResolveLiveProcessId(string path) {
+        string processName;
+        try { processName = Path.GetFileNameWithoutExtension(path); }
+        catch { return 0; }
+        Process[] matches;
+        try { matches = Process.GetProcessesByName(processName); }
+        catch { return 0; }
+        int onlyCandidate = matches.Length == 1 ? matches[0].Id : 0;
+        int exactCandidate = 0;
+        foreach (Process process in matches) {
+            try {
+                string processPath = process.MainModule.FileName;
+                if (string.Equals(processPath, path, StringComparison.OrdinalIgnoreCase)) exactCandidate = process.Id;
+            } catch { }
+            finally { process.Dispose(); }
+        }
+        return exactCandidate != 0 ? exactCandidate : onlyCandidate;
+    }
+
+    private static string PrivacyDisplayName(string path, int pid) {
+        try {
+            FileVersionInfo info = FileVersionInfo.GetVersionInfo(path);
+            if (!string.IsNullOrWhiteSpace(info.FileDescription)) return info.FileDescription.Trim();
+            if (!string.IsNullOrWhiteSpace(info.ProductName)) return info.ProductName.Trim();
+        } catch { }
+        try { using (Process process = Process.GetProcessById(pid)) { return process.ProcessName; } }
+        catch { return Path.GetFileNameWithoutExtension(path); }
+    }
+
+    private static string MicrophonePrivacyUsersJson() {
+        const string keyPath = @"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged";
+        List<string> records = new List<string>();
+        RegistryKey root = null;
+        try {
+            root = Registry.CurrentUser.OpenSubKey(keyPath);
+            if (root == null) return "[]";
+            foreach (string encodedPath in root.GetSubKeyNames()) {
+                using (RegistryKey item = root.OpenSubKey(encodedPath)) {
+                    if (item == null) continue;
+                    long started = 0;
+                    long stopped = 0;
+                    try {
+                        object startValue = item.GetValue("LastUsedTimeStart");
+                        object stopValue = item.GetValue("LastUsedTimeStop");
+                        if (startValue != null) started = Convert.ToInt64(startValue);
+                        if (stopValue != null) stopped = Convert.ToInt64(stopValue);
+                    } catch { continue; }
+                    if (started <= 0 || stopped != 0) continue;
+                    string path = encodedPath.Replace('#', '\\');
+                    int pid = ResolveLiveProcessId(path);
+                    if (pid <= 0) continue;
+                    string name = PrivacyDisplayName(path, pid);
+                    string startedAt;
+                    try { startedAt = DateTime.FromFileTimeUtc(started).ToString("o"); }
+                    catch { startedAt = null; }
+                    records.Add("{\"pid\":" + pid + ",\"name\":" + Escape(name) + ",\"path\":" + Escape(path)
+                        + ",\"startedAt\":" + Escape(startedAt) + "}");
+                }
+            }
+        } catch { }
+        finally { if (root != null) root.Dispose(); }
+        return "[" + string.Join(",", records.ToArray()) + "]";
+    }
+
     // One-shot probe: {"endpoints":[...],"defaults":{...}}
     public static string ProbeEndpoints() {
         IMMDeviceEnumerator enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
@@ -832,7 +900,8 @@ public static class WindowsAudioProbeCore {
             if (i > 0) sb.Append(",");
             sb.Append(EndpointJson(endpoints[i]));
         }
-        sb.Append("],\"defaults\":" + DefaultsJson(enumerator, endpoints) + ",\"voiceLinks\":" + VoiceLinksJson() + ",\"a2dpStreams\":" + A2dpStreamsJson() + "}");
+        sb.Append("],\"defaults\":" + DefaultsJson(enumerator, endpoints) + ",\"voiceLinks\":" + VoiceLinksJson()
+            + ",\"a2dpStreams\":" + A2dpStreamsJson() + ",\"microphonePrivacyUsers\":" + MicrophonePrivacyUsersJson() + "}");
         return sb.ToString();
     }
 

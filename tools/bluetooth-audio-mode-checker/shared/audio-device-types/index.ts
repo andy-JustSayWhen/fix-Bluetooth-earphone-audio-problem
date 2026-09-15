@@ -138,6 +138,9 @@ export type MicrophoneUser = {
   confirmedDeviceNames?: string[];
   occupancyEvidenceKinds?: Array<"physical-bluetooth-microphone" | "unclosed-format-request">;
   unclosedFormatRequestAt?: string;
+  privacyUsageActive?: boolean;
+  privacyUsageStartedAt?: string | null;
+  deviceAssociationKind?: "confirmed" | "ambiguous" | "unavailable";
 };
 
 export type MicrophoneOccupancy = {

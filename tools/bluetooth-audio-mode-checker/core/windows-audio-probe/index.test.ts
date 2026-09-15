@@ -6,6 +6,7 @@ import {
   formatBluetoothAddress,
   groupEndpointsByPhysicalDevice,
   stripBluetoothRoleSuffix,
+  windowsMicrophoneUsers,
 } from "./index.ts";
 import type { WindowsProbeResult } from "./index.ts";
 
@@ -225,4 +226,48 @@ test("蓝牙物理设备名称缺失时回退为端点名剥离角色后缀", ()
   };
   const devices = aggregatePhysicalDevices(result);
   assert.equal(devices[0].name, "Soundcore P40i");
+});
+
+test("系统隐私记录在活动会话消失后仍保留程序并列出多个关联端点", () => {
+  const result: WindowsProbeResult = {
+    endpoints: [
+      endpoint({flow: "eCapture", id: "redmi", name: "麦克风 (Redmi 电脑音箱)", sessions: [{pid: 40276, name: "RiotClientServices", id: "redmi-session", state: "inactive"}]}),
+      endpoint({flow: "eCapture", id: "xiberia", name: "耳机 (2- XIBERIA K03S)", physicalName: "XIBERIA K03S", transport: "bluetooth", bluetoothAddress: "50C0F0F36A66", sessions: [{pid: 40276, name: "RiotClientServices", id: "xiberia-session", state: "inactive"}]}),
+    ],
+    defaults: emptyDefaults,
+    microphonePrivacyUsers: [{pid: 40276, name: "Riot Client", path: "D:\\Riot Client\\RiotClientServices.exe", startedAt: "2026-09-15T06:18:53Z"}],
+  };
+
+  const users = windowsMicrophoneUsers(result);
+  assert.deepEqual(users.map(user => ({
+    pid: user.pid,
+    name: user.name,
+    devices: user.devices,
+    privacyUsageActive: user.privacyUsageActive,
+    deviceAssociationKind: user.deviceAssociationKind,
+  })), [{
+    pid: 40276,
+    name: "Riot Client",
+    devices: ["麦克风 (Redmi 电脑音箱)", "XIBERIA K03S"],
+    privacyUsageActive: true,
+    deviceAssociationKind: "ambiguous",
+  }]);
+});
+
+test("活动端点会话优先于系统隐私记录且暂不活跃会话不算端点占用", () => {
+  const active = endpoint({flow: "eCapture", id: "active", name: "麦克风 (Redmi 电脑音箱)", sessions: [{pid: 42, name: "voice", id: "active-session", state: "active"}]});
+  const inactive = endpoint({flow: "eCapture", id: "inactive", name: "麦克风 (旧设备)", sessions: [{pid: 42, name: "voice", id: "inactive-session", state: "inactive"}]});
+  const result: WindowsProbeResult = {
+    endpoints: [active, inactive],
+    defaults: emptyDefaults,
+    microphonePrivacyUsers: [{pid: 42, name: "语音程序", path: "D:\\voice.exe", startedAt: null}],
+  };
+
+  assert.equal(aggregatePhysicalDevices(result).find(device => device.name === "麦克风 (旧设备)")?.isRunning, false);
+  const users = windowsMicrophoneUsers(result);
+  assert.equal(users.length, 1);
+  assert.equal(users[0].name, "语音程序");
+  assert.deepEqual(users[0].devices, ["麦克风 (Redmi 电脑音箱)"]);
+  assert.equal(users[0].privacyUsageActive, true);
+  assert.equal(users[0].deviceAssociationKind, "confirmed");
 });

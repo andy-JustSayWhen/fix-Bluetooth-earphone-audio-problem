@@ -172,9 +172,8 @@ export function audioEndpointMetrics(device, direction) {
     const facts = device.windowsEvidence;
     const users = (input ? device.microphoneOccupancy : device.speakerOccupancy)?.users ?? [];
     const active = input ? facts.activeCapture : facts.activeOutput;
-    const activity = active || users.length
-      ? input ? "此设备正在被占用" : "正在被占用"
-      : facts.sessionsKnown ? input ? "此设备未被占用" : "未被占用" : "尚未取得";
+    const activity = active || users.length ? "正在被占用"
+      : facts.sessionsKnown ? "未被占用" : "尚未取得";
     return [
       ["被占用情况", activity],
       [input ? "使用程序" : "播放程序", [...new Set(users.map(user => user.name))].join("、") || "未识别到"],
@@ -194,6 +193,15 @@ export function inputActivityPresentation(user) {
     return `系统声音采集 · ${processIdentity}`;
   }
   const deviceNames = [...new Set((user.devices ?? []).filter(Boolean))];
+  if (user.privacyUsageActive) {
+    if (user.deviceAssociationKind === "confirmed" && deviceNames.length === 1) {
+      return `Windows 已确认正在使用麦克风：${deviceNames[0]} · ${processIdentity}`;
+    }
+    if (deviceNames.length > 0) {
+      return `Windows 已确认正在使用麦克风 · 关联端点：${deviceNames.join("、")} · 当前设备无法唯一确认 · ${processIdentity}`;
+    }
+    return `Windows 已确认正在使用麦克风 · 当前设备无法确认 · ${processIdentity}`;
+  }
   return deviceNames.length > 0
     ? `正在占用其他输入设备：${deviceNames.join("、")} · ${processIdentity}`
     : `存在输入活动，具体麦克风未确认 · ${processIdentity}`;
@@ -379,7 +387,7 @@ function microphoneOccupancySection(device) {
     createElement(
       "span",
       hasAssignedUsers ? "occupancy-status is-busy" : "occupancy-status is-free",
-      hasAssignedUsers ? "正在占用" : device.windowsEvidence && (!device.windowsEvidence.sessionsKnown || device.windowsEvidence.activeCapture) ? "占用归属无法确认" : "此设备未被本机占用",
+      hasAssignedUsers ? "正在占用" : device.windowsEvidence && (!device.windowsEvidence.sessionsKnown || device.windowsEvidence.activeCapture) ? "占用归属无法确认" : "未被本机占用",
     ),
   );
   section.append(heading);

@@ -71,6 +71,26 @@ test("读取者无法归属到蓝牙设备时仍必须继续全局占用扫描",
   assert.equal(shouldContinueOccupancyScanning(devices, unassignedUsers), true);
 });
 
+test("系统确认占用但关联多个端点时不得猜成某个蓝牙设备占用", () => {
+  const devices = [
+    device({name: "蓝牙耳机", inputTransport: "bluetooth"}),
+    device({name: "麦克风 (Redmi 电脑音箱)", inputTransport: "usb"}),
+  ];
+  const users: MicrophoneUser[] = [{
+    pid: 40276,
+    name: "Riot Client",
+    bundleId: "",
+    devices: ["蓝牙耳机", "麦克风 (Redmi 电脑音箱)"],
+    privacyUsageActive: true,
+    deviceAssociationKind: "ambiguous",
+  }];
+
+  const classified = classifyInputActivities(devices, users);
+  assert.deepEqual(classified[0].confirmedDeviceNames, []);
+  assert.deepEqual(attachMicrophoneOccupancyFromUsers(devices, users).map(item => item.microphoneOccupancy?.isInUse), [false, false]);
+  assert.equal(shouldContinueOccupancyScanning(devices, users), true);
+});
+
 test("进程关联实体蓝牙麦克风端点即可确认占用且不要求 tsco", () => {
   const user = [{ pid: 42, name: "语音程序", bundleId: "test.voice", devices: ["REDMI"] }];
   const [occupiedWithTsco] = attachMicrophoneOccupancyFromUsers([

@@ -598,6 +598,28 @@ test("其他输入活动明确显示已关联的非蓝牙设备", () => {
   }), "存在输入活动，具体麦克风未确认 · 进程 100");
 });
 
+test("Windows 已确认程序使用麦克风时显示系统事实和设备归属边界", () => {
+  assert.equal(inputActivityPresentation({
+    pid: 40276,
+    name: "Riot Client",
+    bundleId: "",
+    devices: ["麦克风 (Redmi 电脑音箱)", "XIBERIA K03S"],
+    inputActivityKind: "未确认麦克风占用的输入活动",
+    privacyUsageActive: true,
+    deviceAssociationKind: "ambiguous",
+  }), "Windows 已确认正在使用麦克风 · 关联端点：麦克风 (Redmi 电脑音箱)、XIBERIA K03S · 当前设备无法唯一确认 · 进程 40276");
+
+  assert.equal(inputActivityPresentation({
+    pid: 42,
+    name: "唯一设备程序",
+    bundleId: "",
+    devices: ["麦克风 (Redmi 电脑音箱)"],
+    inputActivityKind: "未确认麦克风占用的输入活动",
+    privacyUsageActive: true,
+    deviceAssociationKind: "confirmed",
+  }), "Windows 已确认正在使用麦克风：麦克风 (Redmi 电脑音箱) · 进程 42");
+});
+
 test("不同经典蓝牙输入输出在语音前显示风险提示", () => {
   const routes = {
     input: [{ name: "蓝牙麦克风 A", transport: "bluetooth", isDefault: true }],

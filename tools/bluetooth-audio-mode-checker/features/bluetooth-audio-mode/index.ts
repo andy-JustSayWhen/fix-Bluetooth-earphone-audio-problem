@@ -460,11 +460,11 @@ export async function setDefaultAudioDevice(direction: "input" | "output", name:
   }
 }
 
-export function startWindowsStateMonitor(onChange: () => void, historyFile?: string): () => void {
+export function startWindowsStateMonitor(onChange: (result: WindowsProbeResult) => void, historyFile?: string): () => void {
   let fingerprint = "";
   const stop = startWindowsProbe(result => {
     const next = JSON.stringify(result);
-    if (next !== fingerprint) { fingerprint = next; onChange(); }
+    if (next !== fingerprint) { fingerprint = next; onChange(result); }
   }, {historyFile});
   return () => { stop(); stopWindowsProbe(); };
 }

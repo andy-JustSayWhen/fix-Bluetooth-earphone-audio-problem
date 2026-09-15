@@ -52,7 +52,8 @@ export function classifyInputActivities(
 ): MicrophoneUser[] {
   const byName = new Map(devices.map((device) => [device.name, device] as const));
   return users.map((user) => {
-    const physicalDeviceNames = [...new Set(user.devices.filter((name) => {
+    const attributableDeviceNames = user.deviceAssociationKind === "ambiguous" ? [] : user.devices;
+    const physicalDeviceNames = [...new Set(attributableDeviceNames.filter((name) => {
       const device = byName.get(name);
       return device !== undefined && isPhysicalInputAssessment(device);
     }))];

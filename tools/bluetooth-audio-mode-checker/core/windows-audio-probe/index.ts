@@ -30,7 +30,7 @@ export type WindowsEndpointFacts = {
   manufacturer: string | null;
   pnpFound: boolean;
   sessionsKnown?: boolean;
-  sessions?: Array<{ pid: number; name: string; id: string }>;
+  sessions?: Array<{ pid: number; name: string; id: string; state?: "active" | "inactive" }>;
 };
 
 export type WindowsA2dpStreamFacts = {
@@ -47,6 +47,7 @@ export type WindowsA2dpStreamFacts = {
 export type WindowsProbeResult = {
   voiceLinks?: Array<{address: string; timestamp: string; airMode?: number | null}>;
   a2dpStreams?: WindowsA2dpStreamFacts[];
+  microphonePrivacyUsers?: Array<{pid: number; name: string; path: string; startedAt: string | null}>;
   endpoints: WindowsEndpointFacts[];
   defaults: {
     renderConsole: EndpointSummary | null;
@@ -179,6 +180,10 @@ function endpointFormat(endpoint: WindowsEndpointFacts | null): WindowsEndpointF
   };
 }
 
+function activeSessions(endpoint: WindowsEndpointFacts) {
+  return (endpoint.sessions ?? []).filter(session => session.state !== "inactive");
+}
+
 function matchesDeviceAddress(candidate: string | null | undefined, deviceAddress: string | null | undefined): boolean {
   if (!candidate || !deviceAddress) return false;
   return candidate.replace(/[^a-f0-9]/gi, "").toUpperCase() === deviceAddress.replace(/[^a-f0-9]/gi, "").toUpperCase();
@@ -215,11 +220,11 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
           .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))[0],
         a2dpStream: (result.a2dpStreams ?? []).find(stream => matchesDeviceAddress(stream.address, group.bluetoothAddress)) ?? null,
         transport: group.transport,
-        activeCapture: inputEndpoints.some(e => (e.sessions?.length ?? 0) > 0),
-        activeHandsfreeOutput: outputEndpoints.some(e => e.role === "handsfree" && (e.sessions?.length ?? 0) > 0),
-        activeOutput: outputEndpoints.some(e => (e.sessions?.length ?? 0) > 0),
+        activeCapture: inputEndpoints.some(e => activeSessions(e).length > 0),
+        activeHandsfreeOutput: outputEndpoints.some(e => e.role === "handsfree" && activeSessions(e).length > 0),
+        activeOutput: outputEndpoints.some(e => activeSessions(e).length > 0),
         sessionsKnown: group.endpoints.every(e => e.sessionsKnown === true),
-        splitStereoActive: outputEndpoints.some(e => e.role === "handsfree") && outputEndpoints.some(e => e.role === "a2dp" && (e.sessions?.length ?? 0) > 0),
+        splitStereoActive: outputEndpoints.some(e => e.role === "handsfree") && outputEndpoints.some(e => e.role === "a2dp" && activeSessions(e).length > 0),
         mixRate: selectedOutput?.rate || null,
         inputFormat: endpointFormat(selectedInput),
         outputFormat: endpointFormat(selectedOutput),
@@ -240,7 +245,7 @@ export function aggregatePhysicalDevices(result: WindowsProbeResult): RawAudioDe
       maxSupportedOutputRate: null,
       inputChannels: selectedInput?.channels ?? 0,
       outputChannels: selectedOutput?.channels ?? 0,
-      isRunning: group.endpoints.some(endpoint => (endpoint.sessions?.length ?? 0) > 0),
+      isRunning: group.endpoints.some(endpoint => activeSessions(endpoint).length > 0),
       isDefaultInput: hostsDefaultInput,
       isDefaultOutput: hostsDefaultOutput,
       isDefaultSystemOutput: outputEndpoints.some((endpoint) => renderComms !== null && endpoint.id === renderComms.id),
@@ -351,23 +356,55 @@ export function endpointDeviceName(endpoint: WindowsEndpointFacts, result: Windo
   return aggregatePhysicalDevices(result)[groupIndex]?.name ?? endpoint.name;
 }
 
-export async function readWindowsMicrophoneUsers() {
-  const result = await getWindowsProbe();
-  return result.endpoints.filter(e => e.flow === "eCapture").flatMap(endpoint =>
-    (endpoint.sessions ?? []).filter(session => session.pid > 0).map(session => {
+export function windowsMicrophoneUsers(result: WindowsProbeResult) {
+  const privacyByPid = new Map((result.microphonePrivacyUsers ?? [])
+    .filter(user => user.pid > 0)
+    .map(user => [user.pid, user] as const));
+  const activeUsers = result.endpoints.filter(e => e.flow === "eCapture").flatMap(endpoint =>
+    activeSessions(endpoint).filter(session => session.pid > 0).map(session => {
       const name = endpointDeviceName(endpoint, result);
+      const privacyUser = privacyByPid.get(session.pid);
       return {
-        pid: session.pid, name: session.name, bundleId: "", devices: [name],
+        pid: session.pid, name: privacyUser?.name || session.name, bundleId: "", devices: [name],
         inputActivityKind: "已确认实体麦克风占用" as const,
         physicalDeviceNames: [name], confirmedDeviceNames: [name],
         occupancyEvidenceKinds: endpoint.transport.startsWith("bluetooth") ? ["physical-bluetooth-microphone" as const] : [],
+        ...(privacyUser ? {
+          privacyUsageActive: true,
+          privacyUsageStartedAt: privacyUser.startedAt,
+          deviceAssociationKind: "confirmed" as const,
+        } : {}),
       };
     }));
+  const activePids = new Set(activeUsers.map(user => user.pid));
+  const privacyUsers = (result.microphonePrivacyUsers ?? []).filter(user => user.pid > 0 && !activePids.has(user.pid)).map(user => {
+    const devices = [...new Set(result.endpoints.filter(endpoint =>
+      endpoint.flow === "eCapture" && (endpoint.sessions ?? []).some(session => session.pid === user.pid)
+    ).map(endpoint => endpointDeviceName(endpoint, result)))];
+    return {
+      pid: user.pid,
+      name: user.name,
+      bundleId: "",
+      devices,
+      inputActivityKind: "未确认麦克风占用的输入活动" as const,
+      physicalDeviceNames: [],
+      confirmedDeviceNames: [],
+      occupancyEvidenceKinds: [],
+      privacyUsageActive: true,
+      privacyUsageStartedAt: user.startedAt,
+      deviceAssociationKind: devices.length === 1 ? "confirmed" as const : devices.length > 1 ? "ambiguous" as const : "unavailable" as const,
+    };
+  });
+  return [...activeUsers, ...privacyUsers];
+}
+
+export async function readWindowsMicrophoneUsers() {
+  return windowsMicrophoneUsers(await getWindowsProbe());
 }
 
 export function windowsSpeakerUsers(result: WindowsProbeResult) {
   return result.endpoints.filter(e => e.flow === "eRender" && e.bluetoothAddress).flatMap(endpoint =>
-    (endpoint.sessions ?? []).filter(session => session.pid > 0).map(session => ({
+    activeSessions(endpoint).filter(session => session.pid > 0).map(session => ({
       sessionId: session.id, pid: session.pid, name: session.name, deviceUid: endpoint.id,
       bluetoothAddress: formatBluetoothAddress(endpoint.bluetoothAddress!), observedAt: new Date(updatedAt).toISOString(),
     })));
