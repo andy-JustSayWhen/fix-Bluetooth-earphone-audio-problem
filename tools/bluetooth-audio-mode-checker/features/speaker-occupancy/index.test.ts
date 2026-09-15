@@ -62,30 +62,23 @@ test("进程身份不再有效时不保留历史占用", () => {
   assert.equal(flattenSpeakerSessions(sessions).length, 0);
 });
 
-test("页面无论是否识别到输出占用都提供一键断开重连", () => {
+test("扬声器占用区块不渲染任何操作按钮", () => {
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
-  assert.match(source, /if \(inUse\)[\s\S]*?\} else \{[\s\S]*?\}\s+const button = createElement\(/);
-  assert.match(source, /"重建设备连接" : "一键断开重连"/);
-  assert.match(source, /若当前设备处于A2DP，音频能正常播放但设备端没有声音，可以点击“一键断开重连”尝试修复/);
   assert.match(source, /仅设为系统默认输出不算应用级占用/);
   assert.match(source, /正在通过本设备播放声音/);
-  assert.doesNotMatch(source, /正在向此设备输出声音/);
+  assert.doesNotMatch(source, /speaker-reconnect-button/);
+  assert.doesNotMatch(source, /断开重连/);
 });
 
-test("服务端只复核目标设备并允许占用证据为空", () => {
+test("服务端不再提供扬声器断开重连接口", () => {
   const source = readFileSync(new URL("../../app/index.ts", import.meta.url), "utf8");
-  assert.match(source, /filterCurrentSpeakerUsers\(latestSpeakerUsers\)/);
-  assert.match(source, /speakerOccupancy\?\.users \?\? \[\]/);
-  assert.match(source, /reconnectSpeakerDevice\(body\.name\)/);
-  assert.doesNotMatch(source, /当前没有应用正在向该设备输出声音，未执行断开重连/);
+  assert.doesNotMatch(source, /speaker-occupancy\/reconnect/);
+  assert.doesNotMatch(source, /reconnectSpeakerDevice/);
 });
 
-test("断开确认后立即重连且不保留固定等待", () => {
-  const source = readFileSync(new URL("../../core/macos-bluetooth-link/reconnect-device.m", import.meta.url), "utf8");
-  const disconnectConfirmedAt = source.indexOf("if ([target isConnected]) return 4;");
-  const reconnectStartedAt = source.indexOf("dispatch_async", disconnectConfirmedAt);
-  assert.doesNotMatch(source.slice(disconnectConfirmedAt, reconnectStartedAt), /sleepForTimeInterval/);
-  assert.match(source.slice(reconnectStartedAt), /\[target openConnection\]/);
+test("macOS 侧不再保留按设备断开重连的导出", () => {
+  const source = readFileSync(new URL("../../core/macos-bluetooth-link/index.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /reconnectBluetoothDeviceAsync/);
 });
 
 test("Windows 带分隔符的播放地址正确归属，且不串到其他设备", () => {

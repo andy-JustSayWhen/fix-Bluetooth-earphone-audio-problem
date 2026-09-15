@@ -706,13 +706,7 @@ recoveryController = createA2dpRecoveryController({
   schedulePostActionRefresh,
   postJson,
 });
-speakerOccupancyController = createSpeakerOccupancyController({
-  createElement,
-  getLastRenderedDevices: () => lastRenderedDevices,
-  renderDevices,
-  schedulePostActionRefresh,
-  postJson,
-});
+speakerOccupancyController = createSpeakerOccupancyController({ createElement });
 
 refreshButton.addEventListener("click", refreshDevices);
 outputSelect.addEventListener("change", () => changeDefaultDevice(outputSelect));

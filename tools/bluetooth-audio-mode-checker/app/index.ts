@@ -29,8 +29,6 @@ import {
   type RecoveryProgress,
 } from "../features/a2dp-recovery/index.ts";
 import {
-  filterCurrentSpeakerUsers,
-  reconnectSpeakerDevice,
   speakerOccupancyWebAssetsDirectory,
   startSpeakerOccupancyMonitor,
 } from "../features/speaker-occupancy/index.ts";
@@ -220,7 +218,6 @@ function main(): void {
   let latestMicrophoneUsers: AudioModeState["microphoneUsers"] = [];
   let latestSpeakerUsers: SpeakerOutputUser[] = [];
   let speakerOccupancyFingerprint = "";
-  const speakerReconnectBusyDevices = new Set<string>();
   let inputActivityScanPending = false;
   let initialOccupancyScanScheduled = false;
   const statePayload = () => cachedState === null ? null : {
@@ -674,53 +671,6 @@ function main(): void {
         sendJson(response, 400, {
           error: error instanceof Error ? error.message : "解除麦克风占用失败",
         });
-      }
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/speaker-occupancy/reconnect") {
-      let requestedName: string | null = null;
-      try {
-        const body = await readLocalJsonBody(request, options.port) as { name?: unknown };
-        if (typeof body.name !== "string" || body.name.length === 0 || body.name.length > 256) {
-          throw new Error("蓝牙设备名称无效");
-        }
-        requestedName = body.name;
-        if (speakerReconnectBusyDevices.has(body.name)) {
-          throw new Error("该设备正在断开重连，请勿重复提交");
-        }
-        if (cachedState === null) throw new Error("当前没有可用的蓝牙设备状态");
-        const currentUsers = filterCurrentSpeakerUsers(latestSpeakerUsers);
-        const currentDevice = composeSpeakerOccupancyState(cachedState, currentUsers).devices
-          .find((device) => device.name === body.name);
-        if (!currentDevice) throw new Error("目标蓝牙设备当前未连接");
-        const evidenceUsers = currentDevice.speakerOccupancy?.users ?? [];
-        speakerReconnectBusyDevices.add(body.name);
-        detailedLog("info", "speaker-occupancy.reconnect-requested", {
-          deviceName: body.name,
-          users: evidenceUsers,
-        });
-        const result = await reconnectSpeakerDevice(body.name);
-        detailedLog("info", "speaker-occupancy.reconnect-completed", {
-          deviceName: body.name,
-          users: evidenceUsers,
-          ...result,
-          disconnected: process.platform === "darwin",
-          reconnected: process.platform === "darwin",
-          targetEndpointAvailable: true,
-        });
-        scheduleStateRefreshSequence([0, 350, 900, 1_800]);
-        sendJson(response, 200, { ok: true, name: body.name, ...result });
-      } catch (error) {
-        detailedLog("error", "speaker-occupancy.reconnect-failed", {
-          deviceName: requestedName,
-          error,
-        });
-        sendJson(response, 400, {
-          error: error instanceof Error ? error.message : "断开重连失败",
-        });
-      } finally {
-        if (requestedName !== null) speakerReconnectBusyDevices.delete(requestedName);
       }
       return;
     }

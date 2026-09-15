@@ -1,10 +1,8 @@
-import { getWindowsProbe, endpointDeviceName, startWindowsProbe, windowsSpeakerUsers } from "../../core/windows-audio-probe/index.ts";
-import { restartWindowsBluetoothDevice } from "../../core/windows-audio-control/index.ts";
+import { startWindowsProbe, windowsSpeakerUsers } from "../../core/windows-audio-probe/index.ts";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { reconnectBluetoothDeviceAsync } from "../../core/macos-bluetooth-link/index.ts";
 import { readRunningProcess } from "../../core/macos-running-apps/index.ts";
 import {
   consumeUtf8Lines,
@@ -212,30 +210,3 @@ export function startSpeakerOccupancyMonitor(
   };
 }
 
-export async function reconnectSpeakerDevice(name: string): Promise<{ durationMs: number; operation?: string }> {
-  const startedAt = performance.now();
-  try {
-    if (process.platform === "win32") {
-      const snapshot = await getWindowsProbe();
-      const matches = snapshot.endpoints.filter(e => e.transport === "bluetooth" && endpointDeviceName(e, snapshot) === name);
-      const identities = [...new Set(matches.map(e => e.canonicalId).filter(Boolean))];
-      if (identities.length !== 1 || !/^BTHENUM\\DEV_[0-9A-F]{12}\\/i.test(identities[0]!)) throw new Error("无法唯一确认目标蓝牙物理设备，未执行重建");
-      await restartWindowsBluetoothDevice(identities[0]!);
-      const deadline = Date.now() + 15_000;
-      let found = false;
-      while (Date.now() < deadline) {
-        const fresh = await getWindowsProbe(Date.now());
-        if (fresh.endpoints.some(e => e.canonicalId === identities[0] && e.flow === "eRender")) { found = true; break; }
-      }
-      if (!found) throw new Error("设备重启请求已执行，但目标输出端点尚未恢复");
-    } else await reconnectBluetoothDeviceAsync(name);
-  } catch (error) {
-    if (process.platform === "win32") throw error;
-    const code = (error as NodeJS.ErrnoException & { code?: string | number }).code;
-    if (code === 3) throw new Error("没有找到目标蓝牙设备，未执行断开重连");
-    if (code === 4) throw new Error("目标设备未能在 4 秒内完成断开，未发起重连");
-    if (code === 6) throw new Error("目标设备已经断开，但未能在 12 秒内重新连接");
-    throw new Error("系统未能完成目标设备的断开重连");
-  }
-  return { operation: process.platform === "win32" ? "restart-node" : "reconnect", durationMs: Number((performance.now() - startedAt).toFixed(3)) };
-}

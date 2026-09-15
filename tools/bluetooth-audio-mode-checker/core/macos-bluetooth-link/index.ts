@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,12 +13,8 @@ import {
 import { ensureNativeHelperBuilt } from "../native-helper/index.ts";
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-const toolRoot = join(moduleDirectory, "..", "..");
-const sourcePath = join(moduleDirectory, "reconnect-device.m");
 const connectSourcePath = join(moduleDirectory, "connect-device.m");
-const buildDirectory = join(toolRoot, ".build", "bluetooth-link");
-const executablePath = join(buildDirectory, "reconnect-device");
-const connectExecutablePath = join(buildDirectory, "connect-device");
+const connectExecutablePath = join(join(moduleDirectory, "..", ".."), ".build", "bluetooth-link", "connect-device");
 const linkLogPredicate = [
   'process == "coreaudiod"',
   'AND',
@@ -36,16 +32,6 @@ function ensureBluetoothHelperBuilt(source: string, executable: string): void {
     executablePath: executable,
     compilerFlags: ["-fobjc-arc"],
     frameworks: ["Foundation", "IOBluetooth"],
-  });
-}
-
-export function reconnectBluetoothDeviceAsync(name: string): Promise<void> {
-  ensureBluetoothHelperBuilt(sourcePath, executablePath);
-  return new Promise((resolve, reject) => {
-    execFile(executablePath, [name], { encoding: "utf8", timeout: 18_000 }, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
   });
 }
 
