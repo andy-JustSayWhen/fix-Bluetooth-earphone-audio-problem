@@ -427,7 +427,11 @@ flowchart TD
 
 对本机二进制文件的进一步静态分析把原因推进到代码边界。`pallas.exe` 直接导入 `GCloudVoice.dll`，内部字符串显示 `GVoiceWrapper::Initialize` 会加载该库、取得 `GetVoiceEngine`、初始化 `sVoiceEngine` 并调用 `SetAppInfo`；同一包装层实现 `JoinTeamRoom`、`OpenMic`、`CloseMic`、`OpenSpeaker` 和 `CloseSpeaker`。语音库导出 `GCloudVoice_EnableBluetoothSCO`、`GCloudVoice_OpenMic`、`GCloudVoice_TestMic` 等接口，并直接导入 Windows 的 `waveInOpen`、`waveInStart`、`waveInAddBuffer`、`waveInStop`、`waveInClose` 以及播放接口。`pallas.exe` 自身还包含 `voice_switch`、`NOTIFY_JOIN_VOICE_ROOM`、`REQ_SET_MIC_SPEAKER`、`SetOpenMic` 等完整房间语音控制路径。这证明它会在助手启动和加入游戏流程中初始化一套真正的游戏语音引擎，而不是只显示一个网页面板。
 
-现场状态进一步限定了实际执行分支：HFP 建立时，`pallas.exe` 已在 K03S 蓝牙通话输入端创建声音会话，但会话为暂停，系统麦克风隐私记录为空；因此没有证据表明它当时已经调用 `waveInStart` 持续读取语音帧。Windows 11 的规则是“应用打开蓝牙输入端”或“创建通话类别输出流”即可选择 HFP，不要求应用已经开始读取麦克风数据。[Windows 蓝牙经典音频说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio) 结合只结束 `pallas.exe` 后约 7 秒释放 HFP，可得当前最完整的代码级因果链：`pallas.exe` 初始化 `GCloudVoice` → 语音库提前创建或打开默认通话声音端点 → Windows 蓝牙策略建立 HFP → `pallas.exe` 尚未真正录音，因此隐私占用仍为空。静态分析无法仅凭文件确定触发时刻落在 `waveInOpen` 还是通话类别输出流创建；若要精确到具体函数调用，需要在下一次启动时做运行期接口跟踪，但这不影响“提前初始化语音端点触发 HFP”的功能根因。
+现场状态进一步限定了实际执行分支：HFP 建立时，`pallas.exe` 已在 K03S 蓝牙通话输入端创建声音会话，但会话为暂停，系统麦克风隐私记录为空；因此没有证据表明它当时已经调用 `waveInStart` 持续读取语音帧。Windows 11 的规则是“应用打开蓝牙输入端”或“创建通话类别输出流”即可选择 HFP，不要求应用已经开始读取麦克风数据。[Windows 蓝牙经典音频说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio) 结合只结束 `pallas.exe` 后约 7 秒释放 HFP，可得当前最完整的代码级因果链：`pallas.exe` 初始化 `GCloudVoice` → 语音库提前创建或打开默认通话声音端点 → Windows 蓝牙策略建立 HFP → `pallas.exe` 尚未真正录音，因此隐私占用仍为空。
+
+06:45:30-06:45:51 又对 `pallas.exe` 完成一次受控运行期跟踪。保留 WeGame、LOL 客户端和 Riot 进程不变，只结束旧 `pallas.exe`（进程号 64764）；WeGame 约 0.5 秒后自动拉起新实例（进程号 51460，启动于 06:45:31.288）。新实例启动约 4.05 秒后，Windows 声音事件在 K03S 蓝牙通话输入端 `{cdea81d7-95db-4adf-8b40-8dfc445e12b7}` 连续记录三次 `VadServer_CreateStream`（系统声音服务创建声音流的内部步骤），起始时间分别为 06:45:35.337、06:45:35.456 和 06:45:35.512；三次均为输入端、普通类别、非原始模式。每组事件均依次完成“导出流设置、创建流、创建设备对象、连接流与设备对象”，随后在同一活动编号中出现新 `pallas.exe` 的进程号，完成了应用与端点创建事件的直接归属。
+
+该次 20 秒窗口内没有建立同步语音链路，复核时 K03S 仍为 A2DP；但新 `pallas.exe` 已同时在高音质输出端和蓝牙通话输入端留下未活动会话。这一反例修正了代码级结论：`pallas.exe` 每次初始化语音引擎时确实会主动预创建 K03S 蓝牙麦克风输入流，但“创建后保持未活动”本身并不必然进入 HFP。异常 HFP 的必要差异发生在后续状态转换——某次加入游戏或语音初始化分支把已创建的输入流、蓝牙同步语音开关或其底层设备对象保持在未正确释放的状态；进程结束后对象被系统强制回收，约 7 秒后 HFP 才释放。现有跟踪已排除“只创建通话类别输出流”作为这次初始化的唯一解释，并把直接入口精确到 K03S 输入端的声音流创建；但腾讯语音库是闭源二进制，当前系统事件不能再区分它在库内是由 `waveInOpen`、`GCloudVoice_OpenMic`、`GCloudVoice_TestMic` 还是 `GCloudVoice_EnableBluetoothSCO` 中哪一个上层函数发起。若要继续精确到这四者之一，需要带调用栈的函数级插桩，而不能把静态导入表当作已执行证明。
 
 #### AX200 更新后的 K03S 麦克风窄带回退
 
