@@ -8,7 +8,7 @@ Windows 扬声器会话按蓝牙地址归属设备，双方地址均通过公共
 
 Windows 状态变化在对应区域实时更新：模式位于设备名称下方，声音链路位于参数框标题，麦克风活动和录音进程位于麦克风占用区，播放进程位于扬声器占用区。每项状态仅在所属区域展示；诊断时序保存在详细日志及实测记录中。
 
-1. Windows 用户双击工具目录 `run.cmd` 启动，要求本机安装支持直接执行类型脚本的 Node.js（运行本工具的基础环境）24 或更高版本。服务仅监听本机。
+1. Windows 用户双击工具目录 `run.cmd` 启动，要求本机安装支持直接执行类型脚本的 Node.js（运行本工具的基础环境）24 或更高版本。服务仅监听本机。工具按系统目录绝对路径定位 Windows PowerShell，不要求本机 PATH（系统查找程序的环境变量）包含 WindowsPowerShell 目录；PATH 被精简、改写或缺失该目录的电脑上功能不受影响，这是多设备通用的硬性要求。
 2. 扫描当前可用输入输出，按真实蓝牙地址聚合蓝牙设备；非蓝牙端点独立保留，不能把同型号的两台设备合并。名称重复时附带稳定端点标识，确保选择唯一。
 3. 常驻读取默认角色、混音格式和应用会话。默认设备、连接集合、会话变化自动刷新；完整扫描异步执行，失败向页面显示原因，不能无限显示加载中。常驻进程通过系统设备树接口读取物理归属，无需启动新的系统脚本。
 4. 默认输入输出切换使用精确端点标识，依次设置系统三个默认角色并读回确认。接口等待异步操作完成，期间页面请求仍可响应。
@@ -53,6 +53,7 @@ Windows 端点框展示蓝牙协商格式与实时活动，而非格式查询数
 
 - `core/windows-audio-probe/` 通过本机系统声音接口读取端点、默认角色及活动会话；长驻辅助进程持续输出快照，每 750 毫秒重新枚举端点、会话与系统设备树事实；应用合并未变化的结果，每 3 秒补充读取以检测辅助进程失败。子进程关闭、超时、无效输出均明确失败并允许重试。
 - `core/windows-audio-control/` 封装默认端点设置、目标设备节点重启与用户进程正常退出；参数按数据传递，禁止拼接设备名称为可执行命令。
+- `shared/windows-powershell/` 统一解析 Windows PowerShell 可执行文件路径：Windows 下按 `SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe` 绝对路径定位并校验存在，文件不存在时回退按名称查找；非 Windows 平台返回名称占位。`core/windows-audio-probe/` 与 `core/windows-audio-control/` 的全部 PowerShell 调用统一使用该入口，不得在模块内散落裸命令名，也不得各自重复实现路径拼接。
 - 原有设备判定、麦克风占用、扬声器占用及恢复功能模块接入 Windows 能力，macOS 路径保留。
 - 一键修复通过应用组合层传入的模式读取函数获取目标最新判定，并调用既有修复资格函数；每次重新取证后再次读取共同模式结果，不在恢复执行器内部按会话活动推断模式或恢复成功。
 - 批处理入口仅使用基础英文字符；系统脚本显式使用统一字符编码，中文名称必须完整往返。
@@ -152,6 +153,6 @@ SDP（蓝牙设备用来声明自己提供哪些服务及功能的协议）可�
 - 递归读取两设备在蓝牙设备注册表目录下的全部子项：Bose 16 项、69 个非敏感值，DJI 10 项、45 个非敏感值；找到服务记录二进制缓存。只读取这两台目标设备，未读取配对密钥目录。BthA2dp 服务根目录枚举被拒绝访问，其 Parameters 路径查询返回不存在；这些结果不能代表整个系统没有缓存。
 - 两个现有蓝牙事件会话的状态补发请求均返回 0，但该轮记录没有补出 DJI 的编码协商列表；请求成功不能当作能力读取成功。会话已停止。A2DP 记录中的播放事件属于 Bose，不能因文件名含 DJI 就归给 DJI。
 
-本机原始证据：`artifacts/connected-sdp-audit.json`（按服务分别查询）、`artifacts/connected-sdp-all-services.json`（完整服务响应）、`artifacts/connected-sdp-decoded.json`（全部属性解码）、`artifacts/connected-registry-audit.json`（注册表遍历范围）、`artifacts/connected-sdp-cache-records.json`（服务记录缓存）。这些本机诊断产物不随代码提交；正式采集尚未接入服务和页面。
+本机原始证据：`artifacts/connected-sdp-audit.json`（按服务分别查询）、`artifacts/connected-sdp-all-services.json`（完整服务响应）、`artifacts/connected-sdp-decoded.json`（全部属性解码）、`artifacts/connected-registry-audit.json`（注册表遍历范围）、`artifacts/connected-sdp-cache-records.json`（服务记录缓存）。这些本机诊断产物不随代码提交；正式采集尚未接入服务和页面。依赖本机证据文件的测试（如历史回放补读）只在对应文件存在时运行，文件缺失的电脑上自动跳过，不报告为失败。
 
 查询接口依据：https://learn.microsoft.com/en-us/windows/win32/bluetooth/bluetooth-and-wsalookupservicebegin-for-service-discovery 。宽带声明字段交叉核对：https://github.com/google/bumble/blob/main/bumble/hfp.py 中 `HfSdpFeature.WIDE_BAND_SPEECH` 及服务记录构造；编码采样率依据：https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio 。

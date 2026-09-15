@@ -8,6 +8,7 @@ import type {
   RawAudioDevice,
   WindowsEndpointFormat,
 } from "../../shared/audio-device-types/index.ts";
+import { powershellExecutable } from "../../shared/windows-powershell/index.ts";
 
 export type WindowsEndpointFacts = {
   flow: "eRender" | "eCapture";
@@ -79,7 +80,7 @@ export function stripBluetoothRoleSuffix(name: string): string {
 
 function runProbeScriptSync(): WindowsProbeResult {
   const output = execFileSync(
-    "powershell.exe",
+    powershellExecutable(),
     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1Path, "-CsPath", csPath],
     { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, windowsHide: true, timeout: 15_000 },
   );
@@ -284,7 +285,7 @@ export function startWindowsProbe(onResult?: (result: WindowsProbeResult) => voi
       mkdirSync(dirname(options.historyFile), {recursive: true});
       args.push("-HistoryFile", options.historyFile);
     }
-    const child = spawn("powershell.exe", args, {
+    const child = spawn(powershellExecutable(), args, {
       windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     });
     worker = child;
@@ -325,7 +326,7 @@ function stopWorkerTrace(child: ReturnType<typeof spawn>): void {
   try {
     // The helper may be killed while its logman child is still creating the session.
     const script = `Get-CimInstance Win32_Process -Filter "ParentProcessId = ${child.pid} AND Name = 'logman.exe'" | ForEach-Object { try { [Diagnostics.Process]::GetProcessById($_.ProcessId).WaitForExit(2000) | Out-Null } catch {} }; & logman.exe stop BluetoothAudioMode-${child.pid} -ets`;
-    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, stdio: "ignore", timeout: 5000});
+    execFileSync(powershellExecutable(), ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, stdio: "ignore", timeout: 5000});
   } catch { /* Session may already have been stopped by the helper. */ }
 }
 export function stopWindowsProbe(): void {

@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { spawn, execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { rmSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+
+import { powershellExecutable } from "../shared/windows-powershell/index.ts";
 
 test("Windows 服务能够从首次加载进入真实设备状态，并处理刷新和无效写请求", {skip: process.platform !== "win32", timeout: 20_000}, async t => {
   const reservation = createServer();
@@ -63,7 +65,7 @@ $a = '2C1100000EE7003DBC58E4020C043C003C0003'
 [WindowsAudioProbeCore]::InspectControllerEvents(@('2C1101000EE7003DBC58E4020C043C003C0003'))
 [WindowsAudioProbeCore]::InspectControllerEvents(@('2C1100000E'))
 [WindowsAudioProbeCore]::InspectControllerEvents(@($a, '050400010E16'))`;
-  const lines = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path}, timeout: 12_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  const lines = execFileSync(powershellExecutable(), ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path}, timeout: 12_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
   assert.equal(lines[0][0].address, "E458BC3D00E7");
   assert.deepEqual(lines.slice(1,4), [[], [], []]);
   assert.equal(lines[4].length, 1);
@@ -80,7 +82,7 @@ test("原生高音质流状态机区分协商、流开始与停止", {skip: proc
 [WindowsAudioProbeCore]::ObserveA2dpNegotiation('E458BC3D00E7', [uint32]5, [uint32]0, [uint32]0, [uint32]44100, [uint32]2, '2026-09-14T11:45:00Z')
 [WindowsAudioProbeCore]::ObserveA2dpNegotiation('', [uint32]0, [uint32]2, [uint32]0, [uint32]48000, [uint32]2, '2026-09-14T11:45:01Z')
 [WindowsAudioProbeCore]::InspectA2dpState()`;
-  const lines = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path}, timeout: 12_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  const lines = execFileSync(powershellExecutable(), ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path}, timeout: 12_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
   assert.equal(lines[0].length, 1);
   assert.deepEqual(lines[0][0], {address: "E458BC3D00E7", streaming: true, startedAt: "2026-09-14T11:43:49Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"});
   assert.equal(lines[1][0].streaming, false);
@@ -90,15 +92,17 @@ test("原生高音质流状态机区分协商、流开始与停止", {skip: proc
   assert.equal(lines[2][0].negotiatedAt, "2026-09-14T11:43:47Z");
 });
 
-test("历史文件回放补读协商参数，超窗事件不充当正在传输", {skip: process.platform !== "win32", timeout: 20_000}, () => {
+const historyEvidence = fileURLToPath(new URL("../../../artifacts/bose-negotiation-20260914-114148-A2dp.etl", import.meta.url));
+
+test("历史文件回放补读协商参数，超窗事件不充当正在传输", {skip: process.platform !== "win32" || !existsSync(historyEvidence), timeout: 20_000}, () => {
   const path = fileURLToPath(new URL("../core/windows-audio-probe/probe-audio-endpoints.cs", import.meta.url));
-  const source = fileURLToPath(new URL("../../../artifacts/bose-negotiation-20260914-114148-A2dp.etl", import.meta.url));
+  const source = historyEvidence;
   const script = `Add-Type -Path $env:PROBE_NATIVE_SOURCE
 [WindowsAudioProbeCore]::ReplayHistoryFile($env:HISTORY_ETL, [int]::MaxValue)
 [WindowsAudioProbeCore]::InspectA2dpState()
 [WindowsAudioProbeCore]::ReplayHistoryFile($env:HISTORY_ETL, 0)
 [WindowsAudioProbeCore]::InspectA2dpState()`;
-  const lines = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path, HISTORY_ETL: source}, timeout: 16_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  const lines = execFileSync(powershellExecutable(), ["-NoProfile", "-NonInteractive", "-Command", script], {windowsHide: true, encoding: "utf8", env: {...process.env, PROBE_NATIVE_SOURCE: path, HISTORY_ETL: source}, timeout: 16_000}).trim().split(/\r?\n/).map(line => JSON.parse(line));
   assert.equal(lines[0].voiceLinks.length, 0);
   assert.equal(lines[0].a2dpStreams[0].address, "E458BC3D00E7");
   assert.equal(lines[0].a2dpStreams[0].streaming, true);
