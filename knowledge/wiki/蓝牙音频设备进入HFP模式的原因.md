@@ -425,11 +425,15 @@ flowchart TD
 
 同时，LOL 自身仍有 `rcp-fe-lol-premade-voice` 组队语音插件，LeagueClient 和 Riot Client 目录各有一份独立的 `GCloudVoice.dll`；`RiotClientServices.exe` 在 `pallas.exe` 已退出后仍保留自己的输入、输出声音会话。因此现有静态证据支持“LOL 原生组队语音不一定依赖 `pallas.exe`”，但不能代替实际发言验收。要确认用户使用的具体语音通道是否受影响，应在 `pallas.exe` 保持退出时进行一次游戏内发言，并同时检查是 `RiotClientServices.exe` 还是其他进程实际打开麦克风。
 
+对本机二进制文件的进一步静态分析把原因推进到代码边界。`pallas.exe` 直接导入 `GCloudVoice.dll`，内部字符串显示 `GVoiceWrapper::Initialize` 会加载该库、取得 `GetVoiceEngine`、初始化 `sVoiceEngine` 并调用 `SetAppInfo`；同一包装层实现 `JoinTeamRoom`、`OpenMic`、`CloseMic`、`OpenSpeaker` 和 `CloseSpeaker`。语音库导出 `GCloudVoice_EnableBluetoothSCO`、`GCloudVoice_OpenMic`、`GCloudVoice_TestMic` 等接口，并直接导入 Windows 的 `waveInOpen`、`waveInStart`、`waveInAddBuffer`、`waveInStop`、`waveInClose` 以及播放接口。`pallas.exe` 自身还包含 `voice_switch`、`NOTIFY_JOIN_VOICE_ROOM`、`REQ_SET_MIC_SPEAKER`、`SetOpenMic` 等完整房间语音控制路径。这证明它会在助手启动和加入游戏流程中初始化一套真正的游戏语音引擎，而不是只显示一个网页面板。
+
+现场状态进一步限定了实际执行分支：HFP 建立时，`pallas.exe` 已在 K03S 蓝牙通话输入端创建声音会话，但会话为暂停，系统麦克风隐私记录为空；因此没有证据表明它当时已经调用 `waveInStart` 持续读取语音帧。Windows 11 的规则是“应用打开蓝牙输入端”或“创建通话类别输出流”即可选择 HFP，不要求应用已经开始读取麦克风数据。[Windows 蓝牙经典音频说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio) 结合只结束 `pallas.exe` 后约 7 秒释放 HFP，可得当前最完整的代码级因果链：`pallas.exe` 初始化 `GCloudVoice` → 语音库提前创建或打开默认通话声音端点 → Windows 蓝牙策略建立 HFP → `pallas.exe` 尚未真正录音，因此隐私占用仍为空。静态分析无法仅凭文件确定触发时刻落在 `waveInOpen` 还是通话类别输出流创建；若要精确到具体函数调用，需要在下一次启动时做运行期接口跟踪，但这不影响“提前初始化语音端点触发 HFP”的功能根因。
+
 #### AX200 更新后的 K03S 麦克风窄带回退
 
-用户确认：安装 AX200 24.10.0.4 后，微信输入法仍能检测到 K03S 蓝牙麦克风，但识别结果明显错误；切换其他麦克风则正常。驱动更新前的现场快照中，K03S 蓝牙通话输入端为 `16 kHz / 1 声道`；更新后多次只读复核均为 `8 kHz / 1 声道`，而且系统只公布 8 kHz 一种支持格式。微软文档说明，16 kHz 的 mSBC 属于宽带语音，8 kHz 的 CVSD 属于窄带语音，Windows 会根据电脑蓝牙子系统与耳机的共同能力选择，并可能因兼容性回退到 8 kHz。[Windows 蓝牙经典音频说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio)
+用户确认：安装 AX200 24.10.0.4 后，微信输入法仍能检测到 K03S 蓝牙麦克风，但识别结果明显错误；切换其他麦克风则正常。驱动更新前的现场快照中，K03S 蓝牙通话输入端为 `16 kHz / 1 声道`；安装后未断开重连的旧连接一度只公布 `8 kHz / 1 声道`。微软文档说明，16 kHz 的 mSBC 属于宽带语音，8 kHz 的 CVSD 属于窄带语音，Windows 会根据电脑蓝牙子系统与耳机的共同能力选择，并可能因兼容性回退到 8 kHz。[Windows 蓝牙经典音频说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio)
 
-因此当前已确认的驱动后退化是：K03S 从 16 kHz 宽带语音降到 8 kHz 窄带语音。窄带会丢失更多语音细节，足以降低中文识别率；如果识别结果不是单纯变差而是呈现系统性错字，还需通过同一句话的录音回放区分“输入本身已失真”和“微信输入法错误解释 8 kHz 数据”。旧版 `22.190.0.2` 的 `oem168.inf` 仍保留在本机驱动仓库，而新版没有解决 `pallas.exe` 引发的无录音 HFP；因此回退旧驱动是当前恢复 16 kHz 能力的优先修复候选，但执行前需用户明确确认，并在回退后复核实际绑定版本、K03S 端点是否恢复 16 kHz、微信输入法识别以及 HFP 行为。
+随后用户主动断开并重新连接 K03S，微信输入法立即恢复正常；06:21:03 只读复核显示蓝牙通话输入端重新公布且实际配置为 `16 kHz / 1 声道`。因此前述“新版驱动永久导致 8 kHz 退化、应回退驱动”的结论撤回。当前证据支持的是：驱动安装后既有蓝牙连接残留在 8 kHz 窄带协商状态，断开重连触发重新协商后恢复 16 kHz 宽带；无需回退驱动。以后更新蓝牙驱动后的验收必须包含设备断开重连，再检查通话端采样率和语音识别，不能把安装后未重连的端点状态当作永久能力。
 
 本实例暴露的工具侧缺陷（不属于 HFP 原因，修复另行立项）：
 
