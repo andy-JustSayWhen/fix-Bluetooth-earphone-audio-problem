@@ -49,7 +49,7 @@ test("协商格式卡片按字段分行展示，语音链路优先于过时记�
   assert.equal(voice.windowsEvidence?.voiceLink?.airMode, 3);
   const [recovered] = assessBluetoothDevices(aggregatePhysicalDevices({...voiceResult, voiceLinks: []}));
   assert.equal(recovered.mode, "UNKNOWN");
-  assert.deepEqual(negotiatedA2dpFields(recovered.windowsEvidence?.a2dpStream, false), [["格　式", "高音质播放（未在传输）"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
+  assert.deepEqual(negotiatedA2dpFields(recovered.windowsEvidence?.a2dpStream, false), [["格　式", "高音质播放"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
   const [streaming] = assessBluetoothDevices(aggregatePhysicalDevices({...voiceResult, voiceLinks: [], a2dpStreams: [{...voiceResult.a2dpStreams![0], streaming: true}]}));
   assert.equal(streaming.mode, "A2DP");
   assert.deepEqual(negotiatedA2dpFields(streaming.windowsEvidence?.a2dpStream, false), [["格　式", "高音质播放"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
@@ -188,7 +188,7 @@ test("高音质流传输事实正面判定 A2DP，流停止只保留协商展示
 
 test("协商格式字段保留语音链路优先与证据边界语义", () => {
   const stream = {streaming: true, startedAt: null, codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"};
-  assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false}, false), [["格　式", "高音质播放（未在传输）"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
+  assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false}, false), [["格　式", "高音质播放"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
   assert.deepEqual(negotiatedA2dpFields(null, false), [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
   assert.deepEqual(negotiatedA2dpFields({...stream, streaming: false, negotiatedAt: null}, false), [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
   // 语音链路活跃时显示当前真实传输路径，不再堆砌过时的高音质协商记录。

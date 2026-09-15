@@ -134,8 +134,7 @@ export function negotiatedA2dpFields(stream, voiceLinkActive, airMode) {
   const codec = stream.codec !== null && stream.codec !== undefined ? a2dpCodecPresentation(stream.codec, stream.vendorId) : "尚未取得";
   const rate = stream.sampleRate ? formatRate(stream.sampleRate) : "尚未取得";
   const channels = stream.channels ? (stream.channels === 1 ? "单声道" : `${stream.channels} 声道`) : "尚未取得";
-  const format = stream.streaming ? "高音质播放" : "高音质播放（未在传输）";
-  return [["格　式", format], ["编　码", codec], ["采样率", rate], ["声道数", channels]];
+  return [["格　式", "高音质播放"], ["编　码", codec], ["采样率", rate], ["声道数", channels]];
 }
 
 function negotiatedMetricCard(device, createElement) {
