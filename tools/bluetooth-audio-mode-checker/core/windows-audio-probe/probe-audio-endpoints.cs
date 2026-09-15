@@ -165,7 +165,7 @@ public static class WindowsAudioProbeCore {
     [DllImport("advapi32.dll")] private static extern uint CloseTrace(ulong handle);
     [DllImport("tdh.dll")] private static extern uint TdhGetPropertySize(IntPtr record, uint contextCount, IntPtr context, uint count, ref PropertyDescriptor descriptor, out uint size);
     [DllImport("tdh.dll")] private static extern uint TdhGetProperty(IntPtr record, uint contextCount, IntPtr context, uint count, ref PropertyDescriptor descriptor, uint size, [Out] byte[] value);
-    private class VoiceLink {public string Address; public string Timestamp;}
+    private class VoiceLink {public string Address; public string Timestamp; public int? AirMode;}
     private static readonly object linkLock = new object();
     private static readonly Dictionary<int, VoiceLink> voiceLinks = new Dictionary<int, VoiceLink>();
     private static readonly TraceCallback traceCallback = OnTraceEvent;
@@ -320,7 +320,7 @@ public static class WindowsAudioProbeCore {
                 int handle = BitConverter.ToUInt16(packet, 3) & 0xFFF;
                 byte[] address = new byte[6]; Array.Copy(packet, 5, address, 0, 6); Array.Reverse(address);
                 string text = BitConverter.ToString(address).Replace("-", "");
-                if (text != "000000000000") voiceLinks[handle] = new VoiceLink {Address = text, Timestamp = timestamp};
+                if (text != "000000000000") voiceLinks[handle] = new VoiceLink {Address = text, Timestamp = timestamp, AirMode = packet[18]};
             } else if (packet[0] == 0x05 && packet.Length == 6 && packet[2] == 0) {
                 voiceLinks.Remove(BitConverter.ToUInt16(packet, 3) & 0xFFF);
             }
@@ -391,7 +391,7 @@ public static class WindowsAudioProbeCore {
     private static string VoiceLinksJson() {
         lock (linkLock) {
             List<string> values = new List<string>();
-            if (traceHealthy) foreach (VoiceLink link in voiceLinks.Values) values.Add("{\"address\":" + Escape(link.Address) + ",\"timestamp\":" + Escape(link.Timestamp) + "}");
+            if (traceHealthy) foreach (VoiceLink link in voiceLinks.Values) values.Add("{\"address\":" + Escape(link.Address) + ",\"timestamp\":" + Escape(link.Timestamp) + ",\"airMode\":" + (link.AirMode.HasValue ? link.AirMode.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null") + "}");
             return "[" + String.Join(",", values.ToArray()) + "]";
         }
     }

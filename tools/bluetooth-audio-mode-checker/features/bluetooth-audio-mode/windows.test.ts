@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { aggregatePhysicalDevices, type WindowsEndpointFacts, type WindowsProbeResult } from "../../core/windows-audio-probe/index.ts";
 import { assessBluetoothDevices, applyActiveOutputSnapshot, applyActiveInputSnapshot, applyBluetoothLinkSnapshot } from "./index.ts";
 import { deviceModePresentation, audioEndpointMetrics, negotiatedA2dpFields } from "./web/client.js";
+import { describeNegotiatedA2dpStream } from "./windows.ts";
 
 test("模式胶囊只显示模式，不用会话活动替换未知状态", () => {
   const idle = {mode: "UNKNOWN", windowsEvidence: {sessionsKnown: true, activeOutput: false, activeCapture: false}};
@@ -40,11 +41,12 @@ test("Windows 页面显示输入输出活动及程序，不把格式能力当运
 
 test("协商格式卡片按字段分行展示，语音链路优先于过时记录", () => {
   const voiceResult: WindowsProbeResult = {endpoints: [endpoint], defaults: {renderConsole: endpoint, renderComms: null, captureConsole: null},
-    voiceLinks: [{address: "AABBCCDDEEFF", timestamp: "2026-09-14T11:44:12Z"}],
+    voiceLinks: [{address: "AABBCCDDEEFF", timestamp: "2026-09-14T11:44:12Z", airMode: 3}],
     a2dpStreams: [{address: "AABBCCDDEEFF", streaming: false, startedAt: "2026-09-14T11:43:49Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"}]};
   const [voice] = assessBluetoothDevices(aggregatePhysicalDevices(voiceResult));
-  assert.deepEqual(negotiatedA2dpFields(voice.windowsEvidence?.a2dpStream, true), [["格　式", "低音质通话"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields(voice.windowsEvidence?.a2dpStream, Boolean(voice.windowsEvidence?.voiceLink), voice.windowsEvidence?.voiceLink?.airMode), [["格　式", "低音质通话"], ["编　码", "mSBC（宽带语音）"], ["采样率", "16 kHz"], ["声道数", "单声道"]]);
   assert.equal(voice.mode, "HFP_HSP");
+  assert.equal(voice.windowsEvidence?.voiceLink?.airMode, 3);
   const [recovered] = assessBluetoothDevices(aggregatePhysicalDevices({...voiceResult, voiceLinks: []}));
   assert.equal(recovered.mode, "UNKNOWN");
   assert.deepEqual(negotiatedA2dpFields(recovered.windowsEvidence?.a2dpStream, false), [["格　式", "高音质播放（未在传输）"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
@@ -58,6 +60,16 @@ test("协商格式字段区分编码、厂商编码与缺失状态", () => {
   assert.deepEqual(negotiatedA2dpFields({...stream, codec: 0, sampleRate: 44100, channels: 1}, false), [["格　式", "高音质播放"], ["编　码", "SBC"], ["采样率", "44.1 kHz"], ["声道数", "单声道"]]);
   assert.deepEqual(negotiatedA2dpFields({...stream, codec: 4, vendorId: 0x0000000f}, false), [["格　式", "高音质播放"], ["编　码", "厂商编码 0x0000000F"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
   assert.deepEqual(negotiatedA2dpFields({...stream, codec: null, sampleRate: null, channels: null}, false), [["格　式", "高音质播放"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+});
+
+test("语音链路按 Air Mode 显示通话参数，缺失或未知值保持尚未取得", () => {
+  assert.deepEqual(negotiatedA2dpFields(null, true, 3), [["格　式", "低音质通话"], ["编　码", "mSBC（宽带语音）"], ["采样率", "16 kHz"], ["声道数", "单声道"]]);
+  assert.deepEqual(negotiatedA2dpFields(null, true, 2), [["格　式", "低音质通话"], ["编　码", "CVSD（窄带语音）"], ["采样率", "8 kHz"], ["声道数", "单声道"]]);
+  assert.deepEqual(negotiatedA2dpFields(null, true, 1), [["格　式", "低音质通话"], ["编　码", "A-law（窄带语音）"], ["采样率", "8 kHz"], ["声道数", "单声道"]]);
+  assert.deepEqual(negotiatedA2dpFields(null, true, null), [["格　式", "低音质通话"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.deepEqual(negotiatedA2dpFields(null, true, 9), [["格　式", "低音质通话"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]]);
+  assert.equal(describeNegotiatedA2dpStream(null, true, 3), "语音链路传输中（mSBC（宽带语音） · 16 kHz · 单声道）");
+  assert.equal(describeNegotiatedA2dpStream(null, true), "语音链路传输中（编码尚未取得）");
 });
 
 test("格式查询失败或不支持不影响独立活动展示及模式边界", () => {

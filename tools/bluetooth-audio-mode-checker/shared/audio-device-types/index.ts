@@ -97,7 +97,7 @@ export type WindowsA2dpStreamEvidence = {
 };
 
 export type WindowsAudioEvidence = {
-  voiceLink?: { timestamp: string };
+  voiceLink?: { timestamp: string; airMode?: number | null };
   a2dpStream?: WindowsA2dpStreamEvidence | null;
   transport: string;
   activeCapture: boolean;

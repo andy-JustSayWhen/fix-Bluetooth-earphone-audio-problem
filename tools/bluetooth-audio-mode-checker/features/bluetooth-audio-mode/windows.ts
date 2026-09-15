@@ -18,9 +18,20 @@ export function prepareWindowsFacts(base: AssessmentFacts): AssessmentFacts {
 
 const a2dpCodecNames: Record<number, string> = {0: "SBC", 1: "MPEG-1,2 音频", 2: "AAC", 3: "ATRAC"};
 
-export function describeNegotiatedA2dpStream(stream: WindowsA2dpStreamEvidence | null | undefined, voiceLinkActive = false): string {
+// HFP 通话参数按 Air Mode 查标准表：编码与参数由协议绑定，系统不逐项上报。
+const hfpVoiceDescriptions: Record<number, string> = {
+  0: "µ-law（窄带语音） · 8 kHz · 单声道",
+  1: "A-law（窄带语音） · 8 kHz · 单声道",
+  2: "CVSD（窄带语音） · 8 kHz · 单声道",
+  3: "mSBC（宽带语音） · 16 kHz · 单声道",
+};
+
+export function describeNegotiatedA2dpStream(stream: WindowsA2dpStreamEvidence | null | undefined, voiceLinkActive = false, airMode?: number | null): string {
   // The voice link is the active radio path during HFP; stale A2DP notes only confuse here.
-  if (voiceLinkActive) return "语音链路传输中（编码尚未取得）";
+  if (voiceLinkActive) {
+    const description = airMode != null ? hfpVoiceDescriptions[airMode] : undefined;
+    return description ? `语音链路传输中（${description}）` : "语音链路传输中（编码尚未取得）";
+  }
   if (!stream || (stream.negotiatedAt === null && !stream.streaming)) return "尚未取得";
   const parts: string[] = [];
   if (stream.codec !== null) {

@@ -45,7 +45,7 @@ export type WindowsA2dpStreamFacts = {
 };
 
 export type WindowsProbeResult = {
-  voiceLinks?: Array<{address: string; timestamp: string}>;
+  voiceLinks?: Array<{address: string; timestamp: string; airMode?: number | null}>;
   a2dpStreams?: WindowsA2dpStreamFacts[];
   endpoints: WindowsEndpointFacts[];
   defaults: {

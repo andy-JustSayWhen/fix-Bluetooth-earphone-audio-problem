@@ -114,10 +114,19 @@ function a2dpCodecPresentation(codec, vendorId) {
   return a2dpCodecNames[codec] ?? `编码 ${codec}`;
 }
 
-export function negotiatedA2dpFields(stream, voiceLinkActive) {
+// HFP 通话参数按 Air Mode 查标准表：编码与参数由协议绑定，系统不逐项上报。
+const hfpVoiceFields = {
+  0: ["µ-law（窄带语音）", "8 kHz", "单声道"],
+  1: ["A-law（窄带语音）", "8 kHz", "单声道"],
+  2: ["CVSD（窄带语音）", "8 kHz", "单声道"],
+  3: ["mSBC（宽带语音）", "16 kHz", "单声道"],
+};
+
+export function negotiatedA2dpFields(stream, voiceLinkActive, airMode) {
   // 每行一个字段；格式只有两种：高音质播放、低音质通话。语音链路活跃时优先显示当前真实路径。
   if (voiceLinkActive) {
-    return [["格　式", "低音质通话"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]];
+    const fields = airMode != null ? hfpVoiceFields[airMode] : undefined;
+    return [["格　式", "低音质通话"], ["编　码", fields ? fields[0] : "尚未取得"], ["采样率", fields ? fields[1] : "尚未取得"], ["声道数", fields ? fields[2] : "尚未取得"]];
   }
   if (!stream || (stream.negotiatedAt === null && !stream.streaming)) {
     return [["格　式", "尚未取得"], ["编　码", "尚未取得"], ["采样率", "尚未取得"], ["声道数", "尚未取得"]];
@@ -134,7 +143,7 @@ function negotiatedMetricCard(device, createElement) {
   const card = createElement("div", "metric metric--negotiated");
   card.append(createElement("span", "", "蓝牙协商格式"));
   const rows = createElement("div", "negotiated-rows");
-  for (const [label, value] of negotiatedA2dpFields(facts.a2dpStream, Boolean(facts.voiceLink))) {
+  for (const [label, value] of negotiatedA2dpFields(facts.a2dpStream, Boolean(facts.voiceLink), facts.voiceLink?.airMode)) {
     const row = createElement("div", "negotiated-row");
     row.append(createElement("span", "", `${label}：`), createElement("strong", "", value));
     rows.append(row);

@@ -97,7 +97,7 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     `输出声道：${base.outputChannels > 0 ? `${base.outputChannels} 声道` : "无法读取"}`,
     `设备最新声音链路：${base.audioLinkType ?? "无法确认"}`,
     `高音质流（A2DP）：${a2dpStream === null ? "尚未取得" : a2dpStream.streaming ? "传输中" : "未在传输"}`,
-    `蓝牙协商格式：${describeNegotiatedA2dpStream(a2dpStream, base.audioLinkType === "tsco")}`,
+    `蓝牙协商格式：${describeNegotiatedA2dpStream(a2dpStream, base.audioLinkType === "tsco", base.windowsEvidence?.voiceLink?.airMode)}`,
     `A2DP 支持能力：${a2dpSupport === "UNSUPPORTED" ? "不支持" : a2dpSupport === "SUPPORTED" ? "支持" : "无法确认"}`,
   ];
 
