@@ -419,6 +419,18 @@ flowchart TD
 
 06:00:19-06:00:49 完成此前缺少的严格隔离：WEGAME、`wegame_env.exe`、LOL 客户端全部子进程和 `RiotClientServices.exe` 的进程号在测试前后保持不变，只持续结束 `pallas.exe` 及其一次自动重启实例。最后一个 `pallas.exe` 于 06:00:20 被结束，06:00:27 同步语音链路释放并恢复 A2DP；全程没有麦克风占用。用户随即确认网页视频音调、速度和整体听感同时恢复正常，且设备确实处于 A2DP。结合“`pallas.exe` 启动后建立 HFP”和“只结束 `pallas.exe` 后约 7 秒释放 HFP”的双向时序，本轮已经确认 `pallas.exe` 是无录音 HFP 的直接维持者，并高度支持它也是触发者；若要把“触发者”从高度支持提升为完整往返确认，还需在其余进程不变时单独恢复同一个 `pallas.exe` 实例并再次观察建立事件。
 
+#### `pallas.exe` 的职责与游戏语音影响边界
+
+本机文件证据显示，`D:\Applications\wegame\apps\Pallas\pallas.exe` 是腾讯有效签名的 `Tencent.WeGame.Pallas` 5.15.1.1018，属于 WEGAME 的 LOL 助手宿主。其目录包含 `GCloudVoice.dll`、`GVoiceLog`、`GVoiceTQos`，`config.json` 还直接配置语音上报、语音翻译和实时语音服务器；LOL 游戏目录中的 `Game\Config\pallas_lol_voice.ini` 明确把 `Mic`、`Speaker`、`Panel` 都设为 1。因此结束该进程可能影响 WEGAME 提供的全队语音、语音翻译或助手语音面板，不能把它当作纯战绩展示进程。
+
+同时，LOL 自身仍有 `rcp-fe-lol-premade-voice` 组队语音插件，LeagueClient 和 Riot Client 目录各有一份独立的 `GCloudVoice.dll`；`RiotClientServices.exe` 在 `pallas.exe` 已退出后仍保留自己的输入、输出声音会话。因此现有静态证据支持“LOL 原生组队语音不一定依赖 `pallas.exe`”，但不能代替实际发言验收。要确认用户使用的具体语音通道是否受影响，应在 `pallas.exe` 保持退出时进行一次游戏内发言，并同时检查是 `RiotClientServices.exe` 还是其他进程实际打开麦克风。
+
+#### AX200 更新后的 K03S 麦克风窄带回退
+
+用户确认：安装 AX200 24.10.0.4 后，微信输入法仍能检测到 K03S 蓝牙麦克风，但识别结果明显错误；切换其他麦克风则正常。驱动更新前的现场快照中，K03S 蓝牙通话输入端为 `16 kHz / 1 声道`；更新后多次只读复核均为 `8 kHz / 1 声道`，而且系统只公布 8 kHz 一种支持格式。微软文档说明，16 kHz 的 mSBC 属于宽带语音，8 kHz 的 CVSD 属于窄带语音，Windows 会根据电脑蓝牙子系统与耳机的共同能力选择，并可能因兼容性回退到 8 kHz。[Windows 蓝牙经典音频说明](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-classic-audio)
+
+因此当前已确认的驱动后退化是：K03S 从 16 kHz 宽带语音降到 8 kHz 窄带语音。窄带会丢失更多语音细节，足以降低中文识别率；如果识别结果不是单纯变差而是呈现系统性错字，还需通过同一句话的录音回放区分“输入本身已失真”和“微信输入法错误解释 8 kHz 数据”。旧版 `22.190.0.2` 的 `oem168.inf` 仍保留在本机驱动仓库，而新版没有解决 `pallas.exe` 引发的无录音 HFP；因此回退旧驱动是当前恢复 16 kHz 能力的优先修复候选，但执行前需用户明确确认，并在回退后复核实际绑定版本、K03S 端点是否恢复 16 kHz、微信输入法识别以及 HFP 行为。
+
 本实例暴露的工具侧缺陷（不属于 HFP 原因，修复另行立项）：
 
 1. Windows 声音探测于 12:06:24、12:19:54 两次超时（16.5 秒、17.0 秒）后，服务刷新循环自 12:34:06 的最后一次快照起不再更新，HTTP 接口持续返回陈旧快照，页面停留在“模式无法确认”，无自动恢复。
