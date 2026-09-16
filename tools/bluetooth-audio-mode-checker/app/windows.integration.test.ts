@@ -23,7 +23,7 @@ test("Windows 服务能够从首次加载进入真实设备状态，并处理刷
   t.after(() => {
     child.kill();
     // 测试端口对应的历史跟踪文件属于本测试，结束时一并清理。
-    rmSync(fileURLToPath(new URL(`../logs/bluetooth-audio-history-${port}.etl`, import.meta.url)), {force: true});
+    rmSync(fileURLToPath(new URL(`../logs/bluetooth-audio-history-${child.pid}.etl`, import.meta.url)), {force: true});
   });
   const origin = `http://127.0.0.1:${port}`;
   let state: any = null;
@@ -57,28 +57,49 @@ test("Windows 服务能够从首次加载进入真实设备状态，并处理刷
   assert.equal(stderr, "");
 });
 
-test("端口占用提示使用当前启动命令而不引用其他平台脚本", {skip: process.platform !== "win32", timeout: 10_000}, async t => {
+test("端口被占用时自动改用空闲端口并继续提供完整服务", {skip: process.platform !== "win32", timeout: 20_000}, async t => {
   const reservation = createServer();
   await new Promise<void>(resolve => reservation.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>(resolve => reservation.close(() => resolve())));
-  const port = (reservation.address() as {port: number}).port;
-  const child = spawn(process.execPath, [fileURLToPath(new URL("./index.ts", import.meta.url)), "--port", String(port), "--no-open"], {
+  const occupiedPort = (reservation.address() as {port: number}).port;
+  const child = spawn(process.execPath, [fileURLToPath(new URL("./index.ts", import.meta.url)), "--port", String(occupiedPort), "--no-open"], {
     windowsHide: true,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
     env: {...process.env, BLUETOOTH_AUDIO_LOG_ENABLED: "0"},
   });
+  t.after(() => {
+    child.kill();
+    rmSync(fileURLToPath(new URL(`../logs/bluetooth-audio-history-${child.pid}.etl`, import.meta.url)), {force: true});
+  });
+  let stdout = "";
   let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", chunk => {stdout += chunk;});
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", chunk => {stderr += chunk;});
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", resolve);
+  const deadline = Date.now() + 10_000;
+  let actualPort = 0;
+  while (Date.now() < deadline) {
+    const match = stdout.match(/蓝牙音频模式检查器已启动：http:\/\/127\.0\.0\.1:(\d+)/);
+    if (match) { actualPort = Number(match[1]); break; }
+    assert.equal(child.exitCode, null, stderr);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.notEqual(actualPort, 0, `没有取得自动端口：${stdout}\n${stderr}`);
+  assert.notEqual(actualPort, occupiedPort);
+  assert.match(stdout, new RegExp(`端口 ${occupiedPort} 已被占用`));
+  assert.match(stdout, new RegExp(`已自动改用空闲端口 ${actualPort}`));
+  assert.equal((await fetch(`http://127.0.0.1:${actualPort}`)).status, 200);
+  const deviceResponse = await fetch(`http://127.0.0.1:${actualPort}/api/devices`);
+  assert.ok([200, 202].includes(deviceResponse.status));
+  const origin = `http://127.0.0.1:${actualPort}`;
+  const invalidWrite = await fetch(`${origin}/api/default-device`, {
+    method: "POST",
+    headers: {"content-type": "application/json", origin},
+    body: JSON.stringify({direction: "invalid", name: "missing"}),
   });
-  assert.equal(exitCode, 1, stderr);
-  assert.match(stderr, new RegExp(`端口 ${port} 已被占用`));
-  assert.match(stderr, /请关闭此前启动的检查器窗口后重试/);
-  assert.match(stderr, /在当前启动命令后追加 --port/);
-  assert.doesNotMatch(stderr, /run\.command/);
+  assert.equal(invalidWrite.status, 400);
+  assert.equal(stderr, "");
 });
 
 
