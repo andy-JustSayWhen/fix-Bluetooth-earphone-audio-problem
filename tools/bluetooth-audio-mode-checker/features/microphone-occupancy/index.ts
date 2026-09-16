@@ -1,5 +1,5 @@
 import { readWindowsMicrophoneUsers } from "../../core/windows-audio-probe/index.ts";
-import { readWindowsProcess, closeWindowsProcess } from "../../core/windows-audio-control/index.ts";
+import { readWindowsProcess, terminateWindowsProcess } from "../../core/windows-audio-control/index.ts";
 import { readMicrophoneUsersAsync as readMacMicrophoneUsers } from "../../core/macos-microphone-usage/index.ts";
 import {
   readRunningProcess,
@@ -52,6 +52,9 @@ export function classifyInputActivities(
 ): MicrophoneUser[] {
   const byName = new Map(devices.map((device) => [device.name, device] as const));
   return users.map((user) => {
+    if (user.inputActivityKind === "HFP 下的暂停输入会话") {
+      return {...user, physicalDeviceNames: [], confirmedDeviceNames: []};
+    }
     const attributableDeviceNames = user.deviceAssociationKind === "ambiguous" ? [] : user.devices;
     const physicalDeviceNames = [...new Set(attributableDeviceNames.filter((name) => {
       const device = byName.get(name);
@@ -128,7 +131,8 @@ export function shouldContinueOccupancyScanning(
   devices: AudioModeAssessment[],
   allUsers: MicrophoneUser[] = [],
 ): boolean {
-  return allUsers.length > 0 || devices.some((device) => (device.microphoneOccupancy?.users.length ?? 0) > 0);
+  const actionableUsers = allUsers.filter((user) => user.inputActivityKind !== "HFP 下的暂停输入会话");
+  return actionableUsers.length > 0 || devices.some((device) => (device.microphoneOccupancy?.users.length ?? 0) > 0);
 }
 
 export function shouldStartOccupancyScanForInputActivity(
@@ -180,17 +184,24 @@ export type MicrophoneReleaseRuntime = {
   wait: (milliseconds: number) => Promise<void>;
 };
 
+export type MicrophoneReleaseEvidenceScope =
+  | "全部已确认占用"
+  | "实体端点占用"
+  | "HFP 暂停输入会话";
+
 const systemReleaseRuntime: MicrophoneReleaseRuntime = {
   now: Date.now,
   readProcess: process.platform === "win32" ? readWindowsProcess : readRunningProcess,
-  terminateProcess: process.platform === "win32" ? closeWindowsProcess : terminateRunningProcess,
+  terminateProcess: process.platform === "win32" ? terminateWindowsProcess : terminateRunningProcess,
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 };
 
 function isConfirmedReleaseUser(user: MicrophoneUser): boolean {
-  return user.inputActivityKind === "已确认实体麦克风占用" && (
+  return user.inputActivityKind === "HFP 下的暂停输入会话" || (
+    user.inputActivityKind === "已确认实体麦克风占用" && (
     (user.confirmedDeviceNames?.length ?? 0) > 0 ||
     (user.occupancyEvidenceKinds?.includes("unclosed-format-request") ?? false)
+    )
   );
 }
 
@@ -228,19 +239,28 @@ export async function confirmAndReleaseMicrophoneOccupancy(
   users: MicrophoneUser[],
   deviceName: string,
   requestedPids: number[] | null,
-  evidenceScope: "全部已确认占用" | "实体端点占用",
+  evidenceScope: MicrophoneReleaseEvidenceScope,
   runtime: MicrophoneReleaseRuntime = systemReleaseRuntime,
 ): Promise<ConfirmedMicrophoneReleaseResult> {
   const activities = classifyInputActivities(devices, users);
-  const confirmedUsers = activities.filter((user) =>
-    user.inputActivityKind === "已确认实体麦克风占用" &&
-    user.confirmedDeviceNames?.includes(deviceName) &&
-    (evidenceScope === "全部已确认占用" || user.physicalDeviceNames?.includes(deviceName))
-  );
+  const targetDevice = devices.find((device) => device.name === deviceName);
+  const confirmedUsers = evidenceScope === "HFP 暂停输入会话"
+    ? activities.filter((user) =>
+      targetDevice?.mode === "HFP_HSP" &&
+      user.inputActivityKind === "HFP 下的暂停输入会话" &&
+      user.devices.includes(deviceName)
+    )
+    : activities.filter((user) =>
+      user.inputActivityKind === "已确认实体麦克风占用" &&
+      user.confirmedDeviceNames?.includes(deviceName) &&
+      (evidenceScope === "全部已确认占用" || user.physicalDeviceNames?.includes(deviceName))
+    );
   const confirmedPids = new Set(confirmedUsers.map((user) => user.pid));
   const selectedPids = requestedPids === null ? [...confirmedPids] : [...new Set(requestedPids)];
   if (selectedPids.some((pid) => !confirmedPids.has(pid))) {
-    throw new Error("当前没有仍有效且已确认的占用或格式请求，未结束任何进程");
+    throw new Error(evidenceScope === "HFP 暂停输入会话"
+      ? "所选程序已不再保持当前耳机的声音输入会话，未结束任何进程"
+      : "当前没有仍有效且已确认的占用或格式请求，未结束任何进程");
   }
   return releaseMicrophoneUsersDetailed(confirmedUsers, selectedPids, runtime);
 }

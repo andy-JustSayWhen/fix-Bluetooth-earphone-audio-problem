@@ -271,3 +271,31 @@ test("活动端点会话优先于系统隐私记录且暂不活跃会话不算�
   assert.equal(users[0].privacyUsageActive, true);
   assert.equal(users[0].deviceAssociationKind, "confirmed");
 });
+
+test("HFP 现场把蓝牙输入端的暂停进程列为未确认活动但不冒充录音", () => {
+  const input = endpoint({
+    flow: "eCapture",
+    id: "xiberia",
+    name: "耳机 (2- XIBERIA K03S)",
+    physicalName: "XIBERIA K03S",
+    transport: "bluetooth",
+    bluetoothAddress: "50C0F0F36A66",
+    sessions: [
+      {pid: 61252, name: "pallas", id: "pallas-session", state: "inactive"},
+      {pid: 70428, name: "RiotClientServices", id: "riot-session", state: "inactive"},
+    ],
+  });
+  const result: WindowsProbeResult = {
+    endpoints: [input],
+    defaults: emptyDefaults,
+    voiceLinks: [{address: "50:C0:F0:F3:6A:66", timestamp: "2026-09-16T02:12:56Z"}],
+    microphonePrivacyUsers: [],
+  };
+
+  const users = windowsMicrophoneUsers(result);
+  assert.deepEqual(users.map(user => ({name: user.name, kind: user.inputActivityKind, devices: user.devices})), [
+    {name: "pallas", kind: "HFP 下的暂停输入会话", devices: ["XIBERIA K03S"]},
+    {name: "RiotClientServices", kind: "HFP 下的暂停输入会话", devices: ["XIBERIA K03S"]},
+  ]);
+  assert.deepEqual(windowsMicrophoneUsers({...result, voiceLinks: []}), []);
+});

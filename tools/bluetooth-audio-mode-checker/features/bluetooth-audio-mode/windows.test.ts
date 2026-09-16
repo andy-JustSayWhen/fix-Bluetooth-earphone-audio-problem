@@ -48,7 +48,7 @@ test("协商格式卡片按字段分行展示，语音链路优先于过时记�
   assert.equal(voice.mode, "HFP_HSP");
   assert.equal(voice.windowsEvidence?.voiceLink?.airMode, 3);
   const [recovered] = assessBluetoothDevices(aggregatePhysicalDevices({...voiceResult, voiceLinks: []}));
-  assert.equal(recovered.mode, "UNKNOWN");
+  assert.equal(recovered.mode, "A2DP");
   assert.deepEqual(negotiatedA2dpFields(recovered.windowsEvidence?.a2dpStream, false), [["格　式", "高音质播放"], ["编　码", "AAC"], ["采样率", "48 kHz"], ["声道数", "2 声道"]]);
   const [streaming] = assessBluetoothDevices(aggregatePhysicalDevices({...voiceResult, voiceLinks: [], a2dpStreams: [{...voiceResult.a2dpStreams![0], streaming: true}]}));
   assert.equal(streaming.mode, "A2DP");
@@ -169,7 +169,7 @@ test("Windows 实时同步连接按地址进入共同 HFP 规则，断开快照�
   }
 });
 
-test("高音质流传输事实正面判定 A2DP，流停止只保留协商展示", () => {
+test("高音质协商格式与模式胶囊共同判定 A2DP，播放状态独立展示", () => {
   const stream = {address: "AABBCCDDEEFF", streaming: true, startedAt: "2026-09-14T11:43:49Z", codec: 2, vendorId: 0, sampleRate: 48000, channels: 2, negotiatedAt: "2026-09-14T11:43:47Z"};
   const result: WindowsProbeResult = {endpoints: [endpoint], defaults: {renderConsole: endpoint, renderComms: null, captureConsole: null}, a2dpStreams: [stream]};
   const [device] = assessBluetoothDevices(aggregatePhysicalDevices(result));
@@ -179,7 +179,9 @@ test("高音质流传输事实正面判定 A2DP，流停止只保留协商展示
   assert.match(device.explanation, /48 kHz/);
   assert.equal(device.windowsEvidence?.a2dpStream?.codec, 2);
   const [stopped] = assessBluetoothDevices(aggregatePhysicalDevices({...result, a2dpStreams: [{...stream, streaming: false}]}));
-  assert.equal(stopped.mode, "UNKNOWN");
+  assert.equal(stopped.mode, "A2DP");
+  assert.equal(stopped.a2dpSupport, "SUPPORTED");
+  assert.match(stopped.explanation, /当前没有声音传输/);
   const [other] = assessBluetoothDevices(aggregatePhysicalDevices({...result, a2dpStreams: [{...stream, address: "112233445566"}]}));
   assert.equal(other.mode, "UNKNOWN");
   const [voice] = assessBluetoothDevices(aggregatePhysicalDevices({...result, voiceLinks: [{address: "AABBCCDDEEFF", timestamp: "2026-09-14T11:44:12Z"}]}));

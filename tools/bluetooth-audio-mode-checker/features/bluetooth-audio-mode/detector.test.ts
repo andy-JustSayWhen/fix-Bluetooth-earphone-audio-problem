@@ -9,6 +9,7 @@ import {
   assessBluetoothDevices,
 } from "./index.ts";
 import {
+  audioLinkLegend,
   audioLinkTypePresentation,
   audioEndpointMetrics,
   deviceModePresentation,
@@ -275,11 +276,11 @@ test("实时事件中的零采样率按未知处理而不是误判为 HFP", () =
   assert.equal(next.devices[0].mode, "UNKNOWN");
 });
 
-test("设备卡为输入输出展示三类采样率并使用设备级声音链路框", () => {
+test("设备卡为输入输出展示三类采样率并使用设备级端点框", () => {
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
 
   assert.match(source, /createElement\("fieldset", "audio-link-group"\)/);
-  assert.match(source, /声音链路类型：/);
+  assert.match(source, /audioLinkLegend\(device\)/);
   const [assessment] = assessBluetoothDevices([device({outputChannels: 2, inputChannels: 1})]);
   for (const direction of ["input", "output"]) {
     assert.deepEqual(audioEndpointMetrics(assessment, direction).map(([label]) => label), ["可用采样率", "标称采样率", "实际采样率", "声道"]);
@@ -298,6 +299,12 @@ test("具体声音链路类型统一追加中文解释", () => {
   );
   assert.equal(audioLinkTypePresentation(null), "无法确认");
   assert.equal(audioLinkTypePresentation("其他值"), "无法确认");
+  assert.equal(audioLinkLegend({windowsEvidence: {}, audioLinkType: null}), null);
+  assert.equal(
+    audioLinkLegend({windowsEvidence: {}, audioLinkType: "tsco"}),
+    "当前蓝牙链路：tsco（同步传输，常用于语音通话）",
+  );
+  assert.equal(audioLinkLegend({audioLinkType: null}), "声音链路类型：无法确认");
 });
 
 test("输入开始或停止采集只更新活动状态，不直接改变模式", () => {
@@ -437,10 +444,10 @@ test("一键修复只在更新时间后显示一个列表级入口", () => {
   assert.match(pageSource, /triggerContainer: recoveryTriggerElement/);
   assert.doesNotMatch(pageSource, /createElement\("button", "recovery-trigger"/);
   assert.match(recoverySource, /const repairableDevices = devices\.filter\(isA2dpRecoveryTarget\)/);
-  assert.match(recoverySource, /`识别到有 \$\{repairableDevices\.length\} 个设备处于 HFP`/);
+  assert.match(recoverySource, /`\$\{repairableDevices\.length\} 台设备正在使用低音质通话模式`/);
   assert.doesNotMatch(recoverySource, /其中 \$\{repairableDevices\.length\} 个需要修复/);
   assert.match(recoverySource, /createElement\("button", `recovery-trigger/);
-  assert.match(recoverySource, /"一键修复全部需要修复的 HFP 设备"/);
+  assert.match(recoverySource, /"修复全部处于低音质通话模式的设备"/);
   assert.match(recoverySource, /terminalBatchState === "success" \? "成功" : "错误"/);
   assert.match(recoverySource, /terminalDisplayMs = 10_000/);
 });
@@ -567,7 +574,11 @@ test("无法形成占用证据的声音活动必须脱离具体设备卡片展�
   const source = readFileSync(new URL("./web/client.js", import.meta.url), "utf8");
 
   assert.match(source, /其他声音输入活动/);
-  assert.match(source, /以下活动不属于当前蓝牙设备/);
+  assert.match(source, /下面这些程序最近使用过某个蓝牙音频设备的麦克风，现在没有继续调用，但可能未向系统报告退出占用，所以耳机仍停在HFP低音质通话模式。你可以：1.勾选需要处理的程序并点击“结束进程”；2.或者点击“一键修复”，尝试自动修复。/);
+  assert.match(source, /有的进程可能无法关闭，或者会自动重启，进而继续导致你的蓝牙音频设备处于HFP。此时，除了魔改该进程的代码，或者把输入切到非蓝牙设备，否则你的设备将始终受到HFP的困扰。/);
+  assert.match(source, /if \(hasPossibleHfpReleaseIssue\)/);
+  assert.doesNotMatch(source, /耳机仍停在低音质通话模式，但下面这些程序当前没有录音/);
+  assert.doesNotMatch(source, /先只把麦克风切走再切回/);
   assert.match(source, /正在占用其他输入设备/);
   assert.match(source, /存在输入活动，具体麦克风未确认/);
   assert.doesNotMatch(source, /存在未归属读取/);
@@ -578,6 +589,11 @@ test("无法形成占用证据的声音活动必须脱离具体设备卡片展�
   assert.match(source, /\$\{user\.name\}（格式请求）/);
   assert.doesNotMatch(source, /formatRequestOccupancyOverview/);
   assert.doesNotMatch(source, /releaseOccupancy\(null/);
+  assert.match(source, /input-activity-overview__pid/);
+  assert.match(source, /input-activity-overview__checkbox/);
+  assert.match(source, /input-activity-overview__release/);
+  assert.match(source, /releaseSelectedHfpCandidates/);
+  assert.match(source, /hfp-paused-session/);
 });
 
 test("其他输入活动明确显示已关联的非蓝牙设备", () => {
@@ -596,6 +612,16 @@ test("其他输入活动明确显示已关联的非蓝牙设备", () => {
     devices: [],
     inputActivityKind: "未确认麦克风占用的输入活动",
   }), "存在输入活动，具体麦克风未确认 · 进程 100");
+});
+
+test("HFP 下的暂停输入会话单行不重复总说明", () => {
+  assert.equal(inputActivityPresentation({
+    pid: 61252,
+    name: "pallas",
+    bundleId: "",
+    devices: ["XIBERIA K03S"],
+    inputActivityKind: "HFP 下的暂停输入会话",
+  }), "");
 });
 
 test("Windows 已确认程序使用麦克风时显示系统事实和设备归属边界", () => {
@@ -737,6 +763,8 @@ test("单独解除占用显示阶段、主动复查并在十秒后清除终态�
   assert.match(source, /已重新占用/);
   assert.match(source, /const occupancyTerminalDisplayMs = 10_000/);
   assert.match(source, /kind: "success"[\s\S]*?\}, occupancyTerminalDisplayMs\)/);
-  assert.match(source, /解除失败：\$\{error\.message\}[\s\S]*?occupancyTerminalDisplayMs/);
+  assert.match(source, /结束成功，但该进程已重启/);
+  assert.match(source, /kind: "warning"[\s\S]*?\}, occupancyTerminalDisplayMs\)/);
+  assert.match(source, /结束失败：\$\{error\.message\}[\s\S]*?occupancyTerminalDisplayMs/);
   assert.match(source, /occupancyFeedback\.get\(deviceName\) === feedback/);
 });

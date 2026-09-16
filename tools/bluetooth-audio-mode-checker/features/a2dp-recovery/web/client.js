@@ -28,7 +28,7 @@ export function createA2dpRecoveryController({
     overview.append(createElement(
       "span",
       "recovery-overview__count",
-      `识别到有 ${repairableDevices.length} 个设备处于 HFP`,
+      `${repairableDevices.length} 台设备正在使用低音质通话模式`,
     ));
     if (terminalBatchState) {
       const result = createElement(
@@ -50,7 +50,7 @@ export function createA2dpRecoveryController({
       const button = createElement("button", `recovery-trigger${isBusy ? " is-running" : ""}`, label);
       button.type = "button";
       button.disabled = isBusy;
-      button.setAttribute("aria-label", "一键修复全部需要修复的 HFP 设备");
+      button.setAttribute("aria-label", "修复全部处于低音质通话模式的设备");
       if (!button.disabled) button.addEventListener("click", () => recoverAll(getLastRenderedDevices()));
       overview.append(button);
     }

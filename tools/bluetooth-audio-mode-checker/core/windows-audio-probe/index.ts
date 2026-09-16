@@ -396,7 +396,35 @@ export function windowsMicrophoneUsers(result: WindowsProbeResult) {
       deviceAssociationKind: devices.length === 1 ? "confirmed" as const : devices.length > 1 ? "ambiguous" as const : "unavailable" as const,
     };
   });
-  return [...activeUsers, ...privacyUsers];
+  const representedPids = new Set([...activePids, ...privacyUsers.map(user => user.pid)]);
+  const voiceAddresses = new Set((result.voiceLinks ?? []).map(link => link.address.replace(/[^0-9a-f]/gi, "").toUpperCase()));
+  const inactiveByPid = new Map<number, {pid: number; name: string; devices: Set<string>}>();
+  for (const endpoint of result.endpoints.filter(endpoint =>
+    endpoint.flow === "eCapture" &&
+    endpoint.transport.startsWith("bluetooth") &&
+    endpoint.bluetoothAddress &&
+    voiceAddresses.has(endpoint.bluetoothAddress.replace(/[^0-9a-f]/gi, "").toUpperCase())
+  )) {
+    const deviceName = endpointDeviceName(endpoint, result);
+    for (const session of endpoint.sessions ?? []) {
+      if (session.state !== "inactive" || session.pid <= 0 || representedPids.has(session.pid) || session.name === "Unknown process") continue;
+      const current = inactiveByPid.get(session.pid) ?? {pid: session.pid, name: session.name, devices: new Set<string>()};
+      current.devices.add(deviceName);
+      inactiveByPid.set(session.pid, current);
+    }
+  }
+  const inactiveUsers = [...inactiveByPid.values()].map(user => ({
+    pid: user.pid,
+    name: user.name,
+    bundleId: "",
+    devices: [...user.devices],
+    inputActivityKind: "HFP 下的暂停输入会话" as const,
+    physicalDeviceNames: [],
+    confirmedDeviceNames: [],
+    occupancyEvidenceKinds: [],
+    deviceAssociationKind: "confirmed" as const,
+  }));
+  return [...activeUsers, ...privacyUsers, ...inactiveUsers];
 }
 
 export async function readWindowsMicrophoneUsers() {

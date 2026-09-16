@@ -4,76 +4,107 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
-    <title>蓝牙音频模式检查器</title>
+    <meta name="theme-color" content="#fff9ee" />
+    <title>蓝牙音频设备模式检查器</title>
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/a2dp-recovery.css" />
     <link rel="stylesheet" href="/speaker-occupancy.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <header class="hero">
-        <div class="hero__mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" role="img">
-            <path d="M12 2v20l6-6-5-4 5-4-6-6Zm2 4.3L15.7 8 14 9.3v-3Zm0 8.4 1.7 1.3L14 17.7v-3ZM6.5 7.5 11 12l-4.5 4.5" />
-          </svg>
-        </div>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="返回页面顶部">
+        <img src="/assets/headphones.svg" alt="" width="24" height="24" />
+        <span>蓝牙音频设备模式检查器</span>
+      </a>
+      <nav class="site-nav" aria-label="页面导航">
+        <a href="#routing">设置默认声音设备</a>
+        <a href="#devices">查看音频设备状态</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
         <div class="hero__copy">
-          <h1>蓝牙音频模式检查器</h1>
-          <p>快速确认耳机当前是A2DP模式，还是已经进入HFP模式。</p>
+          <h1 id="hero-title">
+            <span>快速检查蓝牙音频模式</span>
+            <em>一键修复蓝牙扬声器声音异常</em>
+          </h1>
+          <p class="hero__lead">绝大多数的蓝牙耳机等蓝牙音频设备都不支持LE Audio。这意味着，一旦电脑的某个App调用了该设备的麦克风，期间，该设备就会进入HFP模式。在该模式下，如果扬声器在播放音频，那么听感会变得非常闷，音质非常差，有时还会伴随回音。本工具可以快速帮你检测电脑上的某个蓝牙音频设备是否处于HFP模式，如果处于，则可以通过工具的“一键修复”按钮，尝试自动修复。</p>
+          <div class="hero__actions">
+            <button class="refresh-button" id="refresh-button" type="button">
+              <img src="/assets/arrows-clockwise.svg" alt="" width="20" height="20" />
+              <span>刷新设备列表</span>
+            </button>
+            <a class="secondary-button" href="#devices">查看设备状态</a>
+          </div>
+          <section class="status-bar" aria-live="polite" aria-label="设备状态摘要">
+            <div>
+              <span class="status-dot" id="status-dot"></span>
+              <strong id="device-count">正在读取设备…</strong>
+              <span id="refresh-time">请稍候</span>
+              <div id="a2dp-recovery-trigger"></div>
+            </div>
+          </section>
         </div>
-        <button class="refresh-button" id="refresh-button" type="button">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M20 7v5h-5M4 17v-5h5M6.1 8.5A7 7 0 0 1 18.7 7M17.9 15.5A7 7 0 0 1 5.3 17" />
-          </svg>
-          <span>刷新设备</span>
-        </button>
-      </header>
 
-      <section class="route-panel" aria-label="系统默认声音设备">
-        <div class="route-control">
-          <label for="output-device">当前默认声音输出设备（系统输出端点）</label>
-          <div class="select-wrap">
-            <select id="output-device" data-direction="output" disabled>
-              <option>正在读取…</option>
-            </select>
-          </div>
-        </div>
-        <div class="route-control">
-          <label for="input-device">当前默认声音输入设备（麦克风）</label>
-          <div class="select-wrap">
-            <select id="input-device" data-direction="input" disabled>
-              <option>正在读取…</option>
-            </select>
-          </div>
-        </div>
-        <p class="route-message" id="route-message" aria-live="polite">选择其他设备后会立即写入系统。</p>
       </section>
 
-      <section class="status-bar" aria-live="polite">
-        <div>
-          <span class="status-dot" id="status-dot"></span>
-          <strong id="device-count">正在读取设备…</strong>
-          <span id="refresh-time">请稍候</span>
-          <div id="a2dp-recovery-trigger"></div>
+      <section class="workspace-section workspace-section--routing" id="routing" aria-labelledby="routing-title">
+        <div class="section-heading">
+          <span>01</span>
+          <div>
+            <p>设置系统默认扬声器和麦克风</p>
+            <h2 id="routing-title">设置默认声音设备</h2>
+          </div>
+        </div>
+
+        <div class="route-panel" aria-label="系统默认声音设备">
+          <div class="route-control">
+            <label for="output-device">系统默认扬声器</label>
+            <div class="select-wrap">
+              <select id="output-device" data-direction="output" disabled>
+                <option>正在读取…</option>
+              </select>
+            </div>
+          </div>
+          <div class="route-control">
+            <label for="input-device">系统默认麦克风</label>
+            <div class="select-wrap">
+              <select id="input-device" data-direction="input" disabled>
+                <option>正在读取…</option>
+              </select>
+            </div>
+          </div>
+          <p class="route-message" id="route-message" aria-live="polite">上述修改，等价于你进入当前电脑的设置App＞声音，选择扬声器（输出）和麦克风（输入）设备</p>
         </div>
       </section>
 
-      <section class="device-list" id="device-list" aria-label="蓝牙音频设备列表">
-        <div class="loading-card">
-          <span class="loading-card__pulse"></span>
-          <span class="loading-card__pulse"></span>
-          <span class="loading-card__pulse loading-card__pulse--short"></span>
+      <section class="workspace-section workspace-section--devices" id="devices" aria-labelledby="devices-title">
+        <div class="section-heading">
+          <span>02</span>
+          <div>
+            <p>查看任意蓝牙音频设备的输入输出细节</p>
+            <h2 id="devices-title">查看蓝牙音频设备状态</h2>
+          </div>
         </div>
+
+        <section class="device-list" id="device-list" aria-label="蓝牙音频设备列表">
+          <div class="loading-card">
+            <span class="loading-card__pulse"></span>
+            <span class="loading-card__pulse"></span>
+            <span class="loading-card__pulse loading-card__pulse--short"></span>
+          </div>
+        </section>
       </section>
     </main>
 
     <template id="empty-template">
       <div class="empty-state">
         <div class="empty-state__icon" aria-hidden="true">
-          <span></span><span></span><span></span>
+          <img src="/assets/headphones.svg" alt="" width="42" height="42" />
         </div>
-        <h2>没有发现蓝牙音频设备</h2>
-        <p>连接耳机或音箱后，点击右上角“刷新设备”。</p>
+        <h2>未发现蓝牙耳机或音箱</h2>
+        <p>连接蓝牙耳机或音箱后，点击“刷新设备列表”。</p>
       </div>
     </template>
 

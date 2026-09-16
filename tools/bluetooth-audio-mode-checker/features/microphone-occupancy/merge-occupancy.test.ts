@@ -104,6 +104,77 @@ test("进程关联实体蓝牙麦克风端点即可确认占用且不要求 tsco
   assert.equal(occupiedWithTacl.microphoneOccupancy?.isInUse, true);
 });
 
+test("HFP 下的暂停输入会话只进入黄色活动区而不计为麦克风占用", () => {
+  const devices = [device({name: "XIBERIA K03S", inputTransport: "bluetooth", mode: "HFP_HSP", audioLinkType: "tsco"})];
+  const users: MicrophoneUser[] = [{
+    pid: 61252,
+    name: "pallas",
+    bundleId: "",
+    devices: ["XIBERIA K03S"],
+    inputActivityKind: "HFP 下的暂停输入会话",
+  }];
+
+  const [classified] = classifyInputActivities(devices, users);
+  const [attached] = attachMicrophoneOccupancyFromUsers(devices, users);
+  assert.equal(classified.inputActivityKind, "HFP 下的暂停输入会话");
+  assert.deepEqual(classified.confirmedDeviceNames, []);
+  assert.equal(attached.microphoneOccupancy?.isInUse, false);
+  assert.equal(shouldContinueOccupancyScanning(devices, users), false);
+});
+
+test("黄色活动区复用统一解除能力结束仍属于当前 HFP 设备的暂停进程", async () => {
+  const devices = [device({name: "XIBERIA K03S", mode: "HFP_HSP", audioLinkType: "tsco"})];
+  const users: MicrophoneUser[] = [{
+    pid: 61252,
+    name: "pallas",
+    bundleId: "",
+    devices: ["XIBERIA K03S"],
+    inputActivityKind: "HFP 下的暂停输入会话",
+  }];
+  const processInfo = {pid: 61252, name: "pallas", command: "pallas.exe", startedAt: "2026-09-16T04:00:00Z"};
+  let running = true;
+  const result = await confirmAndReleaseMicrophoneOccupancy(
+    devices,
+    users,
+    "XIBERIA K03S",
+    [61252],
+    "HFP 暂停输入会话",
+    {
+      now: Date.now,
+      readProcess: () => running ? processInfo : null,
+      terminateProcess: () => { running = false; },
+      wait: async () => {},
+    },
+  );
+
+  assert.deepEqual(result.requestedPids, [61252]);
+  assert.deepEqual(result.releasedPids, [61252]);
+});
+
+test("黄色活动区旧名单在设备已离开 HFP 后不得结束进程", async () => {
+  const users: MicrophoneUser[] = [{
+    pid: 61252,
+    name: "pallas",
+    bundleId: "",
+    devices: ["XIBERIA K03S"],
+    inputActivityKind: "HFP 下的暂停输入会话",
+  }];
+  let terminated = false;
+  await assert.rejects(confirmAndReleaseMicrophoneOccupancy(
+    [device({name: "XIBERIA K03S", mode: "A2DP", audioLinkType: "tacl"})],
+    users,
+    "XIBERIA K03S",
+    [61252],
+    "HFP 暂停输入会话",
+    {
+      readProcess: () => ({pid: 61252, name: "pallas", command: "pallas.exe", startedAt: "2026-09-16T04:00:00Z"}),
+      terminateProcess: () => { terminated = true; },
+      wait: async () => {},
+    },
+  ), /已不再保持当前耳机的声音输入会话/);
+  assert.equal(terminated, false);
+});
+
 test("内置输入即使有进程读取也不得归为蓝牙麦克风占用", () => {
   const [notOccupied] = attachMicrophoneOccupancyFromUsers([
     device({ inputTransport: "built-in", audioLinkType: "tsco" }),

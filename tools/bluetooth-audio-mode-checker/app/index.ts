@@ -65,11 +65,17 @@ const allowedAssets = new Set([
   "a2dp-recovery.css",
   "speaker-occupancy-client.js",
   "speaker-occupancy.css",
+  "assets/headphones.svg",
+  "assets/arrows-clockwise.svg",
+  "assets/waveform.svg",
+  "assets/speaker-high.svg",
+  "assets/arrow-down.svg",
 ]);
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml; charset=utf-8",
 };
 const manualRefreshMinimumIntervalMs = 2_500;
 
@@ -247,7 +253,7 @@ function main(): void {
   const releaseConfirmedMicrophoneOccupancy = async (
     deviceName: string,
     requestedPids: number[] | null,
-    evidenceScope: "全部已确认占用" | "实体端点占用",
+    evidenceScope: "全部已确认占用" | "实体端点占用" | "HFP 暂停输入会话",
   ) => {
     if (cachedState === null) throw new Error("当前没有可用的设备与链路状态");
     const result = await releaseCurrentMicrophoneOccupancy({
@@ -632,7 +638,7 @@ function main(): void {
 
     if (request.method === "POST" && url.pathname === "/api/microphone-occupancy/release") {
       try {
-        const body = await readLocalJsonBody(request, options.port) as { deviceName?: unknown; pids?: unknown };
+        const body = await readLocalJsonBody(request, options.port) as { deviceName?: unknown; pids?: unknown; releaseKind?: unknown };
         if (typeof body.deviceName !== "string" || body.deviceName.length === 0) {
           throw new Error("麦克风设备无效");
         }
@@ -642,14 +648,19 @@ function main(): void {
         }
         const requestedPids = [...new Set(body.pids as number[])];
         if (requestedPids.length === 0) throw new Error("占用程序列表无效");
+        const releaseKind = body.releaseKind ?? "confirmed-occupancy";
+        if (releaseKind !== "confirmed-occupancy" && releaseKind !== "hfp-paused-session") {
+          throw new Error("结束进程类型无效");
+        }
         detailedLog("info", "microphone-occupancy.release-requested", {
           deviceName,
           pids: requestedPids,
+          releaseKind,
         });
         const release = await releaseConfirmedMicrophoneOccupancy(
           deviceName,
           requestedPids,
-          "全部已确认占用",
+          releaseKind === "hfp-paused-session" ? "HFP 暂停输入会话" : "全部已确认占用",
         );
         const evidence = release.users.map((user) => ({
           pid: user.pid,
@@ -665,6 +676,7 @@ function main(): void {
           releasedPids: release.releasedPids,
           remainingPids: release.remainingPids,
           protectedPids: release.protectedPids,
+          restartedProcesses: release.restartedProcesses,
         };
         detailedLog("info", "microphone-occupancy.release-completed", { evidence, result });
         schedulePostMicrophoneActionRefresh("manual-release-completed");
@@ -675,7 +687,7 @@ function main(): void {
       } catch (error) {
         detailedLog("error", "microphone-occupancy.release-failed", { error });
         sendJson(response, 400, {
-          error: error instanceof Error ? error.message : "解除麦克风占用失败",
+          error: error instanceof Error ? error.message : "结束进程失败",
         });
       }
       return;

@@ -69,3 +69,5 @@ Windows 11：
 项目目录结构和新增、移动文件的规则统一维护在 [`reference/项目目录树.md`](reference/项目目录树.md)。其中 `test/` 的一级目录按完整测试案例划分；同一案例的原始文件和测试产物放在同一个案例目录内，不按文件类型建立一级目录。
 
 Windows 用户请进入 [蓝牙音频模式检查器目录](tools/bluetooth-audio-mode-checker/)，双击 `run.cmd`。运行要求与操作见该目录说明，平台能力以 [Windows适配规格](reference/SPEC/Windows适配.md) 为原文。
+
+普通 Windows 用户可以直接从 [最新 Release 下载页](https://github.com/andy-JustSayWhen/fix-Bluetooth-earphone-audio-problem/releases/latest) 获取 `windows-x64` 压缩包。完整解压后，双击根目录的 `一键运行.cmd` 即可使用；发布包已内置运行环境，不需要预先安装 Node.js。

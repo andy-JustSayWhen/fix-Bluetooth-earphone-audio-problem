@@ -133,6 +133,7 @@ export type MicrophoneUser = {
   inputActivityKind?:
     | "已确认实体麦克风占用"
     | "系统声音采集"
+    | "HFP 下的暂停输入会话"
     | "未确认麦克风占用的输入活动";
   physicalDeviceNames?: string[];
   confirmedDeviceNames?: string[];

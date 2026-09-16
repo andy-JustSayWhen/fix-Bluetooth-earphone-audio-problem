@@ -100,6 +100,15 @@ export function audioLinkTypePresentation(audioLinkType) {
   return "无法确认";
 }
 
+export function audioLinkLegend(device) {
+  if (device.windowsEvidence) {
+    return device.audioLinkType
+      ? `当前蓝牙链路：${audioLinkTypePresentation(device.audioLinkType)}`
+      : null;
+  }
+  return `声音链路类型：${audioLinkTypePresentation(device.audioLinkType)}`;
+}
+
 function formatRate(rate) {
   if (!rate) return "无法读取";
   return `${rate / 1000} kHz`;
@@ -192,6 +201,9 @@ export function inputActivityPresentation(user) {
     return `系统声音采集 · ${processIdentity}`;
   }
   const deviceNames = [...new Set((user.devices ?? []).filter(Boolean))];
+  if (user.inputActivityKind === "HFP 下的暂停输入会话") {
+    return "";
+  }
   if (user.privacyUsageActive) {
     if (user.deviceAssociationKind === "confirmed" && deviceNames.length === 1) {
       return `Windows 已确认正在使用麦克风：${deviceNames[0]} · ${processIdentity}`;
@@ -227,6 +239,7 @@ const occupancyTerminalDisplayMs = 10_000;
 const occupancyFeedback = new Map();
 const occupancyFeedbackTimers = new Map();
 const occupancyBusyDevices = new Set();
+const selectedHfpCandidatePids = new Set();
 let lastRenderedDevices = [];
 let lastMicrophoneUsers = [];
 let lastRenderedRoutes = null;
@@ -263,7 +276,8 @@ function metricGroup(label, metrics) {
 
 function audioLinkGroup(device) {
   const linkGroup = createElement("fieldset", "audio-link-group");
-  linkGroup.append(createElement("legend", "", `声音链路类型：${audioLinkTypePresentation(device.audioLinkType)}`));
+  const legend = audioLinkLegend(device);
+  if (legend) linkGroup.append(createElement("legend", "", legend));
   const directions = createElement("div", "metric-groups");
   if (device.outputChannels > 0) {
     const outputMetrics = audioEndpointMetrics(device, "output").map(([label, value]) => metric(label, value));
@@ -322,36 +336,54 @@ function occupancyUserLabel(user) {
     : user.name;
 }
 
-async function releaseOccupancy(deviceName, users) {
+async function releaseOccupancy(deviceName, users, releaseKind = "confirmed-occupancy", skipConfirmation = false) {
   const pids = users.map((user) => user.pid);
   const label = users.length === 1 ? occupancyUserLabel(users[0]) : "全部占用程序";
-  if (!pids.length || !window.confirm(`确定要结束“${label}”并解除麦克风占用吗？未保存的内容可能丢失。`)) return;
+  const isPausedSession = releaseKind === "hfp-paused-session";
+  const confirmation = isPausedSession
+    ? `确定要结束“${label}”并尝试释放耳机通话模式吗？未保存的内容可能丢失。`
+    : `确定要结束“${label}”并解除麦克风占用吗？未保存的内容可能丢失。`;
+  if (!pids.length || (!skipConfirmation && !window.confirm(confirmation))) return false;
   occupancyBusyDevices.add(deviceName);
-  setOccupancyFeedback(deviceName, { kind: "pending", text: "正在请求程序退出并复查占用，通常在 1 秒左右完成…" });
+  setOccupancyFeedback(deviceName, { kind: "pending", text: "正在结束指定进程并复查占用，通常在 1 秒左右完成…" });
   renderDevices(lastRenderedDevices);
   try {
     const result = await postJson(
       "/api/microphone-occupancy/release",
-      { deviceName, pids },
+      { deviceName, pids, releaseKind },
       "解除失败",
     );
     if (result.protectedPids?.length) {
       setOccupancyFeedback(deviceName, {
         kind: "error",
-        text: "系统核心进程受到保护，未发送退出请求。请保留现场并检查占用归属证据。",
+        text: "结束失败：系统核心进程受到保护，未发送结束请求。",
       });
     } else if (result.remainingPids?.length) {
       setOccupancyFeedback(deviceName, {
         kind: "error",
-        text: `解除未成功：仍有 ${result.remainingPids.length} 个程序保持当前占用。程序可能拒绝了正常退出请求。`,
+        text: `结束失败：仍有 ${result.remainingPids.length} 个指定进程没有结束。`,
       });
+    } else if (result.restartedProcesses?.length) {
+      const restarted = result.restartedProcesses
+        .map((processInfo) => `${processInfo.name}（新进程号 ${processInfo.currentPid}）`)
+        .join("、");
+      setOccupancyFeedback(deviceName, {
+        kind: "warning",
+        text: `结束成功，但该进程已重启：${restarted}。工具没有再次结束它。`,
+        releasedAt: Date.now(),
+        releasedNames: users
+          .filter((user) => result.releasedPids.includes(user.pid))
+          .map((user) => user.name),
+      }, occupancyTerminalDisplayMs);
     } else if (result.releasedPids?.length) {
       const inputMethodHint = /WeType|微信输入法/i.test(label)
         ? " 微信输入法会自动重新启动，但本机实测发现语音快捷键可能不会同时恢复；如无法再次唤起语音，请切换一次输入法，或在微信输入法的语音设置中关闭再开启免提模式。"
         : "";
       setOccupancyFeedback(deviceName, {
         kind: "success",
-        text: `系统已确认：相关旧进程已经退出，当前占用已解除。程序自己的语音图标可能需要片刻才会复位。${inputMethodHint}`,
+        text: isPausedSession
+          ? `系统已确认：所选旧进程已经退出，正在重新检查耳机通话模式。${inputMethodHint}`
+          : `系统已确认：相关旧进程已经退出，当前占用已解除。程序自己的语音图标可能需要片刻才会复位。${inputMethodHint}`,
         releasedAt: Date.now(),
         releasedNames: users
           .filter((user) => result.releasedPids.includes(user.pid))
@@ -363,17 +395,39 @@ async function releaseOccupancy(deviceName, users) {
         text: "操作前占用已经消失，无需解除。",
       });
     }
+    return !(result.protectedPids?.length || result.remainingPids?.length);
   } catch (error) {
     setOccupancyFeedback(
       deviceName,
-      { kind: "error", text: `解除失败：${error.message}` },
+      { kind: "error", text: `结束失败：${error.message}` },
       occupancyTerminalDisplayMs,
     );
+    return false;
   } finally {
     occupancyBusyDevices.delete(deviceName);
     renderDevices(lastRenderedDevices);
     schedulePostActionRefresh();
   }
+}
+
+async function releaseSelectedHfpCandidates(candidates) {
+  const selected = candidates.filter(({user}) => selectedHfpCandidatePids.has(user.pid));
+  if (selected.length === 0) return;
+  const labels = selected.map(({user}) => `${user.name}（进程 ${user.pid}）`).join("、");
+  if (!window.confirm(`确定要结束以下进程并尝试释放耳机通话模式吗？${labels}。未保存的内容可能丢失。`)) return;
+  const byDevice = new Map();
+  for (const candidate of selected) {
+    const group = byDevice.get(candidate.deviceName) ?? [];
+    group.push(candidate.user);
+    byDevice.set(candidate.deviceName, group);
+  }
+  const completedPids = new Set();
+  for (const [deviceName, users] of byDevice) {
+    const completed = await releaseOccupancy(deviceName, users, "hfp-paused-session", true);
+    if (completed) for (const user of users) completedPids.add(user.pid);
+  }
+  for (const pid of completedPids) selectedHfpCandidatePids.delete(pid);
+  renderDevices(lastRenderedDevices);
 }
 
 function microphoneOccupancySection(device) {
@@ -464,25 +518,76 @@ function inputActivityOverview() {
     user.inputActivityKind !== "已确认实体麦克风占用"
   );
   if (activities.length === 0) return null;
+  const hasPossibleHfpReleaseIssue = activities.some(
+    (user) => user.inputActivityKind === "HFP 下的暂停输入会话"
+  );
+  const explanation = hasPossibleHfpReleaseIssue
+    ? "下面这些程序最近使用过某个蓝牙音频设备的麦克风，现在没有继续调用，但可能未向系统报告退出占用，所以耳机仍停在HFP低音质通话模式。你可以：1.勾选需要处理的程序并点击“结束进程”；2.或者点击“一键修复”，尝试自动修复。"
+    : "这里显示尚未确认使用了哪个麦克风的声音输入活动；已关联设备时会显示名称。";
   const section = createElement("section", "input-activity-overview");
   section.append(
     createElement("strong", "", "其他声音输入活动"),
-    createElement(
-      "p",
-      "",
-      "以下活动不属于当前蓝牙设备。已关联其他输入设备时会显示设备名称；无法归属时会明确标为未确认。这里不提供蓝牙麦克风解除按钮。",
-    ),
+    createElement("p", "", explanation),
   );
+  if (hasPossibleHfpReleaseIssue) {
+    section.append(createElement(
+      "p",
+      "input-activity-overview__warning",
+      "有的进程可能无法关闭，或者会自动重启，进而继续导致你的蓝牙音频设备处于HFP。此时，除了魔改该进程的代码，或者把输入切到非蓝牙设备，否则你的设备将始终受到HFP的困扰。",
+    ));
+  }
   const list = createElement("div", "input-activity-overview__list");
+  const candidates = activities.flatMap((user) => {
+    if (user.inputActivityKind !== "HFP 下的暂停输入会话") return [];
+    const target = lastRenderedDevices.find((device) =>
+      device.mode === "HFP_HSP" && user.devices?.includes(device.name)
+    );
+    return target ? [{user, deviceName: target.name}] : [];
+  });
+  const currentCandidatePids = new Set(candidates.map(({user}) => user.pid));
+  for (const pid of [...selectedHfpCandidatePids]) {
+    if (!currentCandidatePids.has(pid)) selectedHfpCandidatePids.delete(pid);
+  }
+  if (candidates.length > 0) {
+    const header = createElement("div", "input-activity-overview__header");
+    header.append(
+      createElement("span", "", "程序名称"),
+      createElement("span", "", "进程号"),
+      createElement("span", "", "选择"),
+    );
+    list.append(header);
+  }
   for (const user of activities) {
     const row = createElement("div", "input-activity-overview__item");
-    row.append(
-      createElement("strong", "", user.name),
-      createElement("span", "", inputActivityPresentation(user)),
-    );
+    row.append(createElement("strong", "", user.name));
+    const candidate = candidates.find((item) => item.user.pid === user.pid);
+    if (candidate) {
+      row.classList.add("is-selectable");
+      row.append(createElement("span", "input-activity-overview__pid", String(user.pid)));
+      const checkbox = createElement("input", "input-activity-overview__checkbox");
+      checkbox.type = "checkbox";
+      checkbox.checked = selectedHfpCandidatePids.has(user.pid);
+      checkbox.setAttribute("aria-label", `选择 ${user.name}，进程 ${user.pid}`);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) selectedHfpCandidatePids.add(user.pid);
+        else selectedHfpCandidatePids.delete(user.pid);
+        renderDevices(lastRenderedDevices);
+      });
+      row.append(checkbox);
+    } else {
+      const presentation = inputActivityPresentation(user);
+      if (presentation) row.append(createElement("span", "", presentation));
+    }
     list.append(row);
   }
   section.append(list);
+  if (candidates.length > 0) {
+    const releaseSelected = createElement("button", "input-activity-overview__release", "结束进程");
+    releaseSelected.type = "button";
+    releaseSelected.disabled = !candidates.some(({user}) => selectedHfpCandidatePids.has(user.pid));
+    releaseSelected.addEventListener("click", () => releaseSelectedHfpCandidates(candidates));
+    section.append(releaseSelected);
+  }
   return section;
 }
 
@@ -559,7 +664,7 @@ function renderRoutes(routes) {
 function showRouteGuidance(routes) {
   const risk = describeBluetoothRouteRisk(routes);
   routeMessage.className = risk ? "route-message is-warning" : "route-message";
-  routeMessage.textContent = risk || "选择其他设备后会立即写入系统。";
+  routeMessage.textContent = risk || "上述修改，等价于你进入当前电脑的设置App＞声音，选择扬声器（输出）和麦克风（输入）设备";
 }
 
 function updatePendingRouteMessage(routes) {

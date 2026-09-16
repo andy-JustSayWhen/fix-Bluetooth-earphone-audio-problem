@@ -82,7 +82,8 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     ...base.availableSampleRateRangesOutput.map((range) => range.maximum),
   ) || null;
   if (base.windowsEvidence) base = {...base, maxSupportedOutputRate: maxAvailableOutputRate};
-  const a2dpSupport = a2dpStream?.streaming === true
+  const hasNegotiatedA2dpFormat = a2dpStream !== null && (a2dpStream.streaming || a2dpStream.negotiatedAt !== null);
+  const a2dpSupport = hasNegotiatedA2dpFormat
     ? "SUPPORTED"
     : maxAvailableOutputRate === null
       ? "UNKNOWN"
@@ -114,8 +115,9 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
     };
   }
 
-  if (classicRulesApply && a2dpStream?.streaming === true) {
+  if (classicRulesApply && hasNegotiatedA2dpFormat) {
     const negotiated = describeNegotiatedA2dpStream(a2dpStream);
+    const isStreaming = a2dpStream?.streaming === true;
     return {
       ...base,
       a2dpSupport,
@@ -123,7 +125,9 @@ function classifyFacts(base: AssessmentFacts): AudioModeAssessment {
       mode: "A2DP",
       label: "A2DP等模式（高音质播放模式）",
       confidence: "高",
-      explanation: `系统蓝牙栈报告该设备的高音质（A2DP）流正在传输，且没有更新的语音链路事实，因此判定为 A2DP 等高音质播放模式。${negotiated === "尚未取得" ? "" : `最近协商：${negotiated}。`}`,
+      explanation: isStreaming
+        ? `系统蓝牙栈报告该设备的高音质（A2DP）流正在传输，且没有更新的语音链路事实，因此判定为 A2DP 等高音质播放模式。${negotiated === "尚未取得" ? "" : `最近协商：${negotiated}。`}`
+        : `设备卡的蓝牙协商格式已显示高音质播放，且没有更新的语音链路事实，因此模式胶囊同步显示 A2DP 等模式。当前没有声音传输，由被占用情况单独表示。${negotiated === "尚未取得" ? "" : `最近协商：${negotiated}。`}`,
     };
   }
 
