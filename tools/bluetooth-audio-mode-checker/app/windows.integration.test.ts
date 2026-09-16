@@ -57,6 +57,30 @@ test("Windows 服务能够从首次加载进入真实设备状态，并处理刷
   assert.equal(stderr, "");
 });
 
+test("端口占用提示使用当前启动命令而不引用其他平台脚本", {skip: process.platform !== "win32", timeout: 10_000}, async t => {
+  const reservation = createServer();
+  await new Promise<void>(resolve => reservation.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => reservation.close(() => resolve())));
+  const port = (reservation.address() as {port: number}).port;
+  const child = spawn(process.execPath, [fileURLToPath(new URL("./index.ts", import.meta.url)), "--port", String(port), "--no-open"], {
+    windowsHide: true,
+    stdio: ["ignore", "ignore", "pipe"],
+    env: {...process.env, BLUETOOTH_AUDIO_LOG_ENABLED: "0"},
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", chunk => {stderr += chunk;});
+  const exitCode = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  assert.equal(exitCode, 1, stderr);
+  assert.match(stderr, new RegExp(`端口 ${port} 已被占用`));
+  assert.match(stderr, /请关闭此前启动的检查器窗口后重试/);
+  assert.match(stderr, /在当前启动命令后追加 --port/);
+  assert.doesNotMatch(stderr, /run\.command/);
+});
+
 
 test("原生控制器解析区分成功、失败、断开和截断事件", {skip: process.platform !== "win32", timeout: 15_000}, () => {
   const path = fileURLToPath(new URL("../core/windows-audio-probe/probe-audio-endpoints.cs", import.meta.url));

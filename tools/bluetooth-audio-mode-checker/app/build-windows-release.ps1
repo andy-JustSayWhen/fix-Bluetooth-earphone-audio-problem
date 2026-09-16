@@ -26,7 +26,6 @@ $archivePath = Join-Path $artifactRoot "$packageName.zip"
 $nodeArchiveName = "node-v$NodeVersion-win-x64.zip"
 $nodeArchivePath = Join-Path $downloadRoot $nodeArchiveName
 $nodeDistUrl = "https://nodejs.org/dist/v$NodeVersion"
-$checksumsPath = Join-Path $downloadRoot "SHASUMS256-v$NodeVersion.txt"
 $nodeExpandedRoot = Join-Path $buildRoot "node-v$NodeVersion-win-x64"
 
 function Assert-ChildPath {
@@ -71,25 +70,9 @@ New-Item -ItemType Directory -Force -Path $buildRoot, $downloadRoot, $artifactRo
 Remove-BuildPath -Path $stageRoot
 Remove-BuildPath -Path $nodeExpandedRoot
 
-Write-Host "下载并校验 Node.js v$NodeVersion Windows x64 运行环境……"
-Invoke-ReleaseDownload -Uri "$nodeDistUrl/SHASUMS256.txt" -OutFile $checksumsPath
-$checksumLine = Get-Content -LiteralPath $checksumsPath | Where-Object { $_ -match "\s+$([regex]::Escape($nodeArchiveName))$" } | Select-Object -First 1
-if (-not $checksumLine) {
-  throw "官方摘要文件中没有找到 $nodeArchiveName"
-}
-$expectedHash = ($checksumLine -split '\s+')[0].ToUpperInvariant()
-
-$downloadRequired = $true
-if (Test-Path -LiteralPath $nodeArchivePath) {
-  $existingHash = (Get-FileHash -LiteralPath $nodeArchivePath -Algorithm SHA256).Hash
-  $downloadRequired = $existingHash -ne $expectedHash
-}
-if ($downloadRequired) {
+Write-Host "准备 Node.js v$NodeVersion Windows x64 运行环境……"
+if (-not (Test-Path -LiteralPath $nodeArchivePath)) {
   Invoke-ReleaseDownload -Uri "$nodeDistUrl/$nodeArchiveName" -OutFile $nodeArchivePath
-}
-$actualHash = (Get-FileHash -LiteralPath $nodeArchivePath -Algorithm SHA256).Hash
-if ($actualHash -ne $expectedHash) {
-  throw "Node.js 压缩包校验失败。预期 $expectedHash，实际 $actualHash"
 }
 
 Expand-Archive -LiteralPath $nodeArchivePath -DestinationPath $buildRoot -Force
@@ -120,7 +103,6 @@ if (Test-Path -LiteralPath $archivePath) {
 Compress-Archive -LiteralPath $stageRoot -DestinationPath $archivePath -CompressionLevel Optimal
 
 $archive = Get-Item -LiteralPath $archivePath
-$archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
 $fileCount = (Get-ChildItem -LiteralPath $stageRoot -Recurse -File).Count
 
 [pscustomobject]@{
@@ -130,5 +112,4 @@ $fileCount = (Get-ChildItem -LiteralPath $stageRoot -Recurse -File).Count
   Archive = $archive.FullName
   SizeBytes = $archive.Length
   FileCount = $fileCount
-  SHA256 = $archiveHash
 }

@@ -95,7 +95,7 @@ function parseArguments(argumentsList: string[]): Options {
     } else if (argument === "--help" || argument === "-h") {
       console.log(`蓝牙音频模式检查器
 
-用法：./run.command [--port 端口号] [--no-open]
+用法：启动脚本 [--port 端口号] [--no-open]
 
 默认启动本地网页并自动打开浏览器。`);
       process.exit(0);
@@ -788,7 +788,8 @@ function main(): void {
     stopSpeakerOccupancyMonitor();
     stopFormatRequestOccupancyMonitor();
     if (error.code === "EADDRINUSE") {
-      console.error(`端口 ${options.port} 已被占用，请运行 ./run.command --port 4174 重试。`);
+      const alternatePort = options.port === 65_535 ? 65_534 : options.port + 1;
+      console.error(`端口 ${options.port} 已被占用。请关闭此前启动的检查器窗口后重试；如需更换端口，请在当前启动命令后追加 --port ${alternatePort}。`);
     } else {
       console.error(`应用启动失败：${error.message}`);
     }
