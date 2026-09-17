@@ -201,6 +201,9 @@ function main(): void {
     nodeVersion: process.version,
   });
 
+  let listeningPort = options.port;
+  let occupiedRequestedPort: number | null = null;
+
   let cachedState: AudioModeState | null = null;
   let cachedStateUpdatedAt: string | null = null;
   let fullStateUpdatedAtMs = 0;
@@ -606,7 +609,7 @@ function main(): void {
 
     if (request.method === "POST" && url.pathname === "/api/microphone-occupancy/release") {
       try {
-        const body = await readLocalJsonBody(request, options.port) as { deviceName?: unknown; pids?: unknown };
+        const body = await readLocalJsonBody(request, listeningPort) as { deviceName?: unknown; pids?: unknown };
         if (typeof body.deviceName !== "string" || body.deviceName.length === 0) {
           throw new Error("麦克风设备无效");
         }
@@ -658,7 +661,7 @@ function main(): void {
     if (request.method === "POST" && url.pathname === "/api/speaker-occupancy/reconnect") {
       let requestedName: string | null = null;
       try {
-        const body = await readLocalJsonBody(request, options.port) as { name?: unknown };
+        const body = await readLocalJsonBody(request, listeningPort) as { name?: unknown };
         if (typeof body.name !== "string" || body.name.length === 0 || body.name.length > 256) {
           throw new Error("蓝牙设备名称无效");
         }
@@ -703,7 +706,7 @@ function main(): void {
 
     if (request.method === "POST" && url.pathname === "/api/a2dp-recovery") {
       try {
-        const body = await readLocalJsonBody(request, options.port) as Record<string, unknown>;
+        const body = await readLocalJsonBody(request, listeningPort) as Record<string, unknown>;
         if (typeof body.name !== "string" || body.name.length === 0) throw new Error("设备名称无效");
         if (Object.keys(body).some((key) => key !== "name")) throw new Error("修复请求只能提交目标设备名称");
         const clickedAt = new Date().toISOString();
@@ -746,7 +749,7 @@ function main(): void {
 
     if (request.method === "POST" && url.pathname === "/api/default-device") {
       try {
-        const body = await readLocalJsonBody(request, options.port) as { direction?: unknown; name?: unknown };
+        const body = await readLocalJsonBody(request, listeningPort) as { direction?: unknown; name?: unknown };
         if ((body.direction !== "input" && body.direction !== "output") || typeof body.name !== "string") {
           throw new Error("声音设备选择无效");
         }
@@ -785,16 +788,19 @@ function main(): void {
   });
 
   server.on("error", (error: NodeJS.ErrnoException) => {
-    detailedLog("error", "service.server-error", { error, port: options.port });
+    if (error.code === "EADDRINUSE" && occupiedRequestedPort === null) {
+      occupiedRequestedPort = listeningPort;
+      detailedLog("warn", "service.port-in-use", { requestedPort: occupiedRequestedPort });
+      console.log(`端口 ${occupiedRequestedPort} 已被占用，正在自动寻找空闲端口……`);
+      server.listen(0, "127.0.0.1");
+      return;
+    }
+    detailedLog("error", "service.server-error", { error, port: listeningPort });
     stopRealtimeMonitor();
     stopLinkMonitor();
     stopSpeakerOccupancyMonitor();
     stopFormatRequestOccupancyMonitor();
-    if (error.code === "EADDRINUSE") {
-      console.error(`端口 ${options.port} 已被占用，请运行 ./run.command --port 4174 重试。`);
-    } else {
-      console.error(`应用启动失败：${error.message}`);
-    }
+    console.error(`应用启动失败：${error.message}`);
     process.exit(1);
   });
 
@@ -814,8 +820,18 @@ function main(): void {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  server.listen(options.port, "127.0.0.1", () => {
-    const url = `http://127.0.0.1:${options.port}`;
+  server.on("listening", () => {
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      console.error("应用启动失败：无法取得实际监听端口");
+      process.exit(1);
+    }
+    listeningPort = address.port;
+    const url = `http://127.0.0.1:${listeningPort}`;
+    if (occupiedRequestedPort !== null) {
+      console.log(`端口 ${occupiedRequestedPort} 已被占用，已自动改用空闲端口 ${listeningPort}。`);
+      detailedLog("info", "service.port-fallback", { requestedPort: occupiedRequestedPort, actualPort: listeningPort });
+    }
     console.log(`蓝牙音频模式检查器已启动：${url}`);
     console.log(`详细日志：${getDetailedLogStatus().path}`);
     detailedLog("info", "service.listening", { url, log: getDetailedLogStatus() });
@@ -824,6 +840,7 @@ function main(): void {
       openBrowser(url);
     }
   });
+  server.listen(listeningPort, "127.0.0.1");
 }
 
 main();

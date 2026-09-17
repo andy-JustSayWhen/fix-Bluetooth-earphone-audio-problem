@@ -1,0 +1,68 @@
+name: 构建并验收 macOS 正式包
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 发布版本号
+        required: true
+        default: 1.0.0
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+      - name: 运行自动测试
+        working-directory: tools/bluetooth-audio-mode-checker
+        run: npm test
+      - name: 构建正式包
+        working-directory: tools/bluetooth-audio-mode-checker
+        run: sh app/build-macos-release.sh "${{ inputs.version }}"
+      - name: 从最终压缩包验收一键启动和自动换端口
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          ARCHIVE="artifacts/releases/bluetooth-audio-mode-checker-macos-universal-v${VERSION}.zip"
+          ACCEPT_DIR="$RUNNER_TEMP/macos-release-acceptance"
+          mkdir -p "$ACCEPT_DIR"
+          ditto -x -k "$ARCHIVE" "$ACCEPT_DIR"
+          PACKAGE_DIR="$ACCEPT_DIR/蓝牙音频设备模式检查器-macos-universal-v${VERSION}"
+          python3 -m http.server 4173 --bind 127.0.0.1 >"$RUNNER_TEMP/occupied-port.log" 2>&1 &
+          OCCUPIER_PID=$!
+          "$PACKAGE_DIR/一键运行.command" --no-open >"$RUNNER_TEMP/app.log" 2>&1 &
+          APP_PID=$!
+          cleanup() {
+            kill "$APP_PID" "$OCCUPIER_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _ in {1..60}; do
+            APP_URL=$(sed -n 's/.*已启动：\(http:\/\/127\.0\.0\.1:[0-9][0-9]*\).*/\1/p' "$RUNNER_TEMP/app.log" | tail -1)
+            [ -n "$APP_URL" ] && break
+            sleep 1
+          done
+          test -n "${APP_URL:-}"
+          test "$APP_URL" != "http://127.0.0.1:4173"
+          curl --fail --silent "$APP_URL/" | grep -q '蓝牙音频模式检查器'
+          for _ in {1..30}; do
+            STATUS=$(curl --silent --output "$RUNNER_TEMP/devices.json" --write-out '%{http_code}' "$APP_URL/api/devices" || true)
+            [ "$STATUS" = 200 ] && break
+            sleep 1
+          done
+          test "$STATUS" = 200
+          file "$PACKAGE_DIR/.build/audio-probe/read-device-formats" | grep -q 'universal binary'
+          grep -q '自动寻找空闲端口' "$PACKAGE_DIR/使用说明.txt"
+          cat "$RUNNER_TEMP/app.log"
+      - name: 保存正式包
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluetooth-audio-mode-checker-macos-universal-v${{ inputs.version }}
+          path: artifacts/releases/bluetooth-audio-mode-checker-macos-universal-v${{ inputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
