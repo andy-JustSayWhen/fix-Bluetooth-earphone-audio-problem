@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [Parameter()]
-  [ValidatePattern('^\d+\.\d+\.\d+$')]
+  [ValidatePattern('^\d+\.\d+(?:\.\d+)?$')]
   [string]$Version = '1.0.0',
 
   [Parameter()]
