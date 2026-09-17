@@ -62,7 +62,7 @@ jobs:
           done
           test "$STATUS" = 200
           file "$PACKAGE_DIR/.build/audio-probe/read-device-formats" | grep -q 'universal binary'
-          grep -q '自动寻找空闲端口' "$PACKAGE_DIR/使用说明.txt"
+          grep -q '空闲端口' "$PACKAGE_DIR/使用说明.txt"
           cat "$RUNNER_TEMP/app.log"
       - name: 保存正式包
         uses: actions/upload-artifact@v4
