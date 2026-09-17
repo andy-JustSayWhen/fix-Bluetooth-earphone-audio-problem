@@ -79,4 +79,3 @@ find "$STAGE_DIR/.build" -type f -exec touch {} \;
 rm -f "$ARCHIVE_PATH"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$STAGE_DIR" "$ARCHIVE_PATH"
 printf '%s\n' "$ARCHIVE_PATH"
-

@@ -30,4 +30,3 @@ fi
 
 cd "$TOOL_DIR"
 exec "$APP_NODE" app/index.ts "$@"
-
