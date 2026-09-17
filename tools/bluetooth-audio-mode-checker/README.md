@@ -12,7 +12,7 @@
 
 ### macOS 正式版
 
-普通用户可从项目的 [Releases 页面](https://github.com/andy-JustSayWhen/fix-Bluetooth-earphone-audio-problem/releases) 下载名称包含 `macos-universal` 的压缩包。完整解压后，双击根目录的 `一键运行.command` 即可。正式包同时支持苹果芯片和英特尔芯片，已内置 Node.js 和预编译声音组件，不需要另外安装开发环境。
+普通用户可从项目的 [Releases 页面](https://github.com/andy-JustSayWhen/fix-Bluetooth-earphone-audio-problem/releases/tag/v1.0) 下载名称包含 `macos-universal` 的压缩包。同一个 `v1.0` 发布页也提供 Windows 正式包。完整解压后，双击根目录的 `一键运行.command` 即可。macOS 正式包同时支持苹果芯片和英特尔芯片，已内置 Node.js 和预编译声音组件，不需要另外安装开发环境。
 
 如果系统首次阻止打开，请在访达中按住 Control 键点按 `一键运行.command`，选择“打开”并确认。
 
